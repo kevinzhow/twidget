@@ -770,6 +770,14 @@ int main() {
         d.trim();
         std::string after = to_json(d.paint());
         check(!d.damage(rects) && after == before, "after a trim the next paint is whole, and the same");
+        // A box larger than its overflow: hidden parent turns: the damage is the parent's box, not the box's bounds.
+        d.receive(parse(R"J({"type":"ops","ops":[
+            {"op":"el","id":9,"tag":"div","attrs":[["style","position:absolute;left:10px;top:100px;width:100px;height:50px;overflow:hidden"]]},{"op":"ins","parent":4,"id":9,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","position:absolute;left:-100px;top:-100px;width:300px;height:250px;background:red;transform:rotate(10deg)"]]},{"op":"ins","parent":9,"id":10,"before":null}]})J"));
+        d.paint();
+        d.receive(parse(R"J({"type":"ops","ops":[{"op":"style","id":10,"name":"transform","value":"rotate(20deg)"}]})J"));
+        d.paint();
+        check(d.damage(rects) && covers(10, 100, 100, 50) && within(9, 99, 102, 52), "a turning box inside an overflow: hidden parent damages only the parent's box");
     }
 
     // ── height bound ──
