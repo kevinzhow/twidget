@@ -2,6 +2,8 @@
 
 #include "qt_renderer.h"
 
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QPlainTextEdit>
@@ -43,6 +45,21 @@ std::pair<std::string, std::string> dom_key(const QKeyEvent* e) {
     else if (k >= Qt::Key_F1 && k <= Qt::Key_F12) key = code = "F" + std::to_string(k - Qt::Key_F1 + 1);
     if (key.empty() || (unsigned char)key[0] < 0x20) key = "Unidentified";
     return {key, code};
+}
+
+/// The core's button: 0 main, 1 middle, 2 secondary.
+int button(Qt::MouseButton b) { return b == Qt::RightButton ? 2 : b == Qt::MiddleButton ? 1 : 0; }
+
+Qt::CursorShape cursor_shape(const std::string& css) {
+    static const std::unordered_map<std::string, Qt::CursorShape> shapes = {
+        {"pointer", Qt::PointingHandCursor}, {"text", Qt::IBeamCursor}, {"grab", Qt::OpenHandCursor}, {"grabbing", Qt::ClosedHandCursor},
+        {"move", Qt::SizeAllCursor}, {"all-scroll", Qt::SizeAllCursor}, {"not-allowed", Qt::ForbiddenCursor}, {"no-drop", Qt::ForbiddenCursor},
+        {"wait", Qt::WaitCursor}, {"progress", Qt::BusyCursor}, {"help", Qt::WhatsThisCursor}, {"crosshair", Qt::CrossCursor},
+        {"col-resize", Qt::SplitHCursor}, {"row-resize", Qt::SplitVCursor}, {"ew-resize", Qt::SizeHorCursor}, {"ns-resize", Qt::SizeVerCursor},
+        {"nesw-resize", Qt::SizeBDiagCursor}, {"nwse-resize", Qt::SizeFDiagCursor}, {"none", Qt::BlankCursor},
+    };
+    auto it = shapes.find(css);
+    return it == shapes.end() ? Qt::ArrowCursor : it->second;
 }
 
 } // namespace
@@ -105,6 +122,10 @@ void WidgetView::setOnScreen(bool visible) {
 }
 
 void WidgetView::changed(const twidget::WidgetDiagnostics& d) {
+    if (d.loaded && !loaded_ && renderer_) {
+        loaded_ = true;
+        renderer_->setLoading(false);
+    }
     auto ms = [](const std::optional<double>& v) { return v ? QString::number(*v, 'f', 0) + " ms" : QStringLiteral("–"); };
     QString status;
     if (d.dead) {
@@ -258,22 +279,30 @@ bool WidgetView::eventFilter(QObject* watched, QEvent* event) {
     return QWidget::eventFilter(watched, event);
 }
 
+void WidgetView::showCursor() {
+    if (renderer_) setCursor(cursor_shape(renderer_->cursor()));
+}
+
 void WidgetView::mousePressEvent(QMouseEvent* e) {
-    if (renderer_) renderer_->touch(0, e->position().x(), e->position().y(), 1, true, true, modifiers(e->modifiers()));
+    if (renderer_) renderer_->touch(0, e->position().x(), e->position().y(), 1, true, true, modifiers(e->modifiers()), button(e->button()));
+    showCursor();
 }
 
 void WidgetView::mouseMoveEvent(QMouseEvent* e) {
     if (!renderer_) return;
     if (e->buttons() != Qt::NoButton) renderer_->touch(1, e->position().x(), e->position().y(), 1, true, true, modifiers(e->modifiers()));
     else renderer_->hover(0, e->position().x(), e->position().y(), modifiers(e->modifiers()));
+    showCursor();
 }
 
 void WidgetView::mouseReleaseEvent(QMouseEvent* e) {
-    if (renderer_) renderer_->touch(2, e->position().x(), e->position().y(), 1, true, true, modifiers(e->modifiers()));
+    if (renderer_) renderer_->touch(2, e->position().x(), e->position().y(), 1, true, true, modifiers(e->modifiers()), button(e->button()));
+    showCursor();
 }
 
 void WidgetView::leaveEvent(QEvent*) {
     if (renderer_) renderer_->hover(1, 0, 0, 0);
+    unsetCursor();
 }
 
 void WidgetView::wheelEvent(QWheelEvent* e) {
@@ -281,6 +310,8 @@ void WidgetView::wheelEvent(QWheelEvent* e) {
     // DOM deltas grow downwards and rightwards; a notch is 120 eighths of a degree, about 100 px in browsers.
     QPointF delta = !e->pixelDelta().isNull() ? -QPointF(e->pixelDelta()) : -QPointF(e->angleDelta()) / 120.0 * 100.0;
     renderer_->wheel(e->position().x(), e->position().y(), delta.x(), delta.y(), 0, modifiers(e->modifiers()));
+    // The core takes no wheel (profile 1): the feed scrolls.
+    e->ignore();
 }
 
 void WidgetView::forwardKey(QKeyEvent* e, const char* type) {
@@ -289,6 +320,15 @@ void WidgetView::forwardKey(QKeyEvent* e, const char* type) {
     renderer_->key(type, key, code, e->isAutoRepeat(), modifiers(e->modifiers()));
 }
 
-void WidgetView::keyPressEvent(QKeyEvent* e) { forwardKey(e, "keydown"); }
+void WidgetView::keyPressEvent(QKeyEvent* e) {
+    if (e->matches(QKeySequence::Copy) && renderer_) {
+        std::string text = renderer_->selectedText();
+        if (!text.empty()) {
+            QGuiApplication::clipboard()->setText(QString::fromStdString(text));
+            return;
+        }
+    }
+    forwardKey(e, "keydown");
+}
 
 void WidgetView::keyReleaseEvent(QKeyEvent* e) { forwardKey(e, "keyup"); }

@@ -111,6 +111,7 @@ void digest(Digest& d, const Command& c) {
     d.value(c.y);
     d.value(c.image);
     d.value(c.canvas);
+    d.value(c.repeat);
     d.value(c.ax);
     d.value(c.ay);
     d.value(c.bx);
@@ -158,9 +159,11 @@ void digest(Digest& d, const Command& c) {
 Rect ink_of(const Command& c) {
     auto grow = [](Rect r, float by) { return Rect{r.x - by, r.y - by, r.w + 2 * by, r.h + 2 * by}; };
     switch (c.kind) {
+    case Cmd::Image:
+        // A repeated image paints its whole clip, from the tile at rect.
+        return grow(c.repeat && c.has_clip ? c.clip : c.rect, 1);
     case Cmd::FillRect:
     case Cmd::FillEllipse:
-    case Cmd::Image:
     case Cmd::Linear:
     case Cmd::Radial:
     case Cmd::Conic:

@@ -1,5 +1,6 @@
 // One widget in the feed: a WidgetHost (QuickJS, the validator) over a QtRenderer, shown at its reported
-// height, with mouse, wheel and keys forwarded to the renderer in CSS px.
+// height, with the mouse and keys forwarded to the renderer in CSS px. The wheel goes on to the feed (profile 1: no
+// wheel, no inner scroll), the CSS cursor shows, and Ctrl+C copies a mouse drag's text selection.
 #pragma once
 
 #include "twidget/widget_host.h"
@@ -41,6 +42,7 @@ protected:
 private:
     void changed(const twidget::WidgetDiagnostics& d);
     void forwardKey(QKeyEvent* e, const char* type);
+    void showCursor();
 
     /// Covers the control being edited with a Qt editor, which takes the keyboard; none, removes it.
     void showEditor(std::optional<twlite::Renderer::EditorSpec> spec);
@@ -52,6 +54,7 @@ private:
 
     std::unique_ptr<twidget::WidgetHost> host_;
     QtRenderer* renderer_ = nullptr;  // owned by host_
+    bool loaded_ = false;
     double width_;
     bool onScreen_ = true;
 

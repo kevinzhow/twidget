@@ -127,8 +127,9 @@ QGradientStops gradient_stops(const std::vector<Stop>& list, bool reversed = fal
         std::reverse(out.begin(), out.end());
         for (auto& s : out) s.first = 1 - s.first;
     }
-    // Qt wants the positions in order; a hard stop keeps its order at the same position.
-    for (qsizetype i = 1; i < out.size(); i++) out[i].first = std::max(out[i].first, out[i - 1].first);
+    // Qt wants the positions in order, and keeps only one of two stops at the same position: a hard stop
+    // goes a hair after the one before it.
+    for (qsizetype i = 1; i < out.size(); i++) out[i].first = std::max(out[i].first, std::min(1.0, out[i - 1].first + 1e-6));
     return out;
 }
 
@@ -416,7 +417,13 @@ int QtBackend::create_font(const std::string& families, float size, int weight, 
     if (it == faces_.end()) {
         auto face = std::make_shared<Face>();
         face->font.setFamilies(resolve_families(families));
-        face->font.setPointSizeF(std::max(size, 0.01f) * 0.75);
+        float px = std::max(size, 0.01f);
+        if (px != std::round(px)) {
+            float whole = std::round(px * 16);
+            face->scale = px / whole;
+            px = whole;
+        }
+        face->font.setPointSizeF(px * 0.75);
         face->font.setWeight(QFont::Weight(std::clamp(weight, 1, 1000)));
         face->font.setItalic(italic);
         // Unhinted outlines scale linearly, so widths measured here hold at any device pixel ratio.
@@ -429,11 +436,12 @@ int QtBackend::create_font(const std::string& families, float size, int weight, 
 #endif
 
         QFontMetricsF m(face->font, &reference_);
-        face->metrics.ascent = float(m.ascent());
-        face->metrics.descent = float(m.descent());
-        face->metrics.height = float(m.lineSpacing());
-        face->metrics.x_height = float(m.xHeight());
-        face->metrics.zero_width = float(m.horizontalAdvance(QStringLiteral("0")));
+        float k = float(face->scale);
+        face->metrics.ascent = float(m.ascent()) * k;
+        face->metrics.descent = float(m.descent()) * k;
+        face->metrics.height = float(m.lineSpacing()) * k;
+        face->metrics.x_height = float(m.xHeight()) * k;
+        face->metrics.zero_width = float(m.horizontalAdvance(QStringLiteral("0"))) * k;
         // sTypoAscender and sTypoDescender, big-endian at 68 and 70 in the OS/2 table.
         QByteArray os2 = QRawFont::fromFont(face->font).fontTable("OS/2");
         if (os2.size() >= 72) {
@@ -461,7 +469,7 @@ float QtBackend::text_width(int font, const std::string& text) {
     if (!f) return 0;
     auto it = f->widths.find(text);
     if (it != f->widths.end()) return it->second;
-    float w = float(QFontMetricsF(f->font, &reference_).horizontalAdvance(QString::fromUtf8(text.data(), qsizetype(text.size()))));
+    float w = float(QFontMetricsF(f->font, &reference_).horizontalAdvance(QString::fromUtf8(text.data(), qsizetype(text.size()))) * f->scale);
     // Words repeat across rebuilds, but a widget that types a counter would grow this forever.
     if (text.size() > MAX_WIDTH_KEY) return w;
     if (f->widths.size() > 4096) f->widths.clear();
@@ -523,12 +531,14 @@ void QtBackend::canvas_content(QPainter& p, const CanvasOp& op, const QImage* se
         p.setTransform(QTransform::fromScale(op.scale_x, 1) * QTransform::fromTranslate(op.x, op.y) * m);
         if (op.stroke_text) {
             QPainterPath outline;
-            outline.addText(op.text_dx, 0, f->font, text);
+            outline.addText(op.text_dx / f->scale, 0, f->font, text);
+            outline = QTransform::fromScale(f->scale, f->scale).map(outline);
             p.strokePath(outline, pen(canvas_brush(op.paint), op.line_width, op.line_cap, op.line_join, op.miter_limit, op.dashes, op.dash_offset));
         } else {
+            p.setTransform(QTransform::fromScale(f->scale, f->scale) * p.transform());
             p.setFont(f->font);
             p.setPen(QPen(canvas_brush(op.paint), 0));
-            p.drawText(QPointF(op.text_dx, 0), text);
+            p.drawText(QPointF(op.text_dx / f->scale, 0), text);
         }
         return;
     }
@@ -1050,7 +1060,15 @@ void QtBackend::paint_area(std::span<const Command> list, QImage& target, const 
             if (!f) break;
             p.setFont(f->font);
             p.setPen(qcolor(c.color));
-            p.drawText(QPointF(c.x, c.y), QString::fromUtf8(c.text.data(), qsizetype(c.text.size())));
+            if (f->scale != 1) {
+                p.save();
+                p.translate(c.x, c.y);
+                p.scale(f->scale, f->scale);
+                p.drawText(QPointF(0, 0), QString::fromUtf8(c.text.data(), qsizetype(c.text.size())));
+                p.restore();
+            } else {
+                p.drawText(QPointF(c.x, c.y), QString::fromUtf8(c.text.data(), qsizetype(c.text.size())));
+            }
             break;
         }
         case Cmd::Image: {

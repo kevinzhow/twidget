@@ -5,6 +5,8 @@
 #include <QTransform>
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 using twidget::Json;
 
@@ -20,6 +22,9 @@ QtRenderer::QtRenderer(const std::string& theme, double width, double dpr, std::
     : dpr_(dpr), onFrame_(std::move(onFrame)) {
     core_ = std::make_unique<twlite::Renderer>(width, dpr, theme == "dark", backend_);
     core_->set_compositing(true);
+    // Until the host has loaded the page, its script's changes are its first style: no transitions (as the port).
+    core_->set_loading(true);
+    core_->receive(*Json::parse(R"({"type":"arbitrate","bubble":true})"));
     clock_ = std::thread([this] { clockLoop(); });
 }
 
@@ -101,12 +106,27 @@ void QtRenderer::setTheme(const std::string& theme) {
     run([&](std::vector<Json>& out) { core_->set_theme(theme == "dark", out); });
 }
 
+void QtRenderer::setLoading(bool loading) {
+    std::lock_guard l(mutex_);
+    if (!destroyed_ && core_) core_->set_loading(loading);
+}
+
 void QtRenderer::setWidth(double width) {
     run([&](std::vector<Json>& out) { core_->set_width(width, out); });
 }
 
-void QtRenderer::touch(int action, double x, double y, int pointer, bool primary, bool mouse, int modifiers) {
-    run([&](std::vector<Json>& out) { out = core_->touch(action, x, y, pointer, primary, mouse, modifiers); });
+void QtRenderer::touch(int action, double x, double y, int pointer, bool primary, bool mouse, int modifiers, int button) {
+    run([&](std::vector<Json>& out) { out = core_->touch(action, x, y, pointer, primary, mouse, modifiers, button); });
+}
+
+std::string QtRenderer::cursor() {
+    std::lock_guard l(mutex_);
+    return destroyed_ ? "auto" : core_->cursor();
+}
+
+std::string QtRenderer::selectedText() {
+    std::lock_guard l(mutex_);
+    return destroyed_ ? std::string() : core_->selected_text();
 }
 
 void QtRenderer::hover(int action, double x, double y, int modifiers) {
@@ -184,6 +204,14 @@ void QtRenderer::paint() {
         if (w == 0 || h == 0) return;
         double t0 = nowMs();
         twlite::DisplayList list = core_->paint();
+        // Parity runs (snap.cpp) keep the last display list to compare with the port's.
+        if (const char* dump = std::getenv("TWIDGET_QT_DUMP_LIST"); dump && *dump) {
+            if (FILE* f = std::fopen(dump, "wb")) {
+                std::string json = twlite::to_json(list);
+                std::fwrite(json.data(), 1, json.size(), f);
+                std::fclose(f);
+            }
+        }
         // Only what changed is painted again, over the last frame.
         std::vector<twlite::Rect> damage;
         bool partial = core_->damage(damage) && last_.width() == int(w) && last_.height() == int(h);

@@ -165,6 +165,7 @@ std::string to_json(const DisplayList& list) {
         case Cmd::Image:
             if (c.canvas) out += ",\"cv\":" + std::to_string(c.canvas);
             else out += ",\"i\":" + std::to_string(c.image);
+            if (c.repeat) out += ",\"rp\":" + std::to_string(int(c.repeat));
             break;
         case Cmd::Linear: case Cmd::Radial: case Cmd::Conic: {
             const float a[] = {c.ax, c.ay, c.bx, c.by};

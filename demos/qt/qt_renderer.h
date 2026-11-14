@@ -51,10 +51,15 @@ public:
     void send(const std::string& json) override;
     void setTheme(const std::string& theme) override;
     void setWidth(double width) override;
+    /// Renderer::set_loading: false once the host has loaded the page.
+    void setLoading(bool loading);
     void destroy() override;
 
     // Input in CSS px, any thread. touch action: 0 down, 1 move, 2 up, 3 cancel; hover action: 0 move, 1 leave.
-    void touch(int action, double x, double y, int pointer, bool primary, bool mouse, int modifiers);
+    // `button` 0 main, 1 middle, 2 secondary. The view has no recognizers of its own (no message menu, no
+    // swipes): the core plays the bubble (`arbitrate`), so a press the gesture policy gives the chat ends for the
+    // widget in pointercancel, as in a client.
+    void touch(int action, double x, double y, int pointer, bool primary, bool mouse, int modifiers, int button = 0);
     void hover(int action, double x, double y, int modifiers);
     void wheel(double x, double y, double dx, double dy, int mode, int modifiers);
     void key(const std::string& type, const std::string& key, const std::string& code, bool repeat, int modifiers);
@@ -63,6 +68,10 @@ public:
     // The view's text editor changed the text of editor `generation`, or let go of the keyboard.
     void edit(uint64_t generation, const std::string& text);
     void endEditing();
+    /// The CSS cursor where the mouse last was (twlite::Renderer::cursor).
+    std::string cursor();
+    /// The text a mouse drag selected, empty when none.
+    std::string selectedText();
 
     /// The text control to cover with an editor (twlite::Renderer::editor()), or none; called on any
     /// thread whenever it changes.

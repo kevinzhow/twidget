@@ -3,9 +3,11 @@
 #include "css.h"
 
 #include <algorithm>
+#include <functional>
 #include <cctype>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <set>
 
 using twidget::Json;
@@ -22,6 +24,8 @@ bool is_letter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 const std::unordered_map<std::string, std::string>& initial_values() {
     static const std::unordered_map<std::string, std::string> v = {
         {"opacity", "1"}, {"transform", "none"}, {"translate", "0px"}, {"scale", "1"}, {"rotate", "0deg"}, {"filter", "none"}, {"letter-spacing", "0px"},
+        {"background-color", "rgba(0, 0, 0, 0)"}, {"background", "rgba(0, 0, 0, 0)"}, {"margin-top", "0px"}, {"margin-left", "0px"}, {"margin-right", "0px"}, {"margin-bottom", "0px"},
+        {"stroke-dashoffset", "0px"}, {"stroke-dasharray", "none"}, {"stroke-width", "1px"}, {"background-position", "0% 0%"},
     };
     return v;
 }
@@ -306,8 +310,10 @@ std::optional<std::pair<std::vector<Token>, std::vector<Token>>> pair_tokens(con
     std::string key = a + '\x01' + b;
     if (auto it = cache.find(key); it != cache.end()) return it->second;
     std::string from = css::normalize_colors(a), to = css::normalize_colors(b);
-    if (css::iequals(from, "none") && to.find('(') != std::string::npos) from = identity(to);
-    else if (css::iequals(to, "none") && from.find('(') != std::string::npos) to = identity(from);
+    // `none` is the identity of a transform or filter list; with a colour (an SVG paint: fill: none) it is discrete.
+    auto colour = [](const std::string& v) { return css::starts_with(css::trim(v), "rgba("); };
+    if (css::iequals(from, "none") && to.find('(') != std::string::npos && !colour(to)) from = identity(to);
+    else if (css::iequals(to, "none") && from.find('(') != std::string::npos && !colour(from)) to = identity(from);
     auto left = tokenize(from), right = tokenize(to);
     if (left.size() != right.size()) {
         auto pa = primitive(from), pb = primitive(to);
@@ -532,7 +538,7 @@ std::optional<std::string> web_value(const WebAnimation& a, const std::string& p
     const F &fa = frames[start], &fb = frames[end];
     double span = fb.offset - fa.offset;
     double local = span == 0 ? 0 : (progress - fa.offset) / span;
-    return interpolate(resolve(start), resolve(end), fa.easing->web(local, false));
+    return interpolate(property, resolve(start), resolve(end), fa.easing->web(local, false));
 }
 
 } // namespace
@@ -793,24 +799,27 @@ std::vector<TransitionSpec> TransitionSpec::list(const Declared& declarations) {
             for (const std::string& s : css::split_top_level(it->second, ',')) out.push_back(css::trim(s));
         return out;
     };
+    // A longhand the cascade kept over the shorthand (litehtml resets a longhand the shorthand comes after) replaces
+    // that part of each item, its list repeated as needed: `transition: opacity .3s; transition-delay: 90ms` waits.
     auto properties = items("transition-property");
     auto durations = items("transition-duration");
+    auto timings = items("transition-timing-function");
+    auto delays = items("transition-delay");
     if (!properties.empty()) {
-        auto timings = items("transition-timing-function");
-        auto delays = items("transition-delay");
         std::vector<TransitionSpec> next;
         for (size_t i = 0; i < properties.size(); i++) {
-            TransitionSpec base = i < specs.size() ? specs[i] : TransitionSpec{properties[i], 0, Timing::ease(), 0};
-            TransitionSpec s;
+            TransitionSpec s = i < specs.size() ? specs[i] : TransitionSpec{};
             s.property = css::lower(properties[i]);
-            s.duration = durations.empty() ? base.duration : css::parse_time(durations[i % durations.size()]).value_or(0);
-            s.timing = timings.empty() ? base.timing : Timing::parse(timings[i % timings.size()]).value_or(Timing::ease());
-            s.delay = delays.empty() ? base.delay : css::parse_time(delays[i % delays.size()]).value_or(0);
             next.push_back(std::move(s));
         }
         specs = std::move(next);
-    } else if (!durations.empty()) {
-        for (size_t i = 0; i < specs.size(); i++) specs[i].duration = css::parse_time(durations[i % durations.size()]).value_or(0);
+    } else if (specs.empty() && !durations.empty()) {
+        specs.push_back(TransitionSpec{"all", 0, Timing::ease(), 0});
+    }
+    for (size_t i = 0; i < specs.size(); i++) {
+        if (!durations.empty()) specs[i].duration = css::parse_time(durations[i % durations.size()]).value_or(0);
+        if (!timings.empty()) specs[i].timing = Timing::parse(timings[i % timings.size()]).value_or(Timing::ease());
+        if (!delays.empty()) specs[i].delay = css::parse_time(delays[i % delays.size()]).value_or(0);
     }
     specs.erase(std::remove_if(specs.begin(), specs.end(), [](const TransitionSpec& s) { return s.duration <= 0 || s.property == "none"; }), specs.end());
     return specs;
@@ -818,23 +827,42 @@ std::vector<TransitionSpec> TransitionSpec::list(const Declared& declarations) {
 
 // ───────────────────────── interpolation ─────────────────────────
 
-std::string interpolate(const std::string& a, const std::string& b, double t) {
-    if (t == 0 || !std::isfinite(t)) return a;
-    if (t == 1) return b;
-    auto flip = [&] { return t < 0.5 ? a : b; };
+namespace {
+
+/// `a` and `b` mixed at `t`, or nullopt when the pair does not interpolate (it is discrete).
+std::optional<std::string> blend(const std::string& a, const std::string& b, double t) {
     // Mixed units, or math on one side only: two translation lists still compose by weight.
-    auto weighted = [&] {
+    auto weighted = [&]() -> std::optional<std::string> {
         std::string from = css::iequals(css::trim(a), "none") ? identity(b) : a, to = css::iequals(css::trim(b), "none") ? identity(a) : b;
-        if (!translation_list(from) || !translation_list(to)) return flip();
+        if (!translation_list(from) || !translation_list(to)) return std::nullopt;
         return scaled_translations(css::trim(from), 1 - t) + " " + scaled_translations(css::trim(to), t);
     };
     auto pair = pair_tokens(a, b);
     if (!pair) return weighted();
     std::string out;
     const auto& [left, right] = *pair;
+    // `rgba(r, g, b, a)` as normalize_colors writes it: the text that opens it, then four numbers between ", ".
+    auto colour_at = [](const std::vector<Token>& v, size_t i) {
+        if (i + 7 >= v.size() || v[i].number || !css::ends_with(v[i].text, "rgba(")) return false;
+        for (size_t k = 1; k <= 7; k++)
+            if (k % 2 ? !v[i + k].number || !v[i + k].text.empty() : v[i + k].number || v[i + k].text != ", ") return false;
+        return true;
+    };
     for (size_t i = 0; i < left.size(); i++) {
         const Token &x = left[i], &y = right[i];
-        if (x.number && y.number && (x.text == y.text || x.value == 0 || y.value == 0)) {
+        if (!x.number && x.text == y.text && colour_at(left, i) && colour_at(right, i)) {
+            // CSS Color 4 §12.3: legacy colours mix in sRGB with premultiplied alpha, so a fade from `transparent`
+            // keeps the other end's hue instead of passing through black (as Chromium).
+            double a0 = std::clamp(left[i + 7].value, 0.0, 1.0), a1 = std::clamp(right[i + 7].value, 0.0, 1.0);
+            double alpha = std::clamp(a0 + (a1 - a0) * t, 0.0, 1.0);
+            out += x.text;
+            for (size_t k = 1; k <= 5; k += 2) {
+                double c = alpha > 0 ? (left[i + k].value * a0 * (1 - t) + right[i + k].value * a1 * t) / alpha : 0;
+                out += css::format_number(std::clamp(c, 0.0, 255.0)) + ", ";
+            }
+            out += css::format_number(alpha);
+            i += 7;
+        } else if (x.number && y.number && (x.text == y.text || x.value == 0 || y.value == 0)) {
             out += css::format_number(x.value + (y.value - x.value) * t);
             out += x.text.empty() ? y.text : x.text;
         } else if (!x.number && !y.number && x.text == y.text) {
@@ -844,6 +872,350 @@ std::string interpolate(const std::string& a, const std::string& b, double t) {
         }
     }
     return out;
+}
+
+} // namespace
+
+std::string interpolate(const std::string& a, const std::string& b, double t) {
+    if (t == 0 || !std::isfinite(t)) return a;
+    if (t == 1) return b;
+    if (auto v = blend(a, b, t)) return *v;
+    return t < 0.5 ? a : b;
+}
+
+namespace {
+
+// ── SVG path data (the `d` property) ──
+
+std::string_view trim_sv(std::string_view v) {
+    while (!v.empty() && std::isspace(static_cast<unsigned char>(v.front()))) v.remove_prefix(1);
+    while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back()))) v.remove_suffix(1);
+    return v;
+}
+
+struct PathSegment {
+    char command = 'M';
+    std::vector<double> args;
+};
+
+int path_arity(char upper) {
+    switch (upper) {
+    case 'M': case 'L': case 'T': return 2;
+    case 'H': case 'V': return 1;
+    case 'C': return 6;
+    case 'S': case 'Q': return 4;
+    case 'A': return 7;
+    case 'Z': return 0;
+    default: return -1;
+    }
+}
+
+/// Path data as `d: path("…")` or the attribute writes it, the text inside.
+std::string_view path_text(std::string_view v) {
+    v = trim_sv(v);
+    if (v.size() > 6 && css::iequals(v.substr(0, 5), "path(") && v.back() == ')') {
+        v = trim_sv(v.substr(5, v.size() - 6));
+        if (v.size() >= 2 && (v.front() == '"' || v.front() == '\'') && v.back() == v.front()) v = v.substr(1, v.size() - 2);
+    }
+    return v;
+}
+
+/// The segments of path data, each implicit repetition its own (after M, L): nullopt when it does not parse.
+std::optional<std::vector<PathSegment>> parse_path(std::string_view text) {
+    std::vector<PathSegment> out;
+    size_t i = 0, n = text.size();
+    auto skip = [&] {
+        while (i < n && (text[i] == ' ' || text[i] == ',' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r' || text[i] == '\f')) i++;
+    };
+    auto number = [&](bool flag) -> std::optional<double> {
+        skip();
+        if (i >= n) return std::nullopt;
+        if (flag) {
+            if (text[i] != '0' && text[i] != '1') return std::nullopt;
+            return double(text[i++] - '0');
+        }
+        size_t start = i;
+        if (text[i] == '+' || text[i] == '-') i++;
+        bool digits = false;
+        while (i < n && is_digit(text[i])) { i++; digits = true; }
+        if (i < n && text[i] == '.') {
+            i++;
+            while (i < n && is_digit(text[i])) { i++; digits = true; }
+        }
+        if (!digits) { i = start; return std::nullopt; }
+        if (i < n && (text[i] == 'e' || text[i] == 'E')) {
+            size_t e = i + 1;
+            if (e < n && (text[e] == '+' || text[e] == '-')) e++;
+            if (e < n && is_digit(text[e])) {
+                i = e;
+                while (i < n && is_digit(text[i])) i++;
+            }
+        }
+        return css::number(text.substr(start, i - start));
+    };
+    char command = 0;
+    for (;;) {
+        skip();
+        if (i >= n) break;
+        if (is_letter(text[i])) {
+            command = text[i++];
+            if (path_arity(char(std::toupper(command))) < 0) return std::nullopt;
+            if (out.empty() && std::toupper(command) != 'M') return std::nullopt;
+        } else if (!command || std::toupper(command) == 'Z') {
+            return std::nullopt;
+        }
+        char upper = char(std::toupper(command));
+        PathSegment seg{command, {}};
+        for (int k = 0; k < path_arity(upper); k++) {
+            auto v = number(upper == 'A' && (k == 3 || k == 4));
+            if (!v) return std::nullopt;
+            seg.args.push_back(*v);
+        }
+        out.push_back(std::move(seg));
+        // Coordinates after a moveto are linetos.
+        if (upper == 'M') command = command == 'M' ? 'L' : 'l';
+    }
+    if (out.empty()) return std::nullopt;
+    return out;
+}
+
+/// Every segment in absolute coordinates.
+void absolute_path(std::vector<PathSegment>& path) {
+    double x = 0, y = 0, sx = 0, sy = 0;
+    for (PathSegment& s : path) {
+        char upper = char(std::toupper(s.command));
+        bool rel = s.command != upper;
+        auto& a = s.args;
+        if (rel) {
+            switch (upper) {
+            case 'H': a[0] += x; break;
+            case 'V': a[0] += y; break;
+            case 'A': a[5] += x; a[6] += y; break;
+            case 'Z': break;
+            default:
+                for (size_t k = 0; k + 1 < a.size(); k += 2) { a[k] += x; a[k + 1] += y; }
+            }
+            s.command = upper;
+        }
+        switch (upper) {
+        case 'Z': x = sx; y = sy; break;
+        case 'H': x = a[0]; break;
+        case 'V': y = a[0]; break;
+        default:
+            x = a[a.size() - 2];
+            y = a[a.size() - 1];
+        }
+        if (upper == 'M') { sx = x; sy = y; }
+    }
+}
+
+/// `path("M 0 0 L 10 10")`: how Chromium computes `d`, and what a style declaration takes.
+std::string path_css(const std::vector<PathSegment>& path) {
+    std::string out = "path(\"";
+    for (size_t i = 0; i < path.size(); i++) {
+        if (i) out += ' ';
+        out += path[i].command;
+        for (double v : path[i].args) out += ' ' + css::format_number(v);
+    }
+    return out + "\")";
+}
+
+/// Paths interpolate when they have as many segments, of the same commands pair by pair (SVG 2 §9.3.8, as
+/// Chromium's SVGPathBlender): an absolute command with a relative one is mixed in absolute coordinates. Flags of
+/// an arc are taken from the nearer end.
+std::optional<std::string> blend_path(const std::string& a, const std::string& b, double t) {
+    auto x = parse_path(path_text(a)), y = parse_path(path_text(b));
+    if (!x || !y || x->size() != y->size()) return std::nullopt;
+    bool mixed = false;
+    for (size_t i = 0; i < x->size(); i++) {
+        if (std::toupper((*x)[i].command) != std::toupper((*y)[i].command)) return std::nullopt;
+        mixed = mixed || (*x)[i].command != (*y)[i].command;
+    }
+    if (mixed) {
+        absolute_path(*x);
+        absolute_path(*y);
+    }
+    std::vector<PathSegment> out = *x;
+    for (size_t i = 0; i < out.size(); i++) {
+        bool arc = std::toupper(out[i].command) == 'A';
+        for (size_t k = 0; k < out[i].args.size(); k++) {
+            double p = (*x)[i].args[k], q = (*y)[i].args[k];
+            out[i].args[k] = arc && (k == 3 || k == 4) ? (t < 0.5 ? p : q) : p + (q - p) * t;
+        }
+    }
+    return path_css(out);
+}
+
+/// A path as a style declaration writes it: `path("…")`, `none` as it is, anything else unchanged.
+std::string path_value(const std::string& v) {
+    std::string_view inner = path_text(v);
+    if (inner.empty() || css::iequals(trim_sv(v), "none")) return v;
+    if (auto p = parse_path(inner)) return path_css(*p);
+    return v;
+}
+
+// ── SVG lengths: stroke-dasharray, stroke-dashoffset, stroke-width ──
+
+/// A length the way Chromium computes it: a plain number is px (SVG's user units).
+std::string svg_length(const std::string& v) {
+    std::string t = css::trim(v);
+    if (auto n = css::number(t)) return css::format_number(*n) + "px";
+    return t;
+}
+
+/// A dash list as (number, unit) pairs, a plain number as px; nullopt for `none` or what is not a list of lengths.
+std::optional<std::vector<std::pair<double, std::string>>> dash_list(const std::string& v) {
+    std::string t = css::lower(css::trim(v));
+    if (t.empty() || t == "none") return std::nullopt;
+    std::vector<std::pair<double, std::string>> out;
+    for (const Token& tok : tokenize(t)) {
+        if (tok.number) {
+            std::string unit = tok.text.empty() ? "px" : tok.text;
+            if (unit != "px" && unit != "%") return std::nullopt;
+            out.emplace_back(tok.value, unit);
+        } else if (tok.text.find_first_not_of(" ,\t") != std::string::npos) {
+            return std::nullopt;
+        }
+    }
+    if (out.empty()) return std::nullopt;
+    return out;
+}
+
+/// Dash lists mix as repeatable lists: both repeated to the least common multiple of their lengths (SVG 2,
+/// stroke-dasharray), each pair of the same unit. `none` with a list is discrete.
+std::optional<std::string> blend_dashes(const std::string& a, const std::string& b, double t) {
+    auto x = dash_list(a), y = dash_list(b);
+    if (!x || !y) return std::nullopt;
+    size_t n = std::lcm(x->size(), y->size());
+    if (n > 1000) return std::nullopt;
+    std::string out;
+    for (size_t i = 0; i < n; i++) {
+        const auto &p = (*x)[i % x->size()], &q = (*y)[i % y->size()];
+        if (p.second != q.second && p.first != 0 && q.first != 0) return std::nullopt;
+        const std::string& unit = p.first == 0 ? q.second : p.second;
+        out += (i ? ", " : "") + css::format_number(std::max(0.0, p.first + (q.first - p.first) * t)) + unit;
+    }
+    return out;
+}
+
+bool unitless_number(const std::string& v) { return css::number(css::trim(v)).has_value(); }
+
+/// A length as px + % (a number with px, %, a plain 0, or a calc() of sums and differences of those and products
+/// with numbers); nullopt for anything else (em, var(), a list).
+std::optional<std::pair<double, double>> linear_length(std::string_view v) {
+    std::string t = css::lower(css::trim(v));
+    if (css::starts_with(t, "calc(") && t.back() == ')') t = t.substr(4);
+    // A small recursive descent over + - * and parentheses, each term (px, %).
+    size_t i = 0;
+    using L = std::pair<double, double>;
+    std::function<std::optional<L>()> sum;
+    auto skip = [&] { while (i < t.size() && t[i] == ' ') i++; };
+    std::function<std::optional<L>()> factor = [&]() -> std::optional<L> {
+        skip();
+        if (i < t.size() && t[i] == '(') {
+            i++;
+            auto v = sum();
+            skip();
+            if (!v || i >= t.size() || t[i] != ')') return std::nullopt;
+            i++;
+            return v;
+        }
+        size_t start = i;
+        if (i < t.size() && (t[i] == '-' || t[i] == '+')) i++;
+        while (i < t.size() && (is_digit(t[i]) || t[i] == '.' || t[i] == 'e')) i++;
+        auto n = css::number(std::string_view(t).substr(start, i - start));
+        if (!n) return std::nullopt;
+        if (t.compare(i, 2, "px") == 0) { i += 2; return L{*n, 0}; }
+        if (i < t.size() && t[i] == '%') { i++; return L{0, *n}; }
+        return L{*n, std::numeric_limits<double>::quiet_NaN()};  // a plain number: only a factor (or 0)
+    };
+    auto term = [&]() -> std::optional<L> {
+        auto v = factor();
+        for (;;) {
+            skip();
+            if (!v || i >= t.size() || t[i] != '*') return v;
+            i++;
+            auto w = factor();
+            if (!w) return std::nullopt;
+            bool vn = std::isnan(v->second), wn = std::isnan(w->second);
+            if (vn == wn) return std::nullopt;
+            double k = vn ? v->first : w->first;
+            L len = vn ? *w : *v;
+            v = L{len.first * k, len.second * k};
+        }
+    };
+    sum = [&]() -> std::optional<L> {
+        auto v = term();
+        for (;;) {
+            skip();
+            if (!v || i >= t.size() || (t[i] != '+' && t[i] != '-')) return v;
+            double sign = t[i] == '-' ? -1 : 1;
+            i++;
+            auto w = term();
+            if (!w || std::isnan(w->second) || std::isnan(v->second)) return std::nullopt;
+            v = L{v->first + sign * w->first, v->second + sign * w->second};
+        }
+    };
+    auto out = sum();
+    skip();
+    if (!out || i != t.size()) return std::nullopt;
+    if (std::isnan(out->second)) {
+        if (out->first != 0) return std::nullopt;  // a plain number is no length, but 0 is
+        out->second = 0;
+    }
+    return out;
+}
+
+const std::set<std::string>& length_properties() {
+    static const std::set<std::string> names = {"width", "height", "top", "left", "right", "bottom", "margin-top", "margin-left", "margin-right",
+                                                "margin-bottom", "max-height", "max-width", "min-height", "min-width", "letter-spacing"};
+    return names;
+}
+
+} // namespace
+
+std::optional<std::string> interpolate_property(const std::string& property, const std::string& a, const std::string& b, double t) {
+    if (property == "d") return blend_path(a, b, t);
+    if (property == "stroke-dasharray") {
+        if (css::iequals(css::trim(a), "none") && css::iequals(css::trim(b), "none")) return std::string("none");
+        return blend_dashes(a, b, t);
+    }
+    if (property == "stroke-dashoffset" || property == "stroke-width") return blend(svg_length(a), svg_length(b), t);
+    // A plain number scales with the font, a length does not: `line-height: 0` to `22px` is discrete.
+    if (property == "line-height" && unitless_number(a) != unitless_number(b)) return std::nullopt;
+    // CSS clamps them where they are used, and Chromium's computed value is clamped: an overshooting easing stops at 1.
+    if (property == "opacity" || property == "fill-opacity" || property == "stroke-opacity") {
+        auto v = blend(a, b, t);
+        if (auto n = v ? css::number(*v) : std::nullopt) return css::format_number(std::clamp(*n, 0.0, 1.0));
+        return v;
+    }
+    if (auto v = blend(a, b, t)) return v;
+    // A length and a percentage, or calc(): mixed as px + %, as Chromium does (0 to calc(50% - 10px) moves).
+    if (length_properties().count(property)) {
+        auto x = linear_length(a), y = linear_length(b);
+        if (!x || !y) return std::nullopt;
+        double px = x->first + (y->first - x->first) * t, pct = x->second + (y->second - x->second) * t;
+        if (pct == 0) return css::format_number(px) + "px";
+        if (px == 0) return css::format_number(pct) + "%";
+        return "calc(" + css::format_number(pct) + "% " + (px < 0 ? "- " : "+ ") + css::format_number(std::fabs(px)) + "px)";
+    }
+    return std::nullopt;
+}
+
+std::string interpolate(const std::string& property, const std::string& a, const std::string& b, double t) {
+    if (std::isfinite(t) && t != 0 && t != 1)
+        if (auto v = interpolate_property(property, a, b, t)) return *v;
+    const std::string& end = !std::isfinite(t) || t < 0.5 ? a : b;
+    if (property == "d") return path_value(end);
+    if (property == "stroke-dashoffset" || property == "stroke-width") return svg_length(end);
+    if (property == "stroke-dasharray") {
+        if (auto v = blend_dashes(end, end, 0)) return *v;
+    }
+    return end;
+}
+
+bool interpolable(const std::string& property, const std::string& a, const std::string& b) {
+    return interpolate_property(property, a, b, 0.5).has_value();
 }
 
 // ───────────────────────── Web Animations records ─────────────────────────
@@ -949,9 +1321,10 @@ const std::vector<std::string>& Animator::watched() {
         "animation", "animation-name", "animation-duration", "animation-timing-function", "animation-delay", "animation-iteration-count",
         "animation-direction", "animation-fill-mode", "animation-play-state", "transition", "transition-property", "transition-duration",
         "transition-timing-function", "transition-delay", "transform", "opacity", "color", "background-color", "background", "width", "height",
-        "top", "left", "right", "bottom", "box-shadow", "border-color", "max-height", "stroke-dashoffset", "fill", "stroke", "translate",
+        "top", "left", "right", "bottom", "box-shadow", "border-top-color", "border-right-color", "border-bottom-color", "border-left-color", "max-height", "stroke-dashoffset", "fill", "stroke", "translate",
         "scale", "rotate", "filter", "letter-spacing", "font-size", "margin-top", "margin-left", "flex-grow", "transform-origin",
-        "backdrop-filter",
+        "backdrop-filter", "stroke-dasharray", "stroke-width", "d", "line-height", "margin-right", "margin-bottom",
+        "background-position",
     };
     return names;
 }
@@ -994,12 +1367,25 @@ std::optional<std::string> Animator::transition_value(int64_t id, const std::str
     if (it == list->second.end()) return std::nullopt;
     const Transition& t = it->second;
     double elapsed = now - t.start - t.spec.delay;
-    if (elapsed <= 0) return t.from;
+    if (elapsed <= 0) return interpolate(property, t.from, t.to, 0);
     double progress = std::min(1.0, elapsed / t.spec.duration);
-    return interpolate(t.from, t.to, t.spec.timing.css(progress));
+    return interpolate(property, t.from, t.to, t.spec.timing.css(progress));
 }
 
-void Animator::update(const std::unordered_map<int64_t, Declared>& declarations, double now) {
+namespace {
+/// transition-property `listed` covers `property`: itself, all, or a shorthand of it (border-color and border its side
+/// colours, background its colour and position), as Chromium expands them.
+bool transition_covers(const std::string& listed, const std::string& property) {
+    if (listed == property || listed == "all") return true;
+    bool side_colour = css::starts_with(property, "border-") && css::ends_with(property, "-color");
+    if (side_colour && (listed == "border-color" || listed == "border" || listed == property.substr(0, property.size() - 6))) return true;
+    if ((property == "background-color" || property == "background-position") && listed == "background") return true;
+    return false;
+}
+} // namespace
+
+void Animator::update(const std::unordered_map<int64_t, Declared>& declarations, double now, const std::unordered_map<int64_t, Declared>* before,
+                      const std::function<bool(int64_t)>& displayed, const Inherited& inherited) {
     std::unordered_map<int64_t, std::vector<Running>> next_running;
     for (const auto& [id, values] : declarations) {
         auto specs = AnimationSpec::list(values);
@@ -1029,22 +1415,41 @@ void Animator::update(const std::unordered_map<int64_t, Declared>& declarations,
         auto transition_specs = TransitionSpec::list(values);
         bool known = bases_.count(id) != 0;
         Declared base = known ? bases_[id] : Declared{};
+        if (!known && before) {
+            // Not watched until now (it did not declare a transition): its values before this change, so that a
+            // transition declared together with a new value runs from the old one (its before-change style).
+            if (auto b = before->find(id); b != before->end()) {
+                known = true;
+                for (const auto& [property, value] : b->second)
+                    if (!css::starts_with(property, "animation") && !css::starts_with(property, "transition")) base[property] = value;
+            }
+        }
         for (const std::string& property : watched()) {
             if (css::starts_with(property, "animation") || css::starts_with(property, "transition")) continue;
             auto nv = values.find(property);
             const std::string* new_value = nv == values.end() ? nullptr : &nv->second;
             std::optional<std::string> old_value;
             if (auto ov = base.find(property); ov != base.end()) old_value = ov->second;
-            // A transition from unset starts at the property's initial value.
+            // A transition from unset starts at the property's initial value; an inherited colour at the one inherited.
             else if (known && new_value) {
                 if (const std::string* initial = initial_value(property)) old_value = *initial;
+                else if (property == "color" && inherited) old_value = inherited(id, property);
+            }
+            // A colour no longer declared is inherited again: its transition ends at the parent's colour (CSS
+            // Transitions compare computed values; 01-order-status's step text).
+            std::optional<std::string> inherited_new;
+            if (!new_value && old_value && property == "color" && inherited && !transition_specs.empty()) {
+                inherited_new = inherited(id, property);
+                if (inherited_new) new_value = &*inherited_new;
             }
             if (old_value && new_value && *old_value != *new_value) {
-                auto spec = std::find_if(transition_specs.rbegin(), transition_specs.rend(), [&](const TransitionSpec& s) { return s.property == property || s.property == "all"; });
-                if (spec == transition_specs.rend()) {
+                auto spec = std::find_if(transition_specs.rbegin(), transition_specs.rend(), [&](const TransitionSpec& s) { return transition_covers(s.property, property); });
+                std::string current = spec == transition_specs.rend() ? std::string() : transition_value(id, property, now).value_or(*old_value);
+                // Values that do not interpolate (a path of other commands, auto and a length) change at once; so
+                // does everything while the page is still loading (no before-change style yet).
+                if (spec == transition_specs.rend() || !transitions_allowed || !interpolable(property, current, *new_value)) {
                     if (auto t = transitions_.find(id); t != transitions_.end()) t->second.erase(property);
                 } else {
-                    std::string current = transition_value(id, property, now).value_or(*old_value);
                     // Its keyframes are its two ends.
                     paint::AnimationPaint heavy;
                     heavy.keyframe(0);
@@ -1064,7 +1469,10 @@ void Animator::update(const std::unordered_map<int64_t, Declared>& declarations,
     }
     for (auto it = bases_.begin(); it != bases_.end();) {
         if (!declarations.count(it->first)) {
-            transitions_.erase(it->first);
+            // An element that no longer declares a transition keeps those that run: transition-property's initial
+            // value, all, still matches them (CSS Transitions §3, as Chromium). One that left the document or the
+            // display loses them.
+            if (!displayed || !displayed(it->first)) transitions_.erase(it->first);
             it = bases_.erase(it);
         } else ++it;
     }
@@ -1072,7 +1480,7 @@ void Animator::update(const std::unordered_map<int64_t, Declared>& declarations,
     prune_overrides();
 }
 
-StyleValues Animator::values(const std::vector<Keyframe>& frames, const Declared& base, double progress, const AnimationSpec& spec) const {
+StyleValues Animator::values(int64_t id, const std::vector<Keyframe>& frames, const Declared& base, double progress, const AnimationSpec& spec) const {
     std::vector<std::string> properties;
     for (const auto& f : frames)
         for (const auto& [name, value] : f.declarations)
@@ -1088,10 +1496,11 @@ StyleValues Animator::values(const std::vector<Keyframe>& frames, const Declared
         static const std::optional<Timing> NONE;
         std::vector<Stop> stops;
         for (const auto& f : frames)
-            if (const std::string* v = last_value(f.declarations, property)) stops.push_back({f.offset, *v, &f.timing});
-        const std::string* own = nullptr;
-        if (auto b = base.find(property); b != base.end()) own = &b->second;
-        else own = initial_value(property);
+            if (const std::string* v = last_value(f.declarations, property)) stops.push_back({f.offset, with_vars(id, *v), &f.timing});
+        std::optional<std::string> own_value;
+        if (auto b = base.find(property); b != base.end()) own_value = with_vars(id, b->second);
+        else if (const std::string* initial = initial_value(property)) own_value = *initial;
+        const std::string* own = own_value ? &*own_value : nullptr;
         if (own && !stops.empty()) {
             if (stops.front().offset > 0) stops.insert(stops.begin(), Stop{0, *own, &frames.front().timing});
             if (stops.back().offset < 1) stops.push_back(Stop{1, *own, &NONE});
@@ -1105,7 +1514,7 @@ StyleValues Animator::values(const std::vector<Keyframe>& frames, const Declared
                 double span = std::max(b.offset - a.offset, 0.000001);
                 double local = (progress - a.offset) / span;
                 const Timing& timing = a.timing->has_value() ? **a.timing : spec_timing;
-                result.emplace_back(property, interpolate(a.value, b.value, timing.css(local)));
+                result.emplace_back(property, interpolate(property, a.value, b.value, timing.css(local)));
                 break;
             }
         }
@@ -1124,16 +1533,27 @@ std::optional<StyleValues> Animator::sample_animation(int64_t id, Running& item,
     }
     static const Declared EMPTY;
     auto b = bases_.find(id);
-    const Declared& base = b == bases_.end() ? EMPTY : b->second;
+    const Declared* declared = b == bases_.end() ? &EMPTY : &b->second;
+    // What the element has without the animation where it declares nothing (an inherited colour): a keyframe that
+    // leaves the property out starts or ends there.
+    Declared merged;
+    if (auto u = underlying.find(id); u != underlying.end() && !u->second.empty()) {
+        merged = *declared;
+        for (const auto& [property, value] : u->second) merged.emplace(property, value);
+        declared = &merged;
+    }
+    const Declared& base = *declared;
     auto reversed = [&](int iteration) {
         if (spec.direction == "reverse") return true;
         if (spec.direction == "alternate") return iteration % 2 == 1;
         if (spec.direction == "alternate-reverse") return iteration % 2 == 0;
         return false;
     };
+    // The held clock's seconds as doubles: an animation sampled at its own start is not still in its delay.
+    if (local < 0 && local > -1e-9) local = 0;
     if (local < 0) {
         if (spec.fill == "backwards" || spec.fill == "both")
-            return values(frames, base, css::starts_with(spec.direction, "reverse") || spec.direction == "alternate-reverse" ? 1 : 0, spec);
+            return values(id, frames, base, css::starts_with(spec.direction, "reverse") || spec.direction == "alternate-reverse" ? 1 : 0, spec);
         return std::nullopt;
     }
     double duration = std::max(spec.duration, 0.0001);
@@ -1148,7 +1568,7 @@ std::optional<StyleValues> Animator::sample_animation(int64_t id, Running& item,
             double fraction = std::fmod(spec.iterations, 1.0);
             double progress = fraction == 0 ? 1.0 : fraction;
             if (reversed(last_iteration)) progress = 1 - progress;
-            return values(frames, base, progress, spec);
+            return values(id, frames, base, progress, spec);
         }
         return std::nullopt;
     }
@@ -1159,7 +1579,7 @@ std::optional<StyleValues> Animator::sample_animation(int64_t id, Running& item,
     }
     double progress = (local - iteration * duration) / duration;
     if (reversed(iteration)) progress = 1 - progress;
-    return values(frames, base, progress, spec);
+    return values(id, frames, base, progress, spec);
 }
 
 StyleOverrides Animator::sample(double now) {
@@ -1191,7 +1611,7 @@ StyleOverrides Animator::sample(double now) {
                 continue;
             }
             double progress = std::max(0.0, elapsed) / transition.spec.duration;
-            merge(out[id], property, elapsed <= 0 ? transition.from : interpolate(transition.from, transition.to, transition.spec.timing.css(progress)));
+            merge(out[id], property, interpolate(property, transition.from, transition.to, elapsed <= 0 ? 0.0 : transition.spec.timing.css(progress)));
             ++t;
         }
         it = list.empty() ? transitions_.erase(it) : std::next(it);
@@ -1275,6 +1695,36 @@ std::vector<int64_t> Animator::animated_ids(double now) const {
     return out;
 }
 
+std::vector<int64_t> Animator::sampled_ids(double now) const {
+    std::vector<int64_t> out = animated_ids(now);
+    for (const auto& [id, list] : running_)
+        for (const Running& r : list)
+            if (r.ended && keyframes_.count(r.spec.name) && (r.spec.fill == "forwards" || r.spec.fill == "both")) {
+                out.push_back(id);
+                break;
+            }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+std::vector<std::pair<int64_t, std::string>> Animator::undeclared(const std::vector<std::string>& properties) const {
+    std::vector<std::pair<int64_t, std::string>> out;
+    for (const auto& [id, list] : running_) {
+        auto b = bases_.find(id);
+        for (const std::string& property : properties) {
+            if (b != bases_.end() && b->second.count(property)) continue;
+            bool animated = false;
+            for (const Running& r : list)
+                if (auto frames = keyframes_.find(r.spec.name); frames != keyframes_.end())
+                    for (const Keyframe& f : frames->second)
+                        animated = animated || last_value(f.declarations, property) != nullptr;
+            if (animated) out.emplace_back(id, property);
+        }
+    }
+    return out;
+}
+
 std::vector<std::string> Animator::animated_properties(int64_t id) const {
     std::vector<std::string> out;
     auto add = [&](const std::string& p) {
@@ -1313,7 +1763,7 @@ StyleValues Animator::peek(int64_t id, double t) const {
             // An ended transition leaves the declared value, which the element already has.
             if (elapsed >= transition.spec.duration) continue;
             double progress = std::max(0.0, elapsed) / transition.spec.duration;
-            merge(out[id], property, elapsed <= 0 ? transition.from : interpolate(transition.from, transition.to, transition.spec.timing.css(progress)));
+            merge(out[id], property, interpolate(property, transition.from, transition.to, elapsed <= 0 ? 0.0 : transition.spec.timing.css(progress)));
         }
     }
     if (!web_.empty()) sample_web(out, t, id);

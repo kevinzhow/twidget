@@ -126,6 +126,9 @@ struct Command {
     float x = 0, y = 0;
     int image = 0;
     int canvas = 0;  // Image: a canvas bitmap (Backend::canvas_run) instead of a decoded image
+    // Image: 1 repeated across, 2 down (both 3): `rect` is one tile, repeated over the clip from there, seamlessly (a
+    // painter's image shader). Only from a renderer with Renderer::set_image_tiling; others get one command a tile.
+    uint8_t repeat = 0;
     float ax = 0, ay = 0, bx = 0, by = 0;
     std::vector<Stop> stops;
     std::shared_ptr<const Path> path;

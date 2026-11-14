@@ -11,6 +11,7 @@
 #ifdef TW_LITEHTML_TWIDGET
 #include <litehtml/css_effects.h>
 #include <litehtml/el_break.h>
+#include <litehtml/el_comment.h>
 #include <litehtml/el_svg.h>
 #include <litehtml/el_text.h>
 #include <litehtml/render_inline.h>
@@ -18,10 +19,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string_view>
@@ -50,6 +53,81 @@ const char* const PROFILE_EVENTS[] = {
     "mousedown", "mouseup", "mousemove", "mouseenter", "mouseleave", "mouseover", "mouseout",
     "load", "error", "toggle", "animationstart", "animationend", "animationiteration", "transitionend",
 };
+/// ::before and ::after have no node of their own: the animator knows them by these ids, negative so they
+/// never meet a widget's. Owner 12's ::before is -24, its ::after -25.
+constexpr int64_t pseudo_id(int64_t owner, bool after) { return -(owner * 2 + (after ? 1 : 0)); }
+constexpr int64_t pseudo_owner(int64_t id) { return id < 0 ? -id / 2 : id; }
+constexpr bool pseudo_after(int64_t id) { return id < 0 && (-id) % 2 == 1; }
+
+/// The layer of an element's box-shadow pulse (update_composition) has an id of its own: the element's
+/// with this bit, under the element's own layer.
+constexpr int64_t RING_BIT = int64_t(1) << 50;
+
+/// One outer box-shadow as `x y blur spread colour` in px (what the animator samples), or nothing.
+struct Shadow1 {
+    float x = 0, y = 0, blur = 0, spread = 0;
+    Color color;
+};
+std::optional<Shadow1> parse_shadow(std::string_view text) {
+    std::vector<std::string> parts;
+    int depth = 0;
+    std::string cur;
+    for (char c : text) {
+        if (c == '(') depth++;
+        if (c == ')') depth--;
+        if (c == ',' && depth == 0) return std::nullopt;  // more than one shadow
+        if (std::isspace((unsigned char)c) && depth == 0) {
+            if (!cur.empty()) parts.push_back(std::move(cur));
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty()) parts.push_back(std::move(cur));
+    Shadow1 out;
+    std::vector<float> lengths;
+    bool colour = false;
+    for (const std::string& part : parts) {
+        std::string_view v = part;
+        if (css::ends_with(v, "px")) v.remove_suffix(2);
+        if (auto n = css::number(v)) {
+            lengths.push_back(float(*n));
+        } else if (!colour && css::parse_color(part, out.color)) {
+            colour = true;
+        } else {
+            return std::nullopt;  // inset, other units
+        }
+    }
+    if (lengths.size() < 2 || lengths.size() > 4 || !colour) return std::nullopt;
+    out.x = lengths[0];
+    out.y = lengths[1];
+    out.blur = lengths.size() > 2 ? lengths[2] : 0;
+    out.spread = lengths.size() > 3 ? lengths[3] : 0;
+    return out;
+}
+
+/// A font's metrics as Chromium lays lines out with them (SimpleFontData::PlatformInit and
+/// FontMetrics::AscentDescentWithHacks): the ascent and the descent rounded to whole device pixels; with subpixel
+/// text positioning, which Chromium uses on Linux and Android above a device scale of 1, a descent rounded down takes
+/// a pixel from the ascent (so descenders are not cut); the line spacing (line-height: normal) is the rounded ascent
+/// and descent plus the rounded line gap. With the half-leadings floored to a device pixel (litehtml's line_box) and
+/// each text line's top on a device pixel (el_text) this puts text where Chromium paints it. Before, text with a
+/// line-height under ascent + descent sat up to 1 px lower than in Chromium (the recipe card's − and + in 30 px
+/// circles: 18 px Roboto at line-height 1, 1.03 px at a DPR of 3).
+FontMetrics line_metrics(FontMetrics m, float dpr) {
+    const float k = dpr > 0 ? dpr : 1;
+    const float gap = std::max(0.0f, m.height - m.ascent - m.descent);
+    float ascent = std::round(m.ascent * k), descent = std::round(m.descent * k);
+    if (k > 1 && descent < m.descent * k && ascent >= 1) {
+        ascent -= 1;
+        descent += 1;
+    }
+    m.ascent = ascent / k;
+    m.descent = descent / k;
+    m.height = (ascent + descent + std::round(gap * k)) / k;
+    return m;
+}
+
 /// A script's focus() takes the keyboard only this soon after the user's input (as Swift's scriptFocusWindow).
 constexpr double SCRIPT_FOCUS_S = 1;
 
@@ -304,8 +382,63 @@ Rect transformed_box(const litehtml::element::ptr& el, Rect r) {
 #endif
 }
 
+/// The border box a script sees (getBoundingClientRect, offsetWidth, ...): border_box_of, except that a cell of a
+/// border-collapse table owns half of each collapsed border, as in CSS 2 §17.6.2 and Chromium. litehtml lays such
+/// cells out with their whole borders overlapping their neighbours' (the same grid, each cell 1 border wider).
+namespace {
+/// The collapsed-border cells of the table `cell` is in, every row group's rows in order.
+void table_cells(const litehtml::element::ptr& cell, std::vector<litehtml::element::ptr>& out) {
+    auto row = cell->parent();
+    auto group = row ? row->parent() : nullptr;
+    auto table = group && group->css().get_display() != litehtml::display_table ? group->parent() : group;
+    if (!table) return;
+    std::function<void(const litehtml::element::ptr&)> walk = [&](const litehtml::element::ptr& e) {
+        for (const auto& c : e->children()) {
+            if (c->css().get_display() == litehtml::display_table_cell) out.push_back(c);
+            else if (c->css().get_display() != litehtml::display_table) walk(c);
+        }
+    };
+    walk(table);
+}
+} // namespace
+
+Rect script_box_of(const litehtml::element::ptr& el) {
+    Rect r = border_box_of(el);
+    auto ri = el->get_render_item();
+    if (ri && el->css().get_display() == litehtml::display_table_cell && el->css().get_border_collapse() == litehtml::border_collapse_collapse) {
+        const auto& bd = ri->get_borders();
+        float left = float(bd.left), top = float(bd.top), right = float(bd.right), bottom = float(bd.bottom);
+        // CSS 2 §17.6.2: each cell's box takes half of each shared border. litehtml overlaps the cells by their own
+        // borders; where a side has none of its own, the neighbour's (a row above with only a border-bottom) lies
+        // outside the box, and half of it belongs to this cell.
+        float out_l = 0, out_t = 0, out_r = 0, out_b = 0;
+        if (left == 0 || top == 0 || right == 0 || bottom == 0) {
+            std::vector<litehtml::element::ptr> cells;
+            table_cells(el, cells);
+            const float eps = 0.75f;
+            for (const auto& c : cells) {
+                if (c == el) continue;
+                auto cri = c->get_render_item();
+                if (!cri) continue;
+                Rect o = border_box_of(c);
+                const auto& ob = cri->get_borders();
+                bool rows = o.x < r.x + r.w - eps && o.x + o.w > r.x + eps, cols = o.y < r.y + r.h - eps && o.y + o.h > r.y + eps;
+                if (top == 0 && rows && std::fabs(o.y + o.h - r.y) < eps) out_t = std::max(out_t, float(ob.bottom));
+                if (bottom == 0 && rows && std::fabs(r.y + r.h - o.y) < eps) out_b = std::max(out_b, float(ob.top));
+                if (left == 0 && cols && std::fabs(o.x + o.w - r.x) < eps) out_l = std::max(out_l, float(ob.right));
+                if (right == 0 && cols && std::fabs(r.x + r.w - o.x) < eps) out_r = std::max(out_r, float(ob.left));
+            }
+        }
+        r.x += left / 2 - out_l / 2;
+        r.y += top / 2 - out_t / 2;
+        r.w -= (left + right) / 2 - (out_l + out_r) / 2;
+        r.h -= (top + bottom) / 2 - (out_t + out_b) / 2;
+    }
+    return r;
+}
+
 Rect visual_box_of(const litehtml::element::ptr& el) {
-    return transformed_box(el, border_box_of(el));
+    return transformed_box(el, script_box_of(el));
 }
 
 #ifdef TW_LITEHTML_TWIDGET
@@ -375,6 +508,26 @@ Radii radii_of(const litehtml::border_radiuses& r) {
                  float(r.bottom_right_x), float(r.bottom_right_y), float(r.bottom_left_x), float(r.bottom_left_y)};
 }
 
+/// The radii of a background layer's clip (CSS Backgrounds 3 §5.3): a layer clipped to the padding or content box
+/// follows that box's corner curves, the border radii less the widths between the border box and the clip box. Before,
+/// such a layer took the outer radii, so a padding-box fill over a border-box gradient (a gradient border) covered the
+/// gradient at the corners.
+Radii layer_radii(const litehtml::background_layer& layer) {
+    Radii r = radii_of(layer.border_radius);
+    Rect b = rect_of(layer.border_box), c = rect_of(layer.clip_box);
+    float left = c.x - b.x, top = c.y - b.y, right = (b.x + b.w) - (c.x + c.w), bottom = (b.y + b.h) - (c.y + c.h);
+    if (left <= 0 && top <= 0 && right <= 0 && bottom <= 0) return r;
+    auto less = [](float v, float by) { return std::max(0.0f, v - std::max(0.0f, by)); };
+    return Radii{less(r.tlx, left), less(r.tly, top), less(r.trx, right), less(r.try_, top),
+                 less(r.brx, right), less(r.bry, bottom), less(r.blx, left), less(r.bly, bottom)};
+}
+
+/// The shape a background layer fills: its border box, or its clip box when that is smaller (with layer_radii).
+Rect layer_shape(const litehtml::background_layer& layer) {
+    Rect b = rect_of(layer.border_box), c = rect_of(layer.clip_box);
+    return c.x > b.x || c.y > b.y || c.x + c.w < b.x + b.w || c.y + c.h < b.y + b.h ? c : b;
+}
+
 Json rect_json(const Rect& r) {
     Json o = Json::object();
     o.set("x", r.x).set("y", r.y).set("width", r.w).set("height", r.h);
@@ -382,8 +535,12 @@ Json rect_json(const Rect& r) {
     return o;
 }
 
+std::atomic<double> g_test_clock{std::numeric_limits<double>::quiet_NaN()};  // seconds, NaN = steady clock
+
 double now_ms() {
     using namespace std::chrono;
+    double held = g_test_clock.load(std::memory_order_relaxed);
+    if (!std::isnan(held)) return held * 1000;
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
 }
 
@@ -455,10 +612,17 @@ std::optional<float> shimmer_x(const std::string& value, const Rect& area, const
     return area.x + *x;
 }
 
+/// An element of an SVG drawing below its outermost <svg> (which is a box of the HTML layout).
+template <class N> bool svg_inside(const N* n) { return n->svg && n->parent && n->parent->svg; }
+
 /// What a compositor layer animates; an element animating anything else is painted per frame.
 bool is_layer_property(const std::string& property) {
     return property == "transform" || property == "opacity" || property == "translate" || property == "rotate" || property == "scale";
 }
+
+/// left and top move an absolutely positioned box without changing it or anything around it: a layer
+/// plays them as a translation (Container::offset_frame says when).
+bool is_offset_property(const std::string& property) { return property == "left" || property == "top"; }
 
 /// The `style` attribute is the inline style itself, as in the DOM: setting it replaces what the
 /// style ops set, and a style op that removes a property removes it from what the attribute set.
@@ -477,7 +641,7 @@ constexpr int MAX_CANVASES = 64;
 /// than this (a frame or two is cheaper to paint than to hand over).
 constexpr size_t MAX_LAYERS = 256;
 /// Static elements painted over a wanted layer that may become layers of their own to let it be one.
-constexpr size_t MAX_OBSCURERS = 3;
+constexpr size_t MAX_OBSCURERS = 8;
 constexpr double MAX_LAYER_PIXELS = 4096.0 * 4096.0;
 constexpr double MIN_LAYER_SPAN = 0.1;
 /// An element moved by style ops in three batches running becomes a scripted layer: batches at most
@@ -781,6 +945,46 @@ public:
     }
     double height() const { return doc_ ? double(doc_->height()) : 0.0; }
 #ifdef TW_LITEHTML_TWIDGET
+    /// The widget id of an element, or of the ::before / ::after of one; 0 for none.
+    static int64_t widget_id(const std::shared_ptr<litehtml::html_tag>& tag) {
+        const char* a = tag->get_attr("data-twid");
+        if (a) return std::strtoll(a, nullptr, 10);
+        bool pseudo = (tag->tag() == litehtml::__tag_before_ || tag->tag() == litehtml::__tag_after_) && tag->parent();
+        const char* owner = pseudo ? tag->parent()->get_attr("data-twid") : nullptr;
+        return owner ? pseudo_id(std::strtoll(owner, nullptr, 10), tag->tag() == litehtml::__tag_after_) : 0;
+    }
+    /// What `tag` declares for `names` after the cascade. `inherit` is the parent's declaration (an
+    /// `animation-delay: inherit` waits as long as its parent's); an SVG shape's presentation attribute (d,
+    /// stroke-dashoffset, ...) is its value where no style sets one, as it is in a browser's cascade.
+    static Declared declared_values(const std::shared_ptr<litehtml::html_tag>& tag, const std::vector<std::string>& names) {
+        static const std::set<std::string> presentation = {"d", "stroke-dasharray", "stroke-dashoffset", "stroke-width", "fill", "stroke"};
+        Declared found;
+        for (const std::string& name : names) {
+            litehtml::string_id id = raw_id(name);
+            std::string raw = tag->raw_declaration_of(id);
+            for (auto up = tag; css::iequals(raw, "inherit") && up;) {
+                up = std::dynamic_pointer_cast<litehtml::html_tag>(up->parent());
+                raw = up ? up->raw_declaration_of(id) : std::string();
+            }
+            if (raw.empty() && presentation.count(name))
+                if (const char* attr = tag->get_attr(name.c_str()); attr && *attr && Container::svg_inside_drawing(tag)) raw = attr;
+            if (!raw.empty()) found.emplace(name, std::move(raw));
+        }
+        return found;
+    }
+    /// The raw declaration id of a property, looked up once (a lookup of a name takes the string table's lock).
+    static litehtml::string_id raw_id(const std::string& name) {
+        thread_local std::unordered_map<std::string, litehtml::string_id> ids;
+        auto it = ids.find(name);
+        if (it == ids.end()) it = ids.emplace(name, litehtml::raw_declaration_id(litehtml::_id(name))).first;
+        return it->second;
+    }
+    /// An element of an SVG drawing below its <svg>.
+    static bool svg_inside_drawing(const std::shared_ptr<litehtml::html_tag>& tag) {
+        for (auto p = tag->parent(); p; p = p->parent())
+            if (std::dynamic_pointer_cast<litehtml::el_svg>(p)) return true;
+        return false;
+    }
     /// The declared values of `names` on every displayed element with a widget id that declares
     /// one of `gates`, or whose id is in `always`. What the fork records as raw declarations.
     /// `generation` tells one answer from another: the same number, the same declarations.
@@ -802,17 +1006,12 @@ public:
         std::function<void(const litehtml::element::ptr&)> visit = [&](const litehtml::element::ptr& el) {
             if (el->css().get_display() == litehtml::display_none) return;
             if (auto tag = std::dynamic_pointer_cast<litehtml::html_tag>(el)) {
-                if (const char* a = tag->get_attr("data-twid")) {
-                    int64_t id = std::strtoll(a, nullptr, 10);
+                if (int64_t id = widget_id(tag)) {
                     bool listed = std::find(always.begin(), always.end(), id) != always.end();
                     bool open = listed;
-                    for (size_t i = 0; !open && i < gates.size(); i++) open = !tag->raw_declaration(gates[i]).empty();
+                    for (size_t i = 0; !open && i < gates.size(); i++) open = !tag->raw_declaration_of(raw_id(gates[i])).empty();
                     if (open) {
-                        Declared found;
-                        for (const std::string& name : names) {
-                            std::string raw = tag->raw_declaration(name);
-                            if (!raw.empty()) found.emplace(name, std::move(raw));
-                        }
+                        Declared found = declared_values(tag, names);
                         if (!found.empty() || listed) out[id] = std::move(found);
                     }
                 }
@@ -824,6 +1023,77 @@ public:
         if (scans_.size() > 4) scans_.pop_back();
         if (generation) *generation = scans_.front().generation;
         return scans_.front().result;
+    }
+    /// The values of `names` of every displayed element with a widget id, as the document has them now (none under
+    /// display: none, as `declarations` reads none there); with `roots`, only those elements and their descendants.
+    /// Taken before a change, they are what an element had before it (its before-change style, CSS Transitions §3).
+    std::unordered_map<int64_t, Declared> snapshot(const std::vector<std::string>& names, const std::vector<int64_t>& alone,
+                                                   const std::vector<int64_t>& subtrees, const std::function<bool(int64_t)>& skip) const {
+        std::unordered_map<int64_t, Declared> out;
+        if (!doc_ || !doc_->root()) return out;
+        auto shown = [](litehtml::element::ptr el) {
+            for (auto p = el; p; p = p->parent())
+                if (p->css().get_display() == litehtml::display_none) return false;
+            return el != nullptr;
+        };
+        auto read = [&](const litehtml::element::ptr& el) {
+            if (auto tag = std::dynamic_pointer_cast<litehtml::html_tag>(el))
+                if (int64_t id = widget_id(tag); id && !out.count(id) && !skip(id)) {
+                    Declared found = declared_values(tag, names);
+                    if (!found.empty()) out[id] = std::move(found);
+                }
+        };
+        std::function<void(const litehtml::element::ptr&)> visit = [&](const litehtml::element::ptr& el) {
+            if (el->css().get_display() == litehtml::display_none) return;
+            read(el);
+            for (const auto& child : el->children()) visit(child);
+        };
+        for (int64_t id : alone)
+            if (auto el = element(id); shown(el)) read(el);
+        for (int64_t id : subtrees)
+            if (auto el = element(id); shown(el)) visit(el);
+        return out;
+    }
+    /// `value` with each var(--name) replaced by element `id`'s custom property (or the fallback after the comma), as the
+    /// cascade substitutes them: for diagnostics, so an exported animated value reads as numbers.
+    std::string resolve_vars(int64_t id, const std::string& value) const {
+        if (value.find("var(") == std::string::npos) return value;
+        auto tag = std::dynamic_pointer_cast<litehtml::html_tag>(element(id));
+        if (!tag) return value;
+        std::string out;
+        size_t pos = 0;
+        for (size_t at; (at = value.find("var(", pos)) != std::string::npos;) {
+            size_t close = at + 4;
+            for (int depth = 1; close < value.size(); close++) {
+                if (value[close] == '(') depth++;
+                else if (value[close] == ')' && --depth == 0) break;
+            }
+            if (close >= value.size()) break;
+            std::string inner = value.substr(at + 4, close - at - 4);
+            size_t comma = inner.find(',');
+            std::string name = css::trim(inner.substr(0, comma));
+            litehtml::css_token_vector tokens;
+            std::string replacement = comma == std::string::npos ? std::string() : css::trim(inner.substr(comma + 1));
+            if (tag->get_custom_property(litehtml::_id(name), tokens) && !tokens.empty()) replacement = css::trim(litehtml::get_repr(tokens, 0, -1, true));
+            out += value.substr(pos, at - pos) + replacement;
+            pos = close + 1;
+        }
+        return out + value.substr(pos);
+    }
+    /// The colour element `id` inherits (its parent's computed colour), as `rgba(r, g, b, a)`.
+    std::optional<std::string> parent_color(int64_t id) const {
+        auto el = id > 0 ? element(id) : nullptr;
+        auto parent = el ? el->parent() : nullptr;
+        if (!parent) return std::nullopt;
+        litehtml::web_color c = parent->css().get_color();
+        return "rgba(" + std::to_string(c.red) + ", " + std::to_string(c.green) + ", " + std::to_string(c.blue) + ", " + css::format_number(c.alpha / 255.0) + ")";
+    }
+    /// Element `id` is in the document and displayed (no display: none on it or above it).
+    bool displayed(int64_t id) const {
+        auto el = id > 0 ? element(id) : nullptr;
+        for (auto p = el; p; p = p->parent())
+            if (p->css().get_display() == litehtml::display_none) return false;
+        return el != nullptr;
     }
     /// Where and in what font element `id` shows its text, for a platform's editor.
     bool editor_style(int64_t id, Renderer::EditorSpec& spec) {
@@ -943,6 +1213,13 @@ public:
         return true;
     }
 
+    /// Paint values (transform, opacity, background colour) of a ::before / ::after box in place: no restyle,
+    /// no layout. False when the box is gone or the values are others (the caller builds).
+    bool patch_generated(int64_t id, const std::string& declarations) {
+        auto el = doc_ ? element(id) : nullptr;
+        return el && doc_->patch_generated_style(el, declarations);
+    }
+
     // compositor layers
 
     /// Counts layouts: boxes, and so what can cover a layer, change only with one.
@@ -952,13 +1229,101 @@ public:
     /// `movers` are ancestors that may be paint groups: layers this one would move with.
     bool layer_candidate(const litehtml::element::ptr& el, Rect& box, const std::unordered_set<const litehtml::element*>* movers = nullptr) const {
         auto ri = el->get_render_item();
-        if (!doc_ || !ri || !ri->is_visible() || (el->is_inline() && !el->is_inline_box())) return false;
+        if (!doc_ || !ri || !ri->is_visible() || (el->is_inline() && !el->is_inline_box() && !out_of_flow(el))) return false;
         const auto& css = el->css();
-        if (!css.get_filter().empty() || !css.get_backdrop_filter().empty()) return false;
+        // An own filter is painted into the layer's content (draw_layer); a backdrop needs what is under it.
+        if (!css.get_backdrop_filter().empty()) return false;
         for (auto p = ri->parent(); p; p = p->parent())
             if (p->src_el()->css().is_paint_group() && !(movers && movers->count(p->src_el().get()))) return false;
         box = border_box_of(el);
         return box.w > 0 && box.h > 0 && box.w * box.h < 2'000'000;
+    }
+    /// Whether animating `left` / `top` only moves `el`: an absolutely positioned box whose right (bottom)
+    /// is auto, so its size stays, out of the flow, so nothing else moves. `w` and `h` get the size of its
+    /// containing block's padding box, what percentages there are of.
+    bool offset_frame(const litehtml::element::ptr& el, bool left, bool top, float& w, float& h) const {
+        const auto& css = el->css();
+        if (css.get_position() != litehtml::element_position_absolute) return false;
+        const auto& off = css.get_offsets();
+        if ((left && !off.right.is_predefined()) || (top && !off.bottom.is_predefined())) return false;
+        for (auto p = el->parent(); p; p = p->parent()) {
+            if (p->css().get_position() == litehtml::element_position_static && !p->is_root()) continue;
+            auto ri = p->get_render_item();
+            if (!ri) return false;
+            Rect b = border_box_of(p);
+            const auto& bd = ri->get_borders();
+            w = b.w - float(bd.left) - float(bd.right);
+            h = b.h - float(bd.top) - float(bd.bottom);
+            return w >= 0 && h >= 0;
+        }
+        return false;
+    }
+    /// Whether animating `el`'s height (or width) only stretches it about a fixed edge: a cross-axis
+    /// height in a row flex container of a px height (the edge align-self / align-items says), or the
+    /// size of an absolute box from its top (left) when its bottom (right) is auto. `anchor` gets where the
+    /// fixed edge is (0 the top or left, .5 the centre, 1 the bottom or right), `ref` what percentages are of.
+    bool size_frame(const litehtml::element::ptr& el, bool height, float& anchor, float& ref) const {
+        const auto& css = el->css();
+        auto parent = el->parent();
+        if (!parent || !parent->get_render_item()) return false;
+        if (css.get_position() == litehtml::element_position_absolute) {
+            const auto& off = css.get_offsets();
+            if (!(height ? off.bottom : off.right).is_predefined()) return false;
+            float w, h;
+            if (!offset_frame(el, false, false, w, h)) return false;
+            anchor = 0;
+            ref = height ? h : w;
+            return true;
+        }
+        const auto& pc = parent->css();
+        bool row = pc.get_display() == litehtml::display_flex || pc.get_display() == litehtml::display_inline_flex;
+        row = row && (pc.get_flex_direction() == litehtml::flex_direction_row || pc.get_flex_direction() == litehtml::flex_direction_row_reverse);
+        if (!height || !row || css.get_position() != litehtml::element_position_static) return false;
+        // The container's height must not follow its items'.
+        const litehtml::css_length& ph = pc.get_height();
+        if (ph.is_predefined() || ph.units() != litehtml::css_units_px) return false;
+        auto align = css.get_flex_align_self();
+        if (align == litehtml::flex_align_items_auto) align = pc.get_flex_align_items();
+        switch (int(align) & 0xff) {
+        case litehtml::flex_align_items_flex_end: case litehtml::flex_align_items_end: anchor = 1; break;
+        case litehtml::flex_align_items_center: anchor = 0.5f; break;
+        case litehtml::flex_align_items_flex_start: case litehtml::flex_align_items_start: case litehtml::flex_align_items_normal:
+        case litehtml::flex_align_items_stretch: anchor = 0; break;
+        default: return false;
+        }
+        ref = float(parent->get_placement().height);
+        return ref > 0;
+    }
+    /// A box that paints only a fill of its own (colour or gradient, corners of at most 2 px, no border,
+    /// shadow, text or children): stretched, it looks as laid out at the new size, within a pixel.
+    bool plain_fill(const litehtml::element::ptr& el) {
+        if (!el->children().empty()) return false;
+        Rect bounds;
+        DisplayList list = draw_layer(el, {}, bounds);
+        if (list.empty()) return false;
+        for (const Command& c : list) {
+            if (c.kind != Cmd::FillRect && c.kind != Cmd::Linear) return false;
+            const Radii& q = c.radii;
+            if (std::max({q.tlx, q.tly, q.trx, q.try_, q.brx, q.bry, q.blx, q.bly}) > 2) return false;
+        }
+        return true;
+    }
+    /// Absolutely positioned: a box of its own whatever its display says (CSS blockifies it; litehtml keeps
+    /// a ::before's display inline).
+    static bool out_of_flow(const litehtml::element::ptr& el) {
+        auto p = el->css().get_position();
+        return p == litehtml::element_position_absolute || p == litehtml::element_position_fixed;
+    }
+    /// Why layer_candidate refuses `el` (composition_debug).
+    std::string candidate_why(const litehtml::element::ptr& el, const std::unordered_set<const litehtml::element*>* movers = nullptr) const {
+        auto ri = el->get_render_item();
+        if (!doc_ || !ri) return "not rendered";
+        if (!ri->is_visible()) return "not visible";
+        if (el->is_inline() && !el->is_inline_box() && !out_of_flow(el)) return "inline box";
+        if (!el->css().get_backdrop_filter().empty()) return "has a backdrop-filter";
+        for (auto p = ri->parent(); p; p = p->parent())
+            if (p->src_el()->css().is_paint_group() && !(movers && movers->count(p->src_el().get()))) return "inside a paint group";
+        return "size";
     }
     /// The ancestor that clips `el`, if one does: the innermost one's padding box and inner radii. A
     /// layer carries one clip, so false when an outer one could cut what the inner one lets through.
@@ -1076,8 +1441,16 @@ public:
             for (const litehtml::render_item* walk = trace[i]; walk && !skip; walk = walk->parent().get())
                 skip = walk == ri.get() || ignore.count(walk->src_el().get());
             if (skip) continue;
+            // A ::before or ::after counts as itself (its pseudo id), so it can become a still layer of its own.
+            const auto& src = trace[i]->src_el();
+            int64_t id = 0;
+            if ((src->tag() == litehtml::__tag_before_ || src->tag() == litehtml::__tag_after_) && src->parent() && src->parent()->get_attr("data-twid"))
+                id = pseudo_id(std::strtoll(src->parent()->get_attr("data-twid"), nullptr, 10), src->tag() == litehtml::__tag_after_);
+            else
+                id = widget_id(src, nullptr);
+            // A canvas nothing drew on yet (a confetti overlay waiting for a tap) shows nothing.
+            if (id && trace[i]->src_el()->tag() == litehtml::_canvas_ && !r_.canvas_draws_.count(int(id))) continue;
             if (!ids) return 1;
-            int64_t id = widget_id(trace[i]->src_el(), nullptr);
             if (!id) return -1;
             if (std::find(ids->begin(), ids->end(), id) != ids->end()) continue;
             if (ids->size() == limit) return -1;
@@ -1121,7 +1494,7 @@ public:
         if (!bg->get_layer(0, box, el.get(), ri, layer)) return false;
         tile = rect_of(layer.origin_box);
         clip = rect_of(layer.clip_box);
-        radii = radii_of(layer.border_radius);
+        radii = layer_radii(layer);
         litehtml::position padding = box;
         padding += ri->get_paddings();
         area = rect_of(padding);
@@ -1138,10 +1511,67 @@ public:
         content = std::move(list_);
         return !content.empty();
     }
+    /// The outermost <svg> an element of an SVG drawing is in, or null for an HTML element.
+    static std::shared_ptr<litehtml::el_svg> svg_root_of(const litehtml::element::ptr& el) {
+        for (auto p = el->parent(); p; p = p->parent())
+            if (auto svg = std::dynamic_pointer_cast<litehtml::el_svg>(p)) {
+                for (auto up = svg->parent(); up; up = up->parent())
+                    if (auto outer = std::dynamic_pointer_cast<litehtml::el_svg>(up)) svg = outer;
+                return svg;
+            }
+        return nullptr;
+    }
+    /// An element of an SVG drawing alone, as its <svg> would draw it, without its own transform and opacity.
+    DisplayList draw_svg_alone(const litehtml::element::ptr& el, const std::vector<litehtml::element::ptr>* skip = nullptr) {
+        list_.clear();
+        groups_.clear();
+        clips_.clear();
+        suspended_.clear();
+        auto root = svg_root_of(el);
+        auto ri = root ? root->get_render_item() : nullptr;
+        if (!doc_ || !ri || !ri->is_visible()) return {};
+        if (skip)
+            for (const auto& other : *skip)
+                if (other != el) doc_->skip_paint.insert(other.get());
+        doc_->svg_only = el.get();
+        litehtml::position pos = ri->get_placement();
+        root->paint_shapes(0, pos);
+        doc_->svg_only = nullptr;
+        doc_->skip_paint.clear();
+        return std::move(list_);
+    }
+    /// Whether an element of an SVG drawing draws anything at all (an invisible stroke, a zero opacity draw nothing).
+    bool svg_draws_something(const litehtml::element::ptr& el) {
+        DisplayList list = draw_svg_alone(el);
+        for (const Command& c : list) {
+            switch (c.kind) {
+            case Cmd::ClipPush: case Cmd::ClipPop: case Cmd::GroupPush: case Cmd::GroupPop: case Cmd::FilterPush: case Cmd::FilterPop: break;
+            case Cmd::Path: {
+                if (!c.path) break;
+                // One straight segment (a <line>) has no area to fill.
+                bool segment = c.path->points.size() <= 4 &&
+                               std::all_of(c.path->ops.begin(), c.path->ops.end(), [](Path::Op op) { return op == Path::Move || op == Path::Line; });
+                if ((c.path->fill && !segment && (c.path->fill_color.a > 0 || c.path->gradient)) || (c.path->stroke && (c.path->stroke_color.a > 0 || c.path->stroke_gradient)))
+                    return true;
+                break;
+            }
+            default:
+                if (c.kind != Cmd::FillRect || c.color.a > 0) return true;
+            }
+        }
+        return false;
+    }
     /// `el` and its descendants alone, without `el`'s own transform, opacity and stacking group
     /// (the layer applies them) and without the other layers in `skip`. `bounds` gets the area the
     /// paint can reach.
     DisplayList draw_layer(const litehtml::element::ptr& el, const std::vector<litehtml::element::ptr>& skip, Rect& bounds) {
+        if (auto root = svg_root_of(el)) {
+            // An element of an SVG drawing: within its <svg>'s box, which clips the layer (Promotion::clip).
+            DisplayList list = draw_svg_alone(el, &skip);
+            Rect box = border_box_of(root);
+            bounds = Rect{std::floor(box.x - LAYER_MARGIN), std::floor(box.y - LAYER_MARGIN), std::ceil(box.w + 2 * LAYER_MARGIN), std::ceil(box.h + 2 * LAYER_MARGIN)};
+            return list;
+        }
         list_.clear();
         groups_.clear();
         clips_.clear();
@@ -1152,16 +1582,37 @@ public:
             if (other != el) doc_->skip_paint.insert(other.get());
         litehtml::position placement = ri->get_placement();
         litehtml::pixel_t x = placement.x - ri->pos().x, y = placement.y - ri->pos().y;
-        el->draw(0, x, y, nullptr, ri);
-        if (ri->is_visible()) draw_stacking_context(ri, x, y);
+        // The element's own filter stays in its content: CSS filters an element in its local space and
+        // transforms the result, which is what the layer's matrix does to the filtered content.
+        const auto& filter = el->css().get_filter();
+        float reach = 0;
+        auto paint = [&](litehtml::uint_ptr hdc) {
+            el->draw(hdc, x, y, nullptr, ri);
+            if (ri->is_visible()) draw_stacking_context(ri, x, y);
+        };
+        if (!filter.empty()) {
+            Rect b = border_box_of(el);
+            litehtml::filter_paint f;
+            f.steps = &filter;
+            f.owner = el.get();
+            f.box = litehtml::position(litehtml::pixel_t(b.x), litehtml::pixel_t(b.y), litehtml::pixel_t(b.w), litehtml::pixel_t(b.h));
+            f.bounds = f.box;
+            const auto& ink = ri->ink(doc_->paint_generation(), false);
+            if (!ink.empty && !ink.unbounded)
+                f.bounds = litehtml::position(litehtml::pixel_t(ink.l) + x, litehtml::pixel_t(ink.t) + y, litehtml::pixel_t(ink.r - ink.l), litehtml::pixel_t(ink.b - ink.t));
+            reach = litehtml::filter_reach(filter);
+            draw_filtered(0, f, paint);
+        } else {
+            paint(0);
+        }
         doc_->skip_paint.clear();
         Rect box = border_box_of(el);
         litehtml::position redraw(litehtml::pixel_t(box.x), litehtml::pixel_t(box.y), litehtml::pixel_t(box.w), litehtml::pixel_t(box.h));
         ri->get_redraw_box(redraw, x, y);
         // The redraw box leaves out shadows and anti-aliasing: a margin keeps them.
-        float x0 = std::min(box.x, float(redraw.x)) - LAYER_MARGIN, y0 = std::min(box.y, float(redraw.y)) - LAYER_MARGIN;
-        float x1 = std::max(box.x + box.w, float(redraw.x) + float(redraw.width)) + LAYER_MARGIN;
-        float y1 = std::max(box.y + box.h, float(redraw.y) + float(redraw.height)) + LAYER_MARGIN;
+        float x0 = std::min(box.x, float(redraw.x)) - LAYER_MARGIN - reach, y0 = std::min(box.y, float(redraw.y)) - LAYER_MARGIN - reach;
+        float x1 = std::max(box.x + box.w, float(redraw.x) + float(redraw.width)) + LAYER_MARGIN + reach;
+        float y1 = std::max(box.y + box.h, float(redraw.y) + float(redraw.height)) + LAYER_MARGIN + reach;
         bounds = Rect{std::floor(x0), std::floor(y0), std::ceil(x1) - std::floor(x0), std::ceil(y1) - std::floor(y0)};
         return std::move(list_);
     }
@@ -1208,6 +1659,13 @@ public:
         return true;
     }
     litehtml::element::ptr element(int64_t id) const {
+        if (id > 0 && (id & RING_BIT)) return element(id & ~RING_BIT);
+        if (id < 0) {
+            auto owner = element(pseudo_owner(id));
+            if (!owner || owner->children().empty()) return nullptr;
+            auto el = pseudo_after(id) ? owner->children().back() : owner->children().front();
+            return el->tag() == (pseudo_after(id) ? litehtml::__tag_after_ : litehtml::__tag_before_) ? el : nullptr;
+        }
         auto it = elements_.find(id);
         return it == elements_.end() ? nullptr : it->second;
     }
@@ -1278,12 +1736,12 @@ public:
     litehtml::uint_ptr create_font(const litehtml::font_description& descr, const litehtml::document*, litehtml::font_metrics* fm) override {
         Face* face = face_for(descr.family, float(descr.size), descr.weight, descr.style == litehtml::font_style_italic, descr.features);
         if (!face) return 0;
-        const FontMetrics& m = face->metrics;
         face->uses++;
         Font f;
         f.face = face;
         f.handle = face->handle;
-        f.metrics = m;
+        f.metrics = line_metrics(face->metrics, float(r_.dpr_));
+        const FontMetrics& m = f.metrics;
         f.size = float(descr.size);
         f.decoration = descr.decoration_line;
         f.decoration_color = descr.decoration_color;
@@ -1299,6 +1757,8 @@ public:
             fm->draw_spaces = descr.decoration_line != litehtml::text_decoration_line_none;
             fm->sub_shift = litehtml::pixel_t(f.size / 5);
             fm->super_shift = litehtml::pixel_t(f.size / 3);
+            fm->device_pixel = litehtml::pixel_t(1.0f / std::max(1e-3f, float(r_.dpr_)));
+            fm->em_ascent = litehtml::pixel_t(m.em_ascent);  // 0 when the backend cannot read it
         }
         litehtml::uint_ptr id = ++next_font_;
         fonts_[id] = f;
@@ -1465,7 +1925,7 @@ public:
         c.image = it->second.id;
         c.canvas = it->second.canvas;
         c.rect = rect_of(layer.origin_box);
-        c.radii = radii_of(layer.border_radius);
+        c.radii = layer_radii(layer);
         c.clip = rect_of(layer.clip_box);
         c.has_clip = true;
         // the border box bounds the drawing too
@@ -1476,6 +1936,11 @@ public:
         const bool across = layer.repeat == litehtml::background_repeat_repeat || layer.repeat == litehtml::background_repeat_repeat_x;
         const bool down = layer.repeat == litehtml::background_repeat_repeat || layer.repeat == litehtml::background_repeat_repeat_y;
         const Rect tile = c.rect;
+        if ((across || down) && r_.image_tiling() && tile.w >= 1 && tile.h >= 1 && !c.clip.empty()) {
+            c.repeat = uint8_t((across ? 1 : 0) | (down ? 2 : 0));
+            list_.push_back(std::move(c));
+            return;
+        }
         if ((across || down) && tile.w >= 1 && tile.h >= 1 && !c.clip.empty()) {
             float x0 = across ? tile.x - std::ceil((tile.x - c.clip.x) / tile.w) * tile.w : tile.x;
             float y0 = down ? tile.y - std::ceil((tile.y - c.clip.y) / tile.h) * tile.h : tile.y;
@@ -1549,19 +2014,58 @@ public:
             // the root background covers the whole canvas, like a browser's
             c.rect = Rect{0, 0, float(r_.width_), float(vp_height_)};
         } else {
-            c.rect = rect_of(layer.border_box);
-            c.radii = radii_of(layer.border_radius);
+            c.rect = layer_shape(layer);
+            c.radii = layer_radii(layer);
             c.clip = rect_of(layer.clip_box);
             c.has_clip = true;
         }
         list_.push_back(std::move(c));
     }
     void gradient_common(Command& c, const litehtml::background_layer& layer, const litehtml::background_layer::gradient_base& g) {
-        c.rect = rect_of(layer.border_box);
-        c.radii = radii_of(layer.border_radius);
+        c.rect = layer_shape(layer);
+        c.radii = layer_radii(layer);
         c.clip = rect_of(layer.clip_box);
         c.has_clip = true;
         for (const auto& p : g.color_points) c.stops.push_back(Stop{p.offset, color_of(p.color)});
+    }
+    /// A gradient layer is an image the size of its tile (background-size, placed by background-position: litehtml's
+    /// origin_box): drawn in that tile only, and repeated over the clip as background-repeat says, one command per
+    /// tile with the gradient moved along (`linear` moves its end point too). A tile that covers the whole clip, or
+    /// more tiles than a painter should draw, is the one command as before.
+    void push_gradient_tiles(Command c, const litehtml::background_layer& layer, bool linear) {
+        const Rect tile = rect_of(layer.origin_box);
+        Rect area = c.clip;
+        clip_intersect(area, rect_of(layer.border_box));
+        auto covers = [&](const Rect& t) { return t.x <= area.x && t.y <= area.y && t.x + t.w >= area.x + area.w && t.y + t.h >= area.y + area.h; };
+        if (area.empty() || tile.w < 1 || tile.h < 1 || covers(tile)) {
+            list_.push_back(std::move(c));
+            return;
+        }
+        const bool across = layer.repeat == litehtml::background_repeat_repeat || layer.repeat == litehtml::background_repeat_repeat_x;
+        const bool down = layer.repeat == litehtml::background_repeat_repeat || layer.repeat == litehtml::background_repeat_repeat_y;
+        float x0 = across ? tile.x - std::ceil((tile.x - area.x) / tile.w) * tile.w : tile.x;
+        float y0 = down ? tile.y - std::ceil((tile.y - area.y) / tile.h) * tile.h : tile.y;
+        float x1 = across ? area.x + area.w : tile.x + tile.w, y1 = down ? area.y + area.h : tile.y + tile.h;
+        if (std::ceil((x1 - x0) / tile.w) * std::ceil((y1 - y0) / tile.h) > 4096) {
+            list_.push_back(std::move(c));
+            return;
+        }
+        for (float y = y0; y < y1; y += tile.h) {
+            for (float x = x0; x < x1; x += tile.w) {
+                Command t = c;
+                t.clip = area;
+                clip_intersect(t.clip, Rect{x, y, tile.w, tile.h});
+                if (t.clip.empty()) continue;
+                const float dx = x - tile.x, dy = y - tile.y;
+                t.ax += dx;
+                t.ay += dy;
+                if (linear) {
+                    t.bx += dx;
+                    t.by += dy;
+                }
+                list_.push_back(std::move(t));
+            }
+        }
     }
     void draw_linear_gradient(litehtml::uint_ptr, const litehtml::background_layer& layer, const litehtml::background_layer::linear_gradient& g) override {
         if (litehtml::g_paint_trace) return;
@@ -1569,7 +2073,7 @@ public:
         c.kind = Cmd::Linear;
         gradient_common(c, layer, g);
         c.ax = g.start.x; c.ay = g.start.y; c.bx = g.end.x; c.by = g.end.y;
-        list_.push_back(std::move(c));
+        push_gradient_tiles(std::move(c), layer, true);
     }
     void draw_radial_gradient(litehtml::uint_ptr, const litehtml::background_layer& layer, const litehtml::background_layer::radial_gradient& g) override {
         if (litehtml::g_paint_trace) return;
@@ -1577,7 +2081,7 @@ public:
         c.kind = Cmd::Radial;
         gradient_common(c, layer, g);
         c.ax = g.position.x; c.ay = g.position.y; c.bx = g.radius.x; c.by = g.radius.y;
-        list_.push_back(std::move(c));
+        push_gradient_tiles(std::move(c), layer, false);
     }
     void draw_conic_gradient(litehtml::uint_ptr, const litehtml::background_layer& layer, const litehtml::background_layer::conic_gradient& g) override {
         if (litehtml::g_paint_trace) return;
@@ -1585,7 +2089,7 @@ public:
         c.kind = Cmd::Conic;
         gradient_common(c, layer, g);
         c.ax = g.position.x; c.ay = g.position.y; c.bx = g.angle; c.by = g.radius;
-        list_.push_back(std::move(c));
+        push_gradient_tiles(std::move(c), layer, false);
     }
 
     // ── borders: one stroke when uniform, otherwise each side on its own; dashed, dotted and double by their style ──
@@ -1671,22 +2175,24 @@ public:
     }
 
     /// How Chromium breaks a dashed or dotted border `width` thick along `length`: dashes three widths
-    /// long with two-width gaps under 3 px and two with one from there; dots square up to 3 px and round
-    /// past it. The gap stretches or shrinks so that a whole number of dashes fits: ending in a dash at
+    /// long with two-width gaps under 3 device px and two with one from there; dots square up to 3 device px
+    /// and round past it. The gap stretches or shrinks so that a whole number of dashes fits: ending in a dash at
     /// both ends of an open side, or going round a closed one evenly. Solid when there is no room.
     struct BorderDash {
         bool solid = true;
         bool round = false;
         float dash = 0, gap = 0;
     };
-    static BorderDash border_dash(float length, float width, bool dotted, bool closed) {
+    /// `dpr`: the 3 px thresholds are device pixels, not CSS px (OBSERVED, Chromium 156: a 2 px dotted border has square
+    /// dots at DPR 1 and round ones at DPR 2, a 2 px dashed one 3:2 dashes at DPR 1 and 2:1 at DPR 2).
+    static BorderDash border_dash(float length, float width, bool dotted, bool closed, float dpr) {
         BorderDash out;
         if (width <= 0 || length <= 0) return out;
-        if (!dotted || width <= 3) {
+        if (!dotted || width * dpr <= 3) {
             float dash = width, gap = width;
             if (!dotted) {
-                dash *= width >= 3 ? 2 : 3;
-                gap *= width >= 3 ? 1 : 2;
+                dash *= width * dpr >= 3 ? 2 : 3;
+                gap *= width * dpr >= 3 ? 1 : 2;
             }
             if (length <= dash * 2) return out;
             float pair = closed ? dash + gap : 2 * dash + gap;
@@ -1720,7 +2226,7 @@ public:
     /// ring. Square dashes are stroked wider than the border (`reach`) for the clip to cut them.
     void dashed_ring(const Rect& outer_rect, const Radii& outer, const Rect& in, const Radii& inner, const Rect& mid, const Radii& mrad,
                      float width, float reach, bool dotted, const Color& color) {
-        BorderDash d = border_dash(std::floor(rounded_length(mid, mrad)), width, dotted, true);
+        BorderDash d = border_dash(std::floor(rounded_length(mid, mrad)), width, dotted, true, float(r_.dpr_));
         auto ring = std::make_shared<Path>();
         rounded_rect(*ring, outer_rect, outer);
         rounded_rect(*ring, in, inner);
@@ -1929,7 +2435,7 @@ public:
             line->stroke = true;
             line->stroke_color = color_of(s.color);
             line->stroke_width = w;
-            BorderDash d = border_dash(std::round(length), w, dotted, false);
+            BorderDash d = border_dash(std::round(length), w, dotted, false, float(r_.dpr_));
             apply_dash(*line, d);
             if (d.round) {
                 // A round dot sits inside each end, its cap reaching the corner.
@@ -2473,6 +2979,8 @@ Renderer::Renderer(double width, double dpr, bool dark, Backend& backend)
     body_node_->parent = html_node_.get();
     html_node_->children = {head_node_.get(), body_node_.get()};
     safe_area_vars_ = css::content_safe_area_variables(Json());
+    // Keyframes and declared values with var() mix as their substituted values (as a browser computes them first).
+    animator_.resolve_vars = [this](int64_t id, const std::string& value) { return container_->resolve_vars(id, value); };
     apply_theme(Json::object().set("colorScheme", dark ? "dark" : "light"));
     rebuild();
 }
@@ -2521,6 +3029,8 @@ Renderer::~Renderer() {
 }
 
 double Renderer::now_s() { return now_ms() / 1000; }
+
+void Renderer::set_test_clock(double seconds) { g_test_clock.store(seconds, std::memory_order_relaxed); }
 
 uint32_t Renderer::px_width() const { return uint32_t(std::ceil(width_ * dpr_)); }
 uint64_t Renderer::layouts() const { return container_->layouts(); }
@@ -2815,8 +3325,13 @@ void Renderer::apply_op(const Json& op, std::vector<Json>& out) {
             }
         }
     } else if (kind == "rattr") {
-        if (attached(n)) patch_log_.valid = false;
         const std::string& name = str("name");
+        // hidden: a boolean attribute patch; style and class: back to the empty value their hole keeps (serialize_node).
+        if (name == "hidden" || ((name == "style" || (name == "class" && !n->svg)) && attribute_holes(n))) note_attribute(n, lower(name));
+        else {
+            if (n->kind == Node::Element && n->id) restyled_[n->id] = true;
+            if (attached(n)) patch_log_.valid = false;
+        }
         if (name == "style") n->styles.clear();
         n->attrs.erase(std::remove_if(n->attrs.begin(), n->attrs.end(), [&](auto& a) { return a.first == name; }), n->attrs.end());
     } else if (kind == "data") {
@@ -3003,6 +3518,11 @@ void Renderer::forget(Node* n) {
 
 // ───────────────────────── serialisation ─────────────────────────
 
+bool Renderer::attribute_holes(const Node* n) const {
+    static const std::set<std::string> plain = {"html", "head", "body", "title", "meta", "link", "style", "base", "noscript"};
+    return n->kind == Node::Element && n->id && !plain.count(n->tag) && n != html_node_.get() && n != head_node_.get() && n != body_node_.get();
+}
+
 void Renderer::serialize_node(const Node* n, std::string& out) const {
     switch (n->kind) {
     case Node::Comment: return;
@@ -3025,9 +3545,15 @@ void Renderer::serialize_node(const Node* n, std::string& out) const {
     }
     if (canvas) out += " src=\"tw-canvas:" + std::to_string(canvas->id()) + "/" + std::to_string(canvas->width()) + "x" + std::to_string(canvas->height()) + "\"";
     bool edited = n->id && n->id == editing_.id;
-    bool styled = !n->styles.empty() || overrides_.count(n->id) || edited;
+    // Every element a script can reach carries a style and (in HTML) a class attribute, empty or not, so that the
+    // fork's template has a hole for each from the start: the first style or class a script gives an element (a row a
+    // frame loop shows for the first time) is then a patch, not a new document. Not the document's own elements.
+    const bool holes = attribute_holes(n);
+    bool styled = !n->styles.empty() || overrides_.count(n->id) || edited || holes;
+    bool classed = false;
     for (const auto& [name, value] : n->attrs) {
         if (name == "style") { styled = true; continue; }
+        if (name == "class") classed = true;
         // A canvas's width and height are its natural size, which `src` names: on the fork's image they would be its style.
         if ((canvas && (name == "src" || name == "width" || name == "height")) || !css::is_attribute_name(name)) continue;
         // The platform's editor shows the placeholder of the control being edited.
@@ -3038,6 +3564,7 @@ void Renderer::serialize_node(const Node* n, std::string& out) const {
         escape_attr(value, out);
         out.push_back('"');
     }
+    if (holes && !classed && !n->svg) out += " class=\"\"";
     if (styled) {
         out += " style=\"";
         write_style(n, out);
@@ -3058,9 +3585,27 @@ void Renderer::serialize_node(const Node* n, std::string& out) const {
     } else {
         for (const Node* c : n->children) serialize_node(c, out);
     }
+    if (n == head_node_.get()) write_pseudo_overrides(out);
     out += "</";
     out += n->tag;
     out.push_back('>');
+}
+
+void Renderer::write_pseudo_overrides(std::string& out) const {
+    // ::before and ::after have no style attribute: what their animations sample goes into a sheet of its
+    // own, last and important, after the marker that keeps it out of what the scan reads as declared.
+    std::string css;
+    for (auto it = overrides_.begin(); it != overrides_.end() && it->first < 0; ++it) {
+        std::string rule;
+        for (const auto& [name, value] : it->second)
+            if (css::is_property_name(name)) rule += ";" + name + ":" + css::resolve_light_dark(value, dark_) + " !important";
+        if (rule.empty()) continue;
+        css += "[data-twid=\"" + std::to_string(pseudo_owner(it->first)) + (pseudo_after(it->first) ? "\"]::after{" : "\"]::before{") + "-lh-anim:1" + rule + "}";
+    }
+    if (css.empty()) return;
+    size_t p = 0;
+    while ((p = css.find("</", p)) != std::string::npos) { css.replace(p, 2, "<\\/"); p += 3; }
+    out += "<style>" + css + "</style>";
 }
 
 void Renderer::write_style(const Node* n, std::string& out) const {
@@ -3173,9 +3718,34 @@ void Renderer::rebuild(bool patch) {
     stale_ = false;
     // Scripted layers follow what the build declares, which the composition key does not cover.
     if (!scripted_candidates_.empty()) composition_key_ = 0;
+    note_before_change(patch);
     build_document(patch);
     paint_scan_ = true;
     animate();
+    before_change_.clear();
+}
+
+void Renderer::note_before_change(bool patch) {
+    (void)patch;
+#ifdef TW_LITEHTML_TWIDGET
+    before_change_.clear();
+    std::map<int64_t, bool> restyled = std::move(restyled_);
+    restyled_.clear();
+    if (restyled.empty()) return;
+    // Only where a transition can start: a sheet that declares one, or a restyled element's own style that does.
+    bool possible = sheets_transition_;
+    for (auto it = restyled.begin(); !possible && it != restyled.end(); ++it)
+        if (const Node* n = node(it->first))
+            for (const auto& [name, value] : n->styles) possible = possible || css::starts_with(name, "transition");
+    if (!possible) return;
+    // The elements this change restyles, as they are now: what a transition declared in the same change starts from
+    // (its before-change style). A new style attribute restyles its element; a class or another attribute its
+    // descendants too (selectors). Elements the Animator already watches have their old values there.
+    std::vector<int64_t> alone, subtrees;
+    for (const auto& [id, subtree] : restyled) (subtree ? subtrees : alone).push_back(id);
+    auto skip = [this](int64_t id) { return animator_.knows(id); };
+    before_change_ = container_->snapshot(Animator::watched(), alone, subtrees, skip);
+#endif
 }
 
 void Renderer::charge(double spent) {
@@ -3217,6 +3787,8 @@ void Renderer::build_document(bool patch) {
     double t0 = now_ms();
     html_ = serialize();
     html_stale_ = false;
+    built_pseudo_.clear();
+    for (auto it = overrides_.begin(); it != overrides_.end() && it->first < 0; ++it) built_pseudo_.insert(*it);
     double t1 = now_ms();
     stats_.serialize_ms = t1 - t0;
     stats_.html_bytes = html_.size();
@@ -3267,9 +3839,16 @@ bool Renderer::attached(const Node* n) const {
 }
 
 void Renderer::note_attribute(const Node* n, const std::string& name) {
+    // What the next rebuild restyles (note_before_change), whether or not it can patch.
+    if (n->kind == Node::Element && n->id) {
+        bool& subtree = restyled_[n->id];
+        subtree = subtree || name != "style";
+    }
     if (!patch_log_.valid || !attached(n)) return;
     // The attributes the Swift renderer patches; anything else, or a text node, builds.
-    if (n->kind != Node::Element || !(name == "class" || name == "style" || name == "src" || n->svg)) {
+    // `hidden` toggles as a boolean attribute through the element's class hole (a list re-sorting on a frame loop
+    // hides and shows rows: each was a whole new document).
+    if (n->kind != Node::Element || !(name == "class" || name == "style" || name == "src" || name == "hidden" || n->svg)) {
         patch_log_.valid = false;
         return;
     }
@@ -3300,8 +3879,11 @@ bool Renderer::patch_document() {
             change.name = name;
             // Byte for byte what serialize_node writes there.
             if (name == "style") {
-                if (n->styles.empty() && !overrides_.count(n->id) && n->id != editing_.id) return false;
+                if (n->styles.empty() && !overrides_.count(n->id) && n->id != editing_.id && !attribute_holes(n)) return false;
                 write_style(n, change.value);
+            } else if (name == "hidden") {
+                change.attribute = true;
+                change.present = std::any_of(n->attrs.begin(), n->attrs.end(), [](const auto& p) { return p.first == "hidden"; });
             } else if (name == "src" && n->tag == "canvas" && !n->svg) {
                 auto it = canvases_.find(n->id);
                 if (it == canvases_.end()) return false;
@@ -3309,8 +3891,10 @@ bool Renderer::patch_document() {
                 change.value = "tw-canvas:" + std::to_string(c.id()) + "/" + std::to_string(c.width()) + "x" + std::to_string(c.height());
             } else {
                 auto a = std::find_if(n->attrs.begin(), n->attrs.end(), [&](const auto& p) { return p.first == name; });
-                if (a == n->attrs.end() || !css::is_attribute_name(name)) return false;
-                escape_attr(a->second, change.value);
+                // A class removed is the empty class serialize_node writes for such an element.
+                bool empty_class = a == n->attrs.end() && name == "class" && !n->svg && attribute_holes(n);
+                if ((a == n->attrs.end() && !empty_class) || !css::is_attribute_name(name)) return false;
+                if (a != n->attrs.end()) escape_attr(a->second, change.value);
             }
             changes.push_back(std::move(change));
         }
@@ -3381,11 +3965,12 @@ void Renderer::animate() {
     visit(html_node_.get());
     if (key != sheets_key_) {
         sheets_key_ = std::move(key);
+        sheets_transition_ = sheets_key_.find("transition") != std::string::npos;
         std::vector<std::string> sheets;
         for (const Node* n : styles) sheets.push_back(css::resolve_light_dark(rewrite_color_scheme(n->data, dark_), dark_));
         animator_.set_style_sheets(sheets);
     }
-    animator_.prune([this](int64_t id) { return node(id) != nullptr; });
+    animator_.prune([this](int64_t id) { return node(pseudo_owner(id)) != nullptr; });
     uint64_t generation = 0;
     const auto& found = container_->declarations(Animator::watched(), Animator::entry_properties(), {}, &generation);
     auto targets = animator_.web_targets();
@@ -3393,7 +3978,8 @@ void Renderer::animate() {
         // The same declarations as last time start, stop and retarget nothing.
         if (generation == 0 || generation != declared_generation_) {
             animator_.underlying.clear();
-            animator_.update(found, now);
+            animator_.update(found, now, before_change_.empty() ? nullptr : &before_change_, [this](int64_t id) { return container_->displayed(id); },
+                            [this](int64_t id, const std::string&) { return container_->parent_color(id); });
         }
         declared_generation_ = generation;
     } else {
@@ -3411,8 +3997,12 @@ void Renderer::animate() {
                 if (!css::starts_with(k, "animation") && !css::starts_with(k, "transition")) declared.emplace(k, v);
             animator_.underlying[id] = std::move(values);
         }
-        animator_.update(declarations, now);
+        animator_.update(declarations, now, before_change_.empty() ? nullptr : &before_change_, [this](int64_t id) { return container_->displayed(id); },
+                            [this](int64_t id, const std::string&) { return container_->parent_color(id); });
     }
+    // A keyframe that leaves out an inherited colour starts or ends at the one the element inherits.
+    for (const auto& [id, property] : animator_.undeclared({"color"}))
+        if (auto colour = container_->parent_color(id)) animator_.underlying[id][property] = *colour;
     update_composition(now);
     auto sampled = animator_.sample(now);
     strip_layers(sampled);
@@ -3426,7 +4016,19 @@ void Renderer::animate() {
 }
 
 void Renderer::apply_overrides(StyleOverrides sampled) {
-    if (sampled == overrides_) return;
+    // The ::before / ::after values the document's sheet holds, when a frame patched them since (a restyle of their
+    // owner reads the sheet again): the sheet catches up once they stop moving.
+    auto pseudo_patched = [this] {
+        for (auto it = overrides_.begin(); it != overrides_.end() && it->first < 0; ++it) {
+            auto b = built_pseudo_.find(it->first);
+            if (b == built_pseudo_.end() || b->second != it->second) return true;
+        }
+        return false;
+    };
+    if (sampled == overrides_) {
+        if (pseudo_patched()) build_document();
+        return;
+    }
     std::vector<int64_t> changed;
     for (const auto& [id, values] : sampled) {
         auto it = overrides_.find(id);
@@ -3441,7 +4043,39 @@ void Renderer::apply_overrides(StyleOverrides sampled) {
     // document height moved.
     std::vector<std::pair<litehtml::element::ptr, std::string>> patches;
     bool ok = true;
+    // ::before and ::after have their sampled values in the sheet (write_pseudo_overrides): a new sheet is a new
+    // document. When the boxes and properties are the ones the sheet already animates (a sweep rotating every frame),
+    // their paint values patch the boxes in place, all of them (a restyle since may have read the sheet's again).
+    bool pseudo_changed = false;
+    for (int64_t id : changed) pseudo_changed = pseudo_changed || id < 0;
+    if (pseudo_changed) {
+        auto names = [](const StyleValues& values) {
+            std::vector<std::string> out;
+            for (const auto& [name, value] : values) out.push_back(name);
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        std::vector<std::pair<int64_t, std::string>> generated;
+        size_t count = 0;
+        for (auto it = overrides_.begin(); ok && it != overrides_.end() && it->first < 0; ++it) {
+            ++count;
+            auto b = built_pseudo_.find(it->first);
+            ok = b != built_pseudo_.end() && names(b->second) == names(it->second);
+            if (!ok) break;
+            std::string declarations;
+            for (const auto& [name, value] : it->second) declarations += name + ":" + css::resolve_light_dark(value, dark_) + ";";
+            generated.emplace_back(it->first, std::move(declarations));
+        }
+        ok = ok && count == built_pseudo_.size();
+        for (const auto& [id, declarations] : generated) {
+            if (!ok) break;
+            ok = container_->patch_generated(id, declarations);
+            // Its owner's layer (and the layers it is in) paint it.
+            touched_.insert(pseudo_owner(id));
+        }
+    }
     for (int64_t id : changed) {
+        if (id < 0) continue;
         const Node* n = node(id);
         auto el = container_->element(id);
         if (!n || !el) {
@@ -3453,7 +4087,7 @@ void Renderer::apply_overrides(StyleOverrides sampled) {
         patches.emplace_back(std::move(el), std::move(style));
     }
     double t0 = now_ms();
-    if (ok && container_->restyle(patches) && !layout_stopped_) {
+    if (ok && (patches.empty() || container_->restyle(patches)) && !layout_stopped_) {
         int h = int(std::ceil(std::clamp(container_->height(), MIN_HEIGHT, max_height_)));
         if (h == vp_height_) {
             doc_height_ = std::ceil(container_->height());
@@ -3462,6 +4096,7 @@ void Renderer::apply_overrides(StyleOverrides sampled) {
             stats_.passes = 1;
             stats_.builds++;
             stats_.patched++;
+            stats_.in_place++;
             dirty_ = true;
             html_stale_ = true;
             touched_.insert(changed.begin(), changed.end());
@@ -3476,7 +4111,9 @@ void Renderer::queue_animation_events() {
     for (const AnimationEvent& e : animator_.take_events()) {
         if (frozen_ || !listened(e.type.c_str())) continue;
         Json ev = Json::object();
-        ev.set("type", e.type).set("targetId", double(e.target));
+        // A pseudo-element's events are its owner's, naming it (AnimationEvent.pseudoElement).
+        ev.set("type", e.type).set("targetId", double(pseudo_owner(e.target)));
+        if (e.target < 0) ev.set("pseudoElement", pseudo_after(e.target) ? "::after" : "::before");
         ev.set(e.type == "transitionend" ? "propertyName" : "animationName", e.name);
         ev.set("elapsedTime", e.elapsed);
         pending_events_.push_back(event_message(std::move(ev)));
@@ -3535,12 +4172,22 @@ void Renderer::set_compositing(bool enabled) {
 }
 
 void Renderer::strip_layers(StyleOverrides& sampled) const {
+    for (int64_t id : inert_) sampled.erase(id);
     for (const auto& [id, p] : promoted_) {
         auto it = sampled.find(id);
         if (it == sampled.end()) continue;
         auto& values = it->second;
         bool shimmer = p.shimmer;
-        values.erase(std::remove_if(values.begin(), values.end(), [&](const auto& v) { return shimmer ? is_shimmer_property(v.first) : is_layer_property(v.first); }), values.end());
+        // A layer of a CSS animation plays its left / top and the size of a plain fill too (update_composition).
+        bool sized = !p.scripted && !p.svg && !p.canvas && !p.svg_child;
+        bool shadowless = p.shadowless;
+        values.erase(std::remove_if(values.begin(), values.end(),
+                                    [&](const auto& v) {
+                                        if (shimmer) return is_shimmer_property(v.first);
+                                        return is_layer_property(v.first) || (shadowless && v.first == "box-shadow") ||
+                                               (sized && (is_offset_property(v.first) || v.first == "height" || v.first == "width"));
+                                    }),
+                     values.end());
         if (values.empty()) sampled.erase(it);
     }
 }
@@ -3548,6 +4195,7 @@ void Renderer::strip_layers(StyleOverrides& sampled) const {
 void Renderer::update_composition(double now) {
     wake_at_ = std::numeric_limits<double>::infinity();
     auto drop_all = [&] {
+        inert_.clear();
         if (promoted_.empty()) return;
         promoted_.clear();
         layer_ids_.clear();
@@ -3565,6 +4213,19 @@ void Renderer::update_composition(double now) {
     std::vector<std::pair<int64_t, Want>> wanted;
     bool iterations = interest_.count("animationiteration") > 0;
     auto ids = animator_.animated_ids(now);
+    // An element whose animations touch no property (a transition that settled, an empty keyframe set)
+    // animates nothing: it must not keep a still neighbour from becoming a layer.
+    ids.erase(std::remove_if(ids.begin(), ids.end(), [&](int64_t id) { return animator_.animated_properties(id).empty(); }), ids.end());
+    // Inert: an element of an SVG drawing that draws nothing whatever it animates (raindrops under a stroke
+    // with alpha 0): its frames change no pixel. They are checked again whenever the layers are.
+    std::unordered_set<int64_t> inert;
+    for (int64_t id : ids) {
+        const Node* n = node(id);
+        if (!n || !svg_inside(n)) continue;
+        auto el = container_->element(id);
+        if (el && !container_->svg_draws_something(el)) inert.insert(id);
+    }
+    ids.erase(std::remove_if(ids.begin(), ids.end(), [&](int64_t id) { return inert.count(id) > 0; }), ids.end());
     // What decides the layers: the layout, the animations and where their plans stand. The same as
     // last time, nothing below can come out differently, so a frame stops here.
     struct Planned {
@@ -3583,8 +4244,18 @@ void Renderer::update_composition(double now) {
         key = (key * 1099511628211ull) ^ uint64_t(id) ^ (signature << 2) ^ uint64_t(plan->repeat) ^ (uint64_t(usable) << 1);
         if (usable) planned.push_back({id, *plan, signature});
     }
+    for (int64_t id : inert) key = (key * 1099511628211ull) ^ uint64_t(id) ^ 0x1E27ull;
     if (key == composition_key_ && composition_key_ != 0) return;
     composition_key_ = key;
+    inert_ = inert;
+    // Why each animated element is or is not a layer (composition_debug), decided below.
+    why_.clear();
+    auto why = [&](int64_t id, std::string reason) { why_.try_emplace(id, std::move(reason)); };
+    for (int64_t id : ids) {
+        auto plan = animator_.plan(id, now, iterations);
+        if (!plan) why(id, "timing cannot be baked");
+        else if (!(plan->ready && (plan->repeat || plan->duration >= MIN_LAYER_SPAN))) why(id, plan->ready ? "shorter than a layer is worth" : "waits out a delay");
+    }
 
     // A layer holds a still picture: nothing inside or around it may animate, but for an ancestor
     // that only repaints its own background. One walk up from each animated element marks the
@@ -3592,20 +4263,43 @@ void Renderer::update_composition(double now) {
     std::unordered_set<int64_t> animated(ids.begin(), ids.end());
     // Movers: elements whose usable animations touch only layer properties. One inside another
     // becomes a layer inside the other's (nested), so neither rules the other out.
+    // What a layer can play: the layer properties, left / top of a box they only move, and the height or
+    // width of a plain fill they only stretch (with opacity at most).
+    auto playable = [&](int64_t id, const std::vector<std::string>& properties) {
+        bool left = false, top = false, moves = false;
+        std::string size;
+        for (const std::string& name : properties) {
+            if (is_layer_property(name)) moves = moves || name != "opacity";
+            else if (name == "left") left = true;
+            else if (name == "top") top = true;
+            else if ((name == "height" || name == "width") && size.empty()) size = name;
+            else return false;
+        }
+        if (!left && !top && size.empty()) return true;
+        auto el = container_->element(id);
+        if (!el) return false;
+        if (!size.empty()) {
+            float anchor, ref;
+            return !moves && !left && !top && container_->size_frame(el, size == "height", anchor, ref) &&
+                   css::parse_translate(animator_.base_value(id, size), ref, ref).value_or(Affine{}).e > 0 && container_->plain_fill(el);
+        }
+        float w, h;
+        return container_->offset_frame(el, left, top, w, h) && (!left || css::parse_translate(animator_.base_value(id, "left"), w, h)) &&
+               (!top || css::parse_translate("0 " + animator_.base_value(id, "top"), w, h));
+    };
     std::unordered_set<int64_t> movers;
     std::unordered_set<const litehtml::element*> mover_elements;
     for (const Planned& p : planned) {
         auto properties = animator_.animated_properties(p.id);
-        const Node* n = node(p.id);
-        if (!n || n->svg || n->tag == "svg" || !std::all_of(properties.begin(), properties.end(), [](const std::string& name) { return is_layer_property(name); })) continue;
+        const Node* n = node(pseudo_owner(p.id));
+        if (!n || svg_inside(n) || !playable(p.id, properties)) continue;
         movers.insert(p.id);
         if (auto el = container_->element(p.id)) mover_elements.insert(el.get());
     }
     std::unordered_set<int64_t> holds_animated;
     for (int64_t id : ids) {
         if (movers.count(id)) continue;
-        const Node* n = node(id);
-        for (const Node* p = n ? n->parent : nullptr; p; p = p->parent)
+        for (const Node* p = parent_node(id); p; p = p->parent)
             if (p->id && !holds_animated.insert(p->id).second) break;
     }
     std::unordered_map<int64_t, bool> local_background;
@@ -3619,35 +4313,54 @@ void Renderer::update_composition(double now) {
         return !it->second;
     };
     std::vector<const Planned*> shimmers;
+    std::vector<const Planned*> rings;
+    std::vector<const Planned*> svg_children;
     for (const Planned& p : planned) {
         int64_t id = p.id;
         auto properties = animator_.animated_properties(id);
-        if (!std::all_of(properties.begin(), properties.end(), [](const std::string& name) { return is_layer_property(name); })) {
+        if (!playable(id, properties)) {
             if (!properties.empty() && std::all_of(properties.begin(), properties.end(), [](const std::string& name) { return is_shimmer_property(name); }))
                 shimmers.push_back(&p);
+            if (id > 0 && properties.size() == 1 && properties[0] == "box-shadow") rings.push_back(&p);
+            std::string list;
+            for (const auto& name : properties) list += (list.empty() ? "" : ",") + name;
+            why(id, "animates " + list);
             continue;
         }
-        const Node* n = node(id);
-        if (!n || n->svg || n->tag == "svg" || holds_animated.count(id)) continue;
+        // A ::before or ::after (a negative id) is a leaf inside its owner.
+        const Node* n = node(pseudo_owner(id));
+        if (!n) continue;
+        // An outer <svg> is a replaced box of the HTML layout like an <img>: its CSS transform is the box's.
+        // An element inside the drawing becomes a layer of its own kind (svg_children below).
+        if (id > 0 && svg_inside(n)) {
+            svg_children.push_back(&p);
+            continue;
+        }
+        if (holds_animated.count(id)) { why(id, "something animated inside"); continue; }
         bool blocked = false;
-        for (const Node* a = n->parent; a && !blocked; a = a->parent) blocked = a->id && !movers.count(a->id) && blocks(a->id);
-        if (blocked) continue;
+        int64_t blocker = 0;
+        for (const Node* a = parent_node(id); a && !blocked; a = a->parent) {
+            blocked = a->id && !movers.count(a->id) && blocks(a->id);
+            if (blocked) blocker = a->id;
+        }
+        if (blocked) { why(id, "ancestor " + std::to_string(blocker) + " animates"); continue; }
         auto el = container_->element(id);
         Rect box;
-        if (!el || !container_->layer_candidate(el, box, &mover_elements)) continue;
+        if (!el || !container_->layer_candidate(el, box, &mover_elements)) { why(id, el ? container_->candidate_why(el, &mover_elements) : "no element"); continue; }
         wanted.emplace_back(id, Want{std::move(el), p.plan, box, p.signature});
     }
     for (auto it = scripted_candidates_.begin(); it != scripted_candidates_.end();)
         it = node(*it) ? std::next(it) : scripted_candidates_.erase(it);
     for (auto it = svg_layers_.begin(); it != svg_layers_.end();)
         it = node(*it) ? std::next(it) : svg_layers_.erase(it);
-    if (wanted.empty() && scripted_candidates_.empty() && shimmers.empty() && svg_layers_.empty() && canvas_layers_.empty()) {
+    if (wanted.empty() && scripted_candidates_.empty() && shimmers.empty() && rings.empty() && svg_layers_.empty() && canvas_layers_.empty() && svg_children.empty()) {
         if (!promoted_.empty()) {
             promoted_.clear();
-            layer_ids_.clear();
             composition_only_ = false;
             dirty_ = true;
         }
+        layer_ids_ = inert_;
+        for (int64_t id : inert_) why_[id] = "inert (draws nothing)";
         return;
     }
 
@@ -3657,7 +4370,7 @@ void Renderer::update_composition(double now) {
         Promotion p;
         p.box = want.box;
         p.signature = want.signature;
-        if (!container_->clip_of(want.el, p.has_clip, p.clip, p.clip_radii)) continue;
+        if (!container_->clip_of(want.el, p.has_clip, p.clip, p.clip_radii)) { why(id, "clipped by two ancestors"); continue; }
         p.found_clip = p.has_clip;
         p.found_clip_rect = p.clip;
         // A running track stays when nothing about it changed, and while it still covers what the
@@ -3672,11 +4385,46 @@ void Renderer::update_composition(double now) {
         } else {
             const Rect& box = want.box;
             auto origin = css::parse_origin(animator_.base_value(id, "transform-origin"), box.w, box.h);
-            if (!origin) continue;
+            if (!origin) { why(id, "transform-origin"); continue; }
             Affine to = Affine::translate(box.x + origin->first, box.y + origin->second);
             Affine from = Affine::translate(-(box.x + origin->first), -(box.y + origin->second));
             const Animator::Plan& plan = want.plan;
             int64_t target = id;
+            // left / top: the box is laid out at the declared values; the track moves it by the difference.
+            float cbw = 0, cbh = 0;
+            auto animated = animator_.animated_properties(id);
+            bool left = std::find(animated.begin(), animated.end(), "left") != animated.end();
+            bool top = std::find(animated.begin(), animated.end(), "top") != animated.end();
+            if ((left || top) && !container_->offset_frame(want.el, left, top, cbw, cbh)) { why(id, "left / top"); continue; }
+            auto offset = [&](const std::string& l, const std::string& t) -> std::optional<Affine> {
+                auto x = left ? css::parse_translate(l, cbw, cbh) : std::optional<Affine>(Affine{});
+                auto y = top ? css::parse_translate("0 " + t, cbw, cbh) : std::optional<Affine>(Affine{});
+                if (!x || !y) return std::nullopt;
+                return Affine::translate(x->e, y->f);
+            };
+            auto base_offset = offset(animator_.base_value(id, "left"), animator_.base_value(id, "top"));
+            if (!base_offset) { why(id, "left / top"); continue; }
+            // height / width of a plain fill: a stretch about the edge that stays (size_frame).
+            std::string size = std::find(animated.begin(), animated.end(), "height") != animated.end() ? "height"
+                               : std::find(animated.begin(), animated.end(), "width") != animated.end() ? "width" : "";
+            float anchor = 0, ref = 0, base_size = 0;
+            if (!size.empty()) {
+                if (!container_->size_frame(want.el, size == "height", anchor, ref)) { why(id, size); continue; }
+                base_size = css::parse_translate(animator_.base_value(id, size), ref, ref).value_or(Affine{}).e;
+                if (!(base_size > 0)) { why(id, size); continue; }
+            }
+            auto stretch = [&](const std::string& value) -> std::optional<Affine> {
+                if (size.empty()) return Affine{};
+                auto v = css::parse_translate(value, ref, ref);
+                if (!v) return std::nullopt;
+                float k = std::max(0.0f, v->e) / base_size;
+                if (size == "height") {
+                    float y = box.y + anchor * box.h;
+                    return Affine::translate(0, y) * Affine{1, 0, 0, k, 0, 0} * Affine::translate(0, -y);
+                }
+                float x = box.x + anchor * box.w;
+                return Affine::translate(x, 0) * Affine{k, 0, 0, 1, 0, 0} * Affine::translate(-x, 0);
+            };
             auto sample = [&](double t, LayerKey& out) {
                 StyleValues values = animator_.peek(target, plan_time(plan, t));
                 auto value = [&](const char* property) {
@@ -3689,15 +4437,17 @@ void Renderer::update_composition(double now) {
                 auto scale = css::parse_scale(value("scale"));
                 auto transform = css::parse_transform(value("transform"), box.w, box.h);
                 auto opacity = css::parse_opacity(value("opacity"));
-                if (!translate || !rotate || !scale || !transform || !opacity) return false;
-                out.matrix = to * *translate * *rotate * *scale * *transform * from;
+                auto moved = offset(value("left"), value("top"));
+                auto stretched = stretch(size.empty() ? std::string() : value(size.c_str()));
+                if (!translate || !rotate || !scale || !transform || !opacity || !moved || !stretched) return false;
+                out.matrix = Affine::translate(moved->e - base_offset->e, moved->f - base_offset->f) * to * *translate * *rotate * *scale * *transform * from * *stretched;
                 out.opacity = *opacity;
                 return true;
             };
             p.track.start = plan.start;
             p.track.duration = plan.duration;
             p.track.repeat = plan.repeat;
-            if (!bake_track(sample, box, p.track.keys)) continue;
+            if (!bake_track(sample, box, p.track.keys)) { why(id, "track does not bake"); continue; }
             p.track_version = next_version_++;
         }
         // What the layer can cover, and how fine to rasterise it.
@@ -3726,6 +4476,136 @@ void Renderer::update_composition(double now) {
             p.reach = Rect{cx0, cy0, std::max(0.0f, cx1 - cx0), std::max(0.0f, cy1 - cy0)};
         }
         elements[id] = want.el;
+        next.emplace(id, std::move(p));
+    }
+
+    // Elements of an SVG drawing moving on their own (a spinning sun, drifting clouds): their own transform
+    // and opacity as a track in document coordinates, outer * own(t) * outer^-1, the content drawn without
+    // them, clipped by the <svg>'s box. Nothing else of the drawing animates around them.
+    for (const Planned* planned_child : svg_children) {
+        int64_t id = planned_child->id;
+        const Node* n = node(id);
+        auto el = container_->element(id);
+        auto root = el ? Container::svg_root_of(el) : nullptr;
+        if (!n || !el || !root) { why(id, "SVG child outside a drawing"); continue; }
+        int64_t root_id = 0;
+        bool still = true;
+        for (const Node* a = n->parent; a; a = a->parent) {
+            if (a->id && (animated.count(a->id) || movers.count(a->id))) still = false;
+            if (a->tag == "svg" && !(a->parent && a->parent->svg)) {
+                root_id = a->id;
+                break;
+            }
+        }
+        if (!still || !root_id) { why(id, "SVG child under an animated element"); continue; }
+        bool blocked = false;
+        for (const Node* a = node(root_id)->parent; a && !blocked; a = a->parent) blocked = a->id && blocks(a->id);
+        Promotion p;
+        if (blocked || !container_->layer_candidate(root, p.box)) { why(id, blocked ? "SVG child: ancestor animates" : "SVG child: its <svg> " + container_->candidate_why(root)); continue; }
+        // The layer's clip is the <svg>'s box inside whatever clips the <svg>.
+        bool outer_clip = false;
+        Rect outer_rect;
+        Radii outer_radii;
+        if (!container_->clip_of(root, outer_clip, outer_rect, outer_radii)) { why(id, "clipped by two ancestors"); continue; }
+        p.has_clip = true;
+        p.clip = outer_clip ? intersection(p.box, outer_rect) : p.box;
+        if (outer_clip && std::memcmp(&p.clip, &outer_rect, sizeof(Rect)) == 0) p.clip_radii = outer_radii;
+        p.found_clip = true;
+        p.found_clip_rect = p.clip;
+        p.signature = planned_child->signature ^ 0x5C61D0ull;
+        // The shape where it is without its own transform: its transform-box origin moves with it, so a new cx / cy
+        // (a chart's end dot moved by a script) bakes the track again instead of keeping the old one's origin.
+        litehtml::transform_matrix frame_outer;
+        litehtml::position frame_ref;
+        float frame_ox = 0, frame_oy = 0;
+        std::optional<Rect> shape;
+        if (litehtml::svg_own_frame(el, frame_outer, frame_ref, frame_ox, frame_oy)) {
+            litehtml::vector_path geometry;
+            float x0, y0, x1, y1;
+            if (litehtml::svg_geometry(el, geometry) && path_bounds(geometry, x0, y0, x1, y1))
+                shape = bounds_under(Rect{x0, y0, x1 - x0, y1 - y0}, Affine{frame_outer.a, frame_outer.b, frame_outer.c, frame_outer.d, frame_outer.tx, frame_outer.ty});
+            for (float v : {frame_ox, frame_oy, float(frame_ref.x), float(frame_ref.y), float(frame_ref.width), float(frame_ref.height)}) {
+                uint32_t bits;
+                std::memcpy(&bits, &v, sizeof bits);
+                p.signature = (p.signature ^ bits) * 0x100000001B3ull;
+            }
+        }
+        const Animator::Plan& plan = planned_child->plan;
+        auto old = promoted_.find(id);
+        bool same_span = old != promoted_.end() &&
+                         (plan.repeat ? old->second.track.repeat && std::fabs(old->second.track.duration - plan.duration) < 1e-6
+                                      : !old->second.track.repeat && std::fabs(old->second.track.start + old->second.track.duration - (plan.start + plan.duration)) < 1e-3);
+        if (same_span && old->second.signature == p.signature && std::memcmp(&old->second.box, &p.box, sizeof(Rect)) == 0) {
+            p.track = old->second.track;
+            p.track_version = old->second.track_version;
+        } else {
+            litehtml::transform_matrix outer;
+            litehtml::position ref;
+            float ox = 0, oy = 0;
+            if (!litehtml::svg_own_frame(el, outer, ref, ox, oy)) { why(id, "SVG child: no frame"); continue; }
+            Affine m{outer.a, outer.b, outer.c, outer.d, outer.tx, outer.ty}, inverse;
+            if (!m.invert(inverse)) { why(id, "SVG child: flat frame"); continue; }
+            float attr_opacity = 1;
+            for (const auto& [k, v] : n->attrs)
+                if (k == "opacity") attr_opacity = std::clamp(std::strtof(v.c_str(), nullptr), 0.0f, 1.0f);
+            float rw = ref.width.value(), rh = ref.height.value();
+            auto sample = [&](double t, LayerKey& out) {
+                StyleValues values = animator_.peek(id, plan_time(plan, t));
+                auto value = [&](const char* property) {
+                    for (auto it = values.rbegin(); it != values.rend(); ++it)
+                        if (it->first == property) return it->second;
+                    return animator_.base_value(id, property);
+                };
+                auto translate = css::parse_translate(value("translate"), rw, rh);
+                auto rotate = css::parse_rotate(value("rotate"));
+                auto scale = css::parse_scale(value("scale"));
+                auto transform = css::parse_transform(value("transform"), rw, rh);
+                auto opacity = css::parse_opacity(value("opacity"));
+                if (!translate || !rotate || !scale || !transform || !opacity) return false;
+                Affine own = Affine::translate(ox, oy) * *translate * *rotate * *scale * *transform * Affine::translate(-ox, -oy);
+                out.matrix = m * own * inverse;
+                out.opacity = *opacity * attr_opacity;
+                return true;
+            };
+            p.track.start = plan.start;
+            p.track.duration = plan.duration;
+            p.track.repeat = plan.repeat;
+            if (!bake_track(sample, p.box, p.track.keys)) { why(id, "track does not bake"); continue; }
+            p.track_version = next_version_++;
+        }
+        float scale = 1;
+        for (const LayerKey& k : p.track.keys) scale = std::max(scale, std::sqrt(std::fabs(k.matrix.a * k.matrix.d - k.matrix.b * k.matrix.c)));
+        p.raster_scale = std::min(scale, 3.0f);
+        // The layer goes above the whole document, so above the shapes the drawing paints after it too: one that
+        // reaches where it moves keeps it in the document (Chromium draws the later shape on top: the dot over its
+        // pulse). Where it moves: its shape under each key, a little wider for a stroke; the <svg>'s box when the
+        // shape has no geometry of its own (a group).
+        Rect moves = p.clip;
+        if (shape) {
+            float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+            for (const LayerKey& k : p.track.keys) {
+                Rect b = bounds_under(*shape, k.matrix);
+                x0 = std::min(x0, b.x); y0 = std::min(y0, b.y); x1 = std::max(x1, b.x + b.w); y1 = std::max(y1, b.y + b.h);
+            }
+            if (std::isfinite(x0)) moves = intersection(Rect{x0 - 2, y0 - 2, x1 - x0 + 4, y1 - y0 + 4}, p.clip);
+        }
+        bool under = false;
+        std::function<void(const Node*)> later = [&](const Node* c) {
+            if (under || c->kind != Node::Element) return;
+            if (auto e = c->id ? container_->element(c->id) : nullptr) {
+                if (auto b = svg_box_of(e); b && !b->empty() && !intersection(*b, moves).empty()) under = true;
+            }
+            for (const Node* g : c->children) later(g);
+        };
+        for (const Node* at = n; at && at->id != root_id && at->parent && !under; at = at->parent) {
+            const auto& siblings = at->parent->children;
+            for (auto it = std::find(siblings.begin(), siblings.end(), at); it != siblings.end() && ++it != siblings.end() && !under;) later(*it);
+        }
+        if (under) { why(id, "SVG child: a later shape draws over it"); continue; }
+        p.reach = p.clip;
+        p.svg_child = true;
+        // Coverage and paint order are the <svg>'s.
+        elements[id] = root;
         next.emplace(id, std::move(p));
     }
 
@@ -3788,6 +4668,103 @@ void Renderer::update_composition(double now) {
         p.reach = p.clip;
         elements[id] = el;
         next.emplace(id, std::move(p));
+    }
+
+    // A box-shadow pulse (a live dot): a round box whose one outer shadow grows (spread) and fades, never
+    // offset or blurred. A spread shadow of a circle is a bigger circle: the shadow at its widest, a disc
+    // in the shadow's colour, scaled about the centre and faded by a track, makes every frame of it. It
+    // goes under a still layer of the element without its shadows; the document leaves the element out.
+    for (const Planned* planned_ring : rings) {
+        int64_t id = planned_ring->id;
+        const Animator::Plan& plan = planned_ring->plan;
+        const Node* n = node(pseudo_owner(id));
+        auto el = container_->element(id);
+        // What decides comes after "animates box-shadow" in composition_debug.
+        auto refuse = [&](const char* reason) { why_[id] = std::string("animates box-shadow; ring: ") + reason; };
+        if (!n || !el || next.count(id) || holds_animated.count(id) || !el->children().empty()) { refuse("children or something animated inside"); continue; }
+        bool blocked = false;
+        for (const Node* a = parent_node(id); a && !blocked; a = a->parent) blocked = a->id && blocks(a->id);
+        Promotion dot;
+        if (blocked || !container_->layer_candidate(el, dot.box) || !container_->clip_of(el, dot.has_clip, dot.clip, dot.clip_radii)) { refuse("not a layer candidate"); continue; }
+        const Rect box = dot.box;
+        // Round, and a plain opaque fill under the shadow.
+        Rect bounds;
+        DisplayList own = container_->draw_layer(el, {}, bounds);
+        bool plain = !own.empty() && std::abs(box.w - box.h) < 0.5f;
+        for (const Command& c : own) {
+            if (c.kind == Cmd::Shadow) continue;
+            plain = plain && c.kind == Cmd::FillRect && c.color.a == 255 && c.radii.tlx >= box.w / 2 - 0.5f && c.radii.tly >= box.h / 2 - 0.5f &&
+                    c.radii.brx >= box.w / 2 - 0.5f && c.radii.bry >= box.h / 2 - 0.5f;
+        }
+        if (!plain) { refuse("not a plain round box"); continue; }
+        // The widest the shadow gets, and its colour.
+        float widest = 0, strongest = 0;
+        Color colour;
+        bool ok = true;
+        for (int i = 0; i <= 32 && ok; i++) {
+            StyleValues values = animator_.peek(id, plan_time(plan, i / 32.0));
+            std::string text = animator_.base_value(id, "box-shadow");
+            for (auto it = values.rbegin(); it != values.rend(); ++it)
+                if (it->first == "box-shadow") { text = it->second; break; }
+            auto sh = parse_shadow(text);
+            ok = sh && sh->x == 0 && sh->y == 0 && sh->blur == 0 && sh->spread >= 0 && (i == 0 || (sh->color.r == colour.r && sh->color.g == colour.g && sh->color.b == colour.b));
+            if (!ok) break;
+            if (i == 0) colour = sh->color;
+            widest = std::max(widest, sh->spread);
+            strongest = std::max(strongest, float(sh->color.a));
+        }
+        if (!ok || widest <= 0 || strongest <= 0) { refuse("not one growing, unblurred, centred shadow"); continue; }
+        float r = box.w / 2, cx = box.x + r, cy = box.y + r, outer = r + widest;
+        Promotion ring;
+        ring.ring = true;
+        ring.box = Rect{cx - outer, cy - outer, outer * 2, outer * 2};
+        ring.has_clip = dot.has_clip;
+        ring.clip = dot.clip;
+        ring.clip_radii = dot.clip_radii;
+        Command disc;
+        disc.kind = Cmd::FillRect;
+        disc.rect = ring.box;
+        disc.radii = Radii{outer, outer, outer, outer, outer, outer, outer, outer};
+        disc.color = colour;
+        disc.color.a = uint8_t(strongest);
+        ring.tile = {disc};
+        ring.tile_version = paint_digest(ring.tile);
+        ring.signature = planned_ring->signature ^ 0x217Bull;
+        auto sample = [&](double t, LayerKey& out) {
+            StyleValues values = animator_.peek(id, plan_time(plan, t));
+            std::string text = animator_.base_value(id, "box-shadow");
+            for (auto it = values.rbegin(); it != values.rend(); ++it)
+                if (it->first == "box-shadow") { text = it->second; break; }
+            auto sh = parse_shadow(text);
+            if (!sh) return false;
+            float k = (r + sh->spread) / outer;
+            out.matrix = Affine::translate(cx, cy) * Affine{k, 0, 0, k, 0, 0} * Affine::translate(-cx, -cy);
+            out.opacity = float(sh->color.a) / strongest;
+            return true;
+        };
+        auto old = promoted_.find(id | RING_BIT);
+        bool same_span = old != promoted_.end() && old->second.ring && old->second.signature == ring.signature &&
+                         std::memcmp(&old->second.box, &ring.box, sizeof(Rect)) == 0 && old->second.track.repeat == plan.repeat &&
+                         std::fabs(old->second.track.duration - plan.duration) < 1e-6 && (plan.repeat || std::fabs(old->second.track.start - plan.start) < 1e-3);
+        if (same_span) {
+            ring.track = old->second.track;
+            ring.track_version = old->second.track_version;
+        } else {
+            ring.track.start = plan.start;
+            ring.track.duration = plan.duration;
+            ring.track.repeat = plan.repeat;
+            if (!bake_track(sample, ring.box, ring.track.keys)) { refuse("track does not bake"); continue; }
+            ring.track_version = next_version_++;
+        }
+        ring.reach = bounds_under(ring.box, Affine{});
+        if (ring.has_clip) ring.reach = intersection(ring.reach, ring.clip);
+        dot.shadowless = true;
+        dot.signature = planned_ring->signature ^ 0xD07ull;
+        if (!still_track(id, dot, now)) { refuse("no still track"); continue; }
+        elements[id] = el;
+        elements[id | RING_BIT] = el;
+        next.emplace(id, std::move(dot));
+        next.emplace(id | RING_BIT, std::move(ring));
     }
 
     // Only a layer nothing paints over can go above the document. Dropping one can uncover
@@ -3901,10 +4878,18 @@ void Renderer::update_composition(double now) {
             const Promotion& wanted_layer = next[id];
             if (wanted_layer.reach.empty() || !container_->covered(elements[id], wanted_layer.reach, trace, ignore_all)) continue;
             auto found = container_->obscurers(elements[id], wanted_layer.reach, trace, ignore_all, MAX_OBSCURERS);
-            if (!found || found->empty() || found->size() > budget) continue;
+            if (!found || found->empty()) continue;
+            // A descendant of another obscurer goes in that one's layer (a <small> inside the <h3>).
+            {
+                std::vector<int64_t> tops;
+                for (int64_t o : *found)
+                    if (std::none_of(found->begin(), found->end(), [&](int64_t other) { return other != o && is_ancestor(other, o); })) tops.push_back(o);
+                *found = std::move(tops);
+            }
+            if (found->size() > budget) continue;
             std::vector<std::pair<int64_t, Promotion>> still;
             for (int64_t other : *found) {
-                const Node* n = node(other);
+                const Node* n = node(pseudo_owner(other));
                 auto el = container_->element(other);
                 Promotion s;
                 if (next.count(other) || animated.count(other) || !n || (n->svg && n->tag != "svg") || is_ancestor(other, id) || is_ancestor(id, other) || !el ||
@@ -3937,7 +4922,7 @@ void Renderer::update_composition(double now) {
     // nothing may cover is where the parent's keys take its reach.
     for (auto& [id, p] : next) {
         p.parent = 0;
-        for (const Node* a = node(id) ? node(id)->parent : nullptr; a && !p.parent; a = a->parent)
+        for (const Node* a = parent_node(id); a && !p.parent; a = a->parent)
             if (a->id && movers.count(a->id)) p.parent = a->id;
     }
     {
@@ -3991,6 +4976,14 @@ void Renderer::update_composition(double now) {
         }
     };
     drop_orphans(next);
+    // A ring and its element's still layer go together or not at all.
+    auto drop_halves = [&](std::map<int64_t, Promotion>& set) {
+        for (auto it = set.begin(); it != set.end();) {
+            bool half = (it->second.ring && !set.count(it->first & ~RING_BIT)) || (it->second.shadowless && !set.count(it->first | RING_BIT));
+            it = half ? set.erase(it) : std::next(it);
+        }
+    };
+    drop_halves(next);
     size_t rounds = next.size() + 1;
     for (size_t round = 0; round < rounds && !next.empty(); round++) {
         std::unordered_set<const litehtml::element*> ignore;
@@ -3998,7 +4991,16 @@ void Renderer::update_composition(double now) {
         std::vector<std::pair<int64_t, double>> uncovered;
         double total = 0;
         for (const auto& [id, p] : next) {
-            if (p.reach.empty() || container_->covered(elements[id], p.reach, trace, ignore)) continue;
+            // An empty reach is a layer that shows nothing (scale(0)): nothing can cover it, and it must stay one,
+            // or it would cover the layer under it again from the document.
+            if (!p.reach.empty() && container_->covered(elements[id], p.reach, trace, ignore)) {
+                auto by = container_->obscurers(elements[id], p.reach, trace, ignore, 8);
+                std::string list;
+                if (by)
+                    for (int64_t o : *by) list += " " + std::to_string(o);
+                why(id, "painted over by" + (by ? list : std::string(" >8 or unnamed")));
+                continue;
+            }
             double s = dpr_ * p.raster_scale;
             double cost = double(p.box.w + 2 * LAYER_MARGIN) * (p.box.h + 2 * LAYER_MARGIN) * s * s;
             uncovered.emplace_back(id, cost);
@@ -4016,6 +5018,8 @@ void Renderer::update_composition(double now) {
             admitted.emplace(id, std::move(next[id]));
         }
         drop_orphans(admitted);
+        drop_halves(admitted);
+        drop_halves(admitted);
         bool stable = admitted.size() == next.size();
         next = std::move(admitted);
         if (stable) break;
@@ -4029,7 +5033,14 @@ void Renderer::update_composition(double now) {
     }
     promoted_ = std::move(next);
     layer_ids_.clear();
-    for (const auto& [id, p] : promoted_) layer_ids_.insert(id);
+    for (const auto& [id, p] : promoted_) {
+        layer_ids_.insert(id);
+        why_[id] = p.scripted ? "layer (scripted)" : p.svg ? "layer (svg)" : p.canvas ? "layer (canvas)" : p.shimmer ? "layer (shimmer)" : p.svg_child ? "layer (svg child)" : p.ring ? "layer (box-shadow ring)" : p.shadowless ? "layer (under: its ring)" : "layer";
+    }
+    for (int64_t id : inert_) {
+        layer_ids_.insert(id);
+        why_[id] = "inert (draws nothing)";
+    }
     if (changed) {
         composition_only_ = false;
         dirty_ = true;
@@ -4038,6 +5049,157 @@ void Renderer::update_composition(double now) {
     (void)now;
     drop_all();
 #endif
+}
+
+std::string Renderer::composition_debug() const {
+    std::string out = "[";
+    bool first = true;
+    for (const auto& [id, reason] : why_) {
+        const Node* n = node(id);
+        std::string props;
+        const Node* owner = id > 0 && (id & RING_BIT) ? node(id & ~RING_BIT) : nullptr;
+        std::string tag = n ? n->tag : owner ? owner->tag + " ring" : id < 0 ? (pseudo_after(id) ? "::after" : "::before") : "?";
+        for (const auto& name : animator_.animated_properties(id)) props += (props.empty() ? "" : ",") + name;
+        out += std::string(first ? "" : ",") + "[" + std::to_string(id) + "," + twidget::Json::quote(tag) + "," + (n && n->svg ? "1" : "0") + "," +
+               twidget::Json::quote(props) + "," + twidget::Json::quote(reason) + "]";
+        first = false;
+    }
+    return out + "]";
+}
+
+std::string Renderer::layout_debug_json() const {
+    Json out = Json::object();
+    out.set("w", Json(width_)).set("h", Json(doc_height_)).set("dpr", Json(dpr_)).set("clock", Json(now_s()));
+    Json vars = Json::object();
+    for (const auto& [k, v] : theme_vars_) vars.set(k, Json(v));
+    out.set("vars", std::move(vars));
+    Json els = Json::array(), texts = Json::array(), anims = Json::array();
+    std::unordered_map<int64_t, std::string> paths;
+    auto lower = [](std::string s) {
+        for (char& c : s) c = char(std::tolower((unsigned char)c));
+        return s;
+    };
+#ifdef TW_LITEHTML_TWIDGET
+    // The k-th run of an element's own text that is not all white space, fragment by fragment.
+    auto text_runs_of = [&](const litehtml::element::ptr& el, const std::string& path) {
+        int k = 0;
+        bool open = false, blank = true;
+        std::vector<litehtml::element::ptr> run;
+        auto flush = [&]() {
+            if (open && !blank) {
+                for (const auto& t : run) {
+                    auto parent = t->parent();
+                    int handle = 0;
+                    float descent = 0, letter = 0, word = 0;
+                    bool metrics = parent && container_->font_info(uintptr_t(parent->css().get_font()), handle, descent, letter, word);
+                    auto text = std::dynamic_pointer_cast<litehtml::el_text>(t);
+                    t->for_each_render_item([&](const std::shared_ptr<litehtml::render_item>& ri) {
+                        litehtml::position placed = ri->get_placement();
+                        auto item = std::dynamic_pointer_cast<litehtml::render_text>(ri);
+                        auto add = [&](const litehtml::position& b, const std::string& s) {
+                            Json f = Json::array();
+                            f.push(Json(path)).push(Json(double(k))).push(Json(double(b.x))).push(Json(double(b.y))).push(Json(double(b.width)))
+                                .push(Json(double(b.height))).push(metrics ? Json(double(b.y + b.height) - descent) : Json()).push(Json(s));
+                            texts.push(std::move(f));
+                        };
+                        if (item && !item->fragments.empty()) {
+                            for (const auto& fragment : item->fragments) {
+                                litehtml::position b = fragment->pos();
+                                b.x += placed.x - ri->pos().x;
+                                b.y += placed.y - ri->pos().y;
+                                add(b, fragment->fragment_text);
+                            }
+                        } else if (text) {
+                            add(placed, item && item->cut >= 0 ? text->display_text().substr(0, size_t(item->cut)) : text->display_text());
+                        }
+                    });
+                }
+                k++;
+            }
+            open = false;
+            blank = true;
+            run.clear();
+        };
+        for (const auto& c : el->children()) {
+            if (c->is_text()) {
+                open = true;
+                // Blank as the browser side reads it (ASCII white space only): a run of &nbsp; is text.
+                if (!c->is_white_space()) {
+                    blank = false;
+                } else {
+                    std::string t;
+                    c->get_text(t);
+                    if (t.find_first_not_of(" \t\n\r\f") != std::string::npos) blank = false;
+                }
+                run.push_back(c);
+            } else if (!dynamic_cast<const litehtml::el_comment*>(c.get())) {
+                flush();
+            }
+        }
+        flush();
+    };
+#endif
+    // `hidden`: under a display: none element. A replaced element (an <svg>, an <img>) keeps a render item when its
+    // display is none, so that alone does not say it is not laid out (it read as shown with a 0 x 0 box).
+    std::function<void(const Node*, const std::string&, bool, bool)> walk = [&](const Node* n, const std::string& path, bool in_svg, bool hidden) {
+        std::unordered_map<std::string, int> seen;
+        for (const Node* c : n->children) {
+            if (c->kind != Node::Element) continue;
+            std::string tag = lower(c->tag);
+            std::string p = path + ">" + tag + ":" + std::to_string(++seen[tag]);
+            if (c->id) paths[c->id] = p;
+            auto el = c->id ? container_->element(c->id) : nullptr;
+            int flags = in_svg ? 1 : 0;
+            Rect b;
+            bool none = hidden || (el && el->css().get_display() == litehtml::display_none);
+            if (in_svg && none) {
+                // Inside a drawing a browser reports a hidden shape as a 0 x 0 box, never as not laid out.
+            } else if (!el || none || (!el->get_render_item() && !in_svg)) {
+                flags |= 2;
+            } else {
+                b = script_box_of(el);
+                if (!inline_boxes_of(el).empty()) flags |= 4;
+            }
+            Json e = Json::array();
+            e.push(Json(p)).push(Json(double(c->id))).push(Json(tag)).push(Json(double(b.x))).push(Json(double(b.y))).push(Json(double(b.w)))
+                .push(Json(double(b.h))).push(Json(double(flags)));
+            els.push(std::move(e));
+#ifdef TW_LITEHTML_TWIDGET
+            if (el && !in_svg && !(flags & 2) && tag != "svg") text_runs_of(el, p);
+#endif
+            walk(c, p, in_svg || tag == "svg", none);
+        }
+    };
+    if (body_node_) {
+        paths[body_node_->id] = "body";
+        if (auto el = body_node_->id ? container_->element(body_node_->id) : nullptr) {
+            Rect b = border_box_of(el);
+            Json e = Json::array();
+            e.push(Json("body")).push(Json(double(body_node_->id))).push(Json("body")).push(Json(double(b.x))).push(Json(double(b.y)))
+                .push(Json(double(b.w))).push(Json(double(b.h))).push(Json(0.0));
+            els.push(std::move(e));
+#ifdef TW_LITEHTML_TWIDGET
+            text_runs_of(el, "body");
+#endif
+        }
+        walk(body_node_.get(), "body", false, false);
+    }
+    double now = now_s();
+    for (int64_t id : animator_.sampled_ids(now)) {
+        auto it = paths.find(id);
+        if (it == paths.end()) continue;
+        Json values = Json::object();
+        for (const auto& [property, value] : animator_.peek(id, now)) values.set(property, Json(container_->resolve_vars(id, value)));
+        Json a = Json::array();
+        a.push(Json(it->second)).push(Json(double(id))).push(std::move(values));
+        anims.push(std::move(a));
+    }
+    out.set("el", std::move(els)).set("tx", std::move(texts)).set("an", std::move(anims));
+    // A test harness's marker on <html> (tool/align_prelude.js: its virtual clock has stopped).
+    if (html_node_)
+        for (const auto& [name, value] : html_node_->attrs)
+            if (name == "data-tw-vclock") out.set("vclock", Json(value));
+    return out.dump();
 }
 
 // ───────────────────────── canvas ─────────────────────────
@@ -4073,6 +5235,8 @@ void Renderer::run_canvas(Canvas& canvas, const Json& cmds) {
     backend_.canvas_run(canvas.id(), canvas.width(), canvas.height(), ops);
     canvases_drawn_.insert(canvas.id());
     uint64_t draws = ++canvas_draws_[canvas.id()];
+    // Its first drawing makes it something that can cover a layer.
+    if (draws == 1) composition_key_ = 0;
     // Drawn a third time, a canvas looks animated: the Swift renderer presents such a canvas in a layer.
     if (draws >= 3 && canvas_layers_.size() < MAX_LAYERS && canvas_layers_.insert(canvas.id()).second) composition_key_ = 0;
     bool clean = !dirty_ || composition_only_;
@@ -4404,14 +5568,23 @@ void Renderer::note_svg(const Json::Array& ops) {
     }
     svg_streaks_ = std::move(streaks);
     if (added) composition_key_ = 0;
+    // A drawing whose shape is a layer of its own changed: a paint-only patch (cx, cy, r) lays nothing out, so the
+    // composition would keep the layer's track about where the shape was.
+    for (const auto& [id, p] : promoted_) {
+        if (!p.svg_child) continue;
+        for (const Node* n = node(id); n; n = n->parent)
+            if (n->kind == Node::Element && n->tag == "svg" && touched.count(n->id)) composition_key_ = 0;
+    }
 }
 
 bool Renderer::scripted_key(int64_t id, const Promotion& p, LayerKey& out) const {
-    const Node* n = node(id);
-    if (!n) return false;
+    // A ::before or ::after has no style attribute: what its rules declare (p.base) is all.
+    const Node* n = id < 0 ? nullptr : node(id);
+    if (!n && !(id < 0 && node(pseudo_owner(id)))) return false;
     auto value = [&](const char* property) -> std::string {
-        for (const auto& [name, v] : n->styles)
-            if (name == property) return v;
+        if (n)
+            for (const auto& [name, v] : n->styles)
+                if (name == property) return v;
         if (auto it = p.base.find(property); it != p.base.end()) return it->second;
         return animator_.base_value(id, property);
     };
@@ -4528,12 +5701,13 @@ DisplayList Renderer::paint_document() {
     dirty_ = false;
 #ifdef TW_LITEHTML_TWIDGET
     if (!promoted_.empty() || !composition_.layers.empty()) {
-        std::vector<std::pair<size_t, int64_t>> order;
+        std::vector<std::tuple<size_t, int, int64_t>> order;
         std::vector<litehtml::element::ptr> skip, backgrounds;
         for (const auto& [id, p] : promoted_) {
             if (auto el = container_->element(id)) {
-                order.emplace_back(p.order, id);
-                (p.shimmer ? backgrounds : skip).push_back(std::move(el));
+                // A ring goes right under its element's layer.
+                order.emplace_back(p.order, p.ring ? 0 : 1, id);
+                if (!p.ring) (p.shimmer ? backgrounds : skip).push_back(std::move(el));
             }
         }
         DisplayList list = container_->draw(skip, backgrounds);
@@ -4545,7 +5719,7 @@ DisplayList Renderer::paint_document() {
         std::unordered_map<int64_t, const Layer*> before;
         if (!all)
             for (const Layer& old : composition_.layers) before.emplace(old.id, &old);
-        for (const auto& [index, id] : order) {
+        for (const auto& [index, kind, id] : order) {
             const Promotion& p = promoted_.at(id);
             Layer layer;
             layer.id = id;
@@ -4553,7 +5727,7 @@ DisplayList Renderer::paint_document() {
             auto redrawn = [&](const DisplayList& list) { return std::any_of(list.begin(), list.end(), [&](const Command& c) { return c.canvas != 0 && canvases_drawn_.count(c.canvas); }); };
             bool keep = old != before.end() && !redrawn(old->second->content) &&
                         std::none_of(touched_.begin(), touched_.end(), [&](int64_t t) { return t == id || is_ancestor(id, t); });
-            if (p.shimmer) {
+            if (p.shimmer || p.ring) {
                 layer.content = p.tile;
                 layer.bounds = p.box;
                 layer.content_version = p.tile_version;
@@ -4565,6 +5739,10 @@ DisplayList Renderer::paint_document() {
                 paint_selection(layer.content, id, false);
             } else {
                 layer.content = container_->draw_layer(container_->element(id), skip, layer.bounds);
+                // Its ring layer under it is its shadow.
+                if (p.shadowless)
+                    layer.content.erase(std::remove_if(layer.content.begin(), layer.content.end(), [](const Command& c) { return c.kind == Cmd::Shadow; }),
+                                        layer.content.end());
                 paint_selection(layer.content, id, true);
                 layer.content_version = content_version(layer.content);
             }
@@ -4609,7 +5787,7 @@ Json Renderer::answer(const Json& q) {
         el = container_->element(id);
         if (!shadow || shadow->kind != Node::Element) return Json::object().set("error", "no such element");
     }
-    auto placement = [&]() -> Rect { return el ? border_box_of(el) : Rect{}; };
+    auto placement = [&]() -> Rect { return el ? script_box_of(el) : Rect{}; };
     // getBoundingClientRect is where the element shows, transforms included; the offset and client
     // sizes below are layout sizes, which transforms leave alone.
     if (kind == "rect") return rect_json(el ? visual_box_of(el) : Rect{});
@@ -4769,8 +5947,8 @@ int64_t Renderer::widget_id_at(double x, double y, Rect* placement) const {
         double now = now_s();
         for (const auto& [rank, id] : order) {
             const Promotion& p = promoted_.at(id);
-            // A shimmer's element stays in the document, which takes the point.
-            if (p.shimmer) continue;
+            // A shimmer's element stays in the document, which takes the point; a ring is its element's shadow.
+            if (p.shimmer || p.ring) continue;
             if (p.has_clip && !(x >= p.clip.x && y >= p.clip.y && x < p.clip.x + p.clip.w && y < p.clip.y + p.clip.h)) continue;
             Affine shown, inverse;
             float opacity = 1;
@@ -5134,10 +6312,15 @@ void Renderer::set_capture(Touch& t, int64_t id, std::vector<Json>& out) {
     if (id) emit_event("gotpointercapture", id, box_of(id), t, 1, out);
 }
 
+const Renderer::Node* Renderer::parent_node(int64_t id) const {
+    if (id < 0) return node(pseudo_owner(id));
+    const Node* n = node(id);
+    return n ? n->parent : nullptr;
+}
+
 bool Renderer::is_ancestor(int64_t ancestor, int64_t id) const {
     if (!ancestor) return false;
-    const Node* n = node(id);
-    for (const Node* p = n ? n->parent : nullptr; p; p = p->parent)
+    for (const Node* p = parent_node(id); p; p = p->parent)
         if (p->id == ancestor) return true;
     return false;
 }
@@ -5552,6 +6735,418 @@ void Renderer::stop_paint(const paint::Verdict& verdict) {
     dirty_ = touched_all_ = true;
     composition_only_ = false;
     painted_valid_ = false;
+}
+
+// ───────────────────────── accessibility ─────────────────────────
+
+namespace {
+
+/// Runs of white space as one space, none at the ends.
+std::string collapse_space(const std::string& s) {
+    std::string out;
+    bool space = false;
+    for (char c : s) {
+        if (c == ' ' || c == '\n' || c == '\t' || c == '\r' || c == '\f') {
+            space = !out.empty();
+            continue;
+        }
+        if (space) out.push_back(' ');
+        space = false;
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::string attr_of(const litehtml::element::ptr& el, const char* name) {
+    const char* v = el->get_attr(name);
+    return v ? css::trim(v) : std::string();
+}
+
+/// Where a text element's fragments are, document coordinates (Renderer::text_runs' boxes, joined).
+bool text_box(const litehtml::element::ptr& el, Rect& out) {
+    float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+    auto add = [&](const litehtml::position& b) {
+        if (float(b.width) <= 0 && float(b.height) <= 0) return;
+        x0 = std::min(x0, float(b.x)); y0 = std::min(y0, float(b.y));
+        x1 = std::max(x1, float(b.x + b.width)); y1 = std::max(y1, float(b.y + b.height));
+    };
+    el->for_each_render_item([&](const std::shared_ptr<litehtml::render_item>& ri) {
+        litehtml::position placed = ri->get_placement();
+        auto item = std::dynamic_pointer_cast<litehtml::render_text>(ri);
+        if (item && !item->fragments.empty()) {
+            for (const auto& fragment : item->fragments) {
+                litehtml::position box = fragment->pos();
+                box.x += placed.x - ri->pos().x;
+                box.y += placed.y - ri->pos().y;
+                add(box);
+            }
+        } else {
+            add(placed);
+        }
+    });
+    if (!std::isfinite(x0)) return false;
+    out = Rect{x0, y0, x1 - x0, y1 - y0};
+    return true;
+}
+
+Rect join(const Rect& a, const Rect& b, bool first) {
+    if (first) return b;
+    float x0 = std::min(a.x, b.x), y0 = std::min(a.y, b.y);
+    return Rect{x0, y0, std::max(a.x + a.w, b.x + b.w) - x0, std::max(a.y + a.h, b.y + b.h) - y0};
+}
+
+/// Not drawn, so not read: display none, visibility hidden, opacity 0, aria-hidden.
+bool unseen(const litehtml::element::ptr& el) {
+    const auto& c = el->css();
+    if (c.get_display() == litehtml::display_none || c.get_visibility() != litehtml::visibility_visible || c.get_opacity() <= 0) return true;
+    return attr_of(el, "aria-hidden") == "true";
+}
+
+/// Text in its own box: a block, an inline block, or a flex or grid item.
+bool own_box(const litehtml::element::ptr& el) {
+    if (!el->is_inline() || el->is_inline_box()) return true;
+    auto parent = el->parent();
+    if (!parent) return true;
+    auto d = parent->css().get_display();
+    return d == litehtml::display_flex || d == litehtml::display_inline_flex || d == litehtml::display_grid || d == litehtml::display_inline_grid;
+}
+
+std::string tag_of(const litehtml::element::ptr& el) {
+    const char* t = el->get_tagName();
+    return t ? lower(t) : std::string();
+}
+
+} // namespace
+
+const char* Renderer::role_name(AccessNode::Role role) {
+    static const char* names[] = {"text", "heading", "button", "link", "image", "checkbox", "switch", "radio", "tab", "slider", "progress", "textfield"};
+    return names[role];
+}
+
+std::vector<Renderer::AccessNode> Renderer::accessibility() const {
+    std::vector<AccessNode> out;
+#ifdef TW_LITEHTML_TWIDGET
+    litehtml::document* doc = container_->doc();
+    if (!doc || !doc->root()) return out;
+    using Role = AccessNode::Role;
+
+    // The role an element has on its own (its `role`, else its tag's), with its level and states.
+    struct Kind {
+        bool any = false;
+        Role role = AccessNode::Text;
+        int level = 0;
+        uint32_t flags = 0;
+        bool decorative = false;  // an image with alt="" or role none: nothing to read
+    };
+    auto kind_of = [&](const litehtml::element::ptr& el) {
+        Kind k;
+        std::string tag = tag_of(el), role = lower(attr_of(el, "role"));
+        auto set = [&](Role r) {
+            k.any = true;
+            k.role = r;
+        };
+        if (role == "presentation" || role == "none") {
+            k.decorative = tag == "img" || tag == "svg";
+            return k;
+        }
+        if (role == "button" || role == "menuitem" || role == "option") set(AccessNode::Button);
+        else if (role == "link") set(AccessNode::Link);
+        else if (role == "checkbox" || role == "menuitemcheckbox") set(AccessNode::Checkbox);
+        else if (role == "switch") set(AccessNode::Switch);
+        else if (role == "radio" || role == "menuitemradio") set(AccessNode::Radio);
+        else if (role == "tab") set(AccessNode::Tab);
+        else if (role == "heading") set(AccessNode::Heading);
+        else if (role == "img" || role == "image") set(AccessNode::Image);
+        else if (role == "slider") set(AccessNode::Slider);
+        else if (role == "progressbar" || role == "meter") set(AccessNode::Progress);
+        else if (role == "textbox" || role == "searchbox") set(AccessNode::TextField);
+        else if (tag == "button") set(AccessNode::Button);
+        else if (tag == "a" && el->get_attr("href")) set(AccessNode::Link);
+        else if (tag.size() == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6') {
+            set(AccessNode::Heading);
+            k.level = tag[1] - '0';
+        } else if (tag == "img") {
+            set(AccessNode::Image);
+            k.decorative = el->get_attr("alt") && attr_of(el, "alt").empty();
+        } else if (tag == "summary" && el->parent() && tag_of(el->parent()) == "details") {
+            set(AccessNode::Button);
+            k.flags |= AccessNode::Expandable | (el->parent()->get_attr("open") ? AccessNode::Expanded : 0);
+        } else if (tag == "progress" || tag == "meter") set(AccessNode::Progress);
+        else if (tag == "textarea") set(AccessNode::TextField);
+        else if (tag == "select") set(AccessNode::Button);
+        else if (tag == "input") {
+            std::string type = lower(attr_of(el, "type"));
+            if (type == "hidden") k.decorative = true;
+            else if (type == "checkbox") set(AccessNode::Checkbox);
+            else if (type == "radio") set(AccessNode::Radio);
+            else if (type == "range") set(AccessNode::Slider);
+            else if (type == "button" || type == "submit" || type == "reset" || type == "image") set(AccessNode::Button);
+            else set(AccessNode::TextField);
+            if ((type == "checkbox" || type == "radio")) k.flags |= AccessNode::Checkable | (el->get_attr("checked") ? AccessNode::Checked : 0);
+        }
+        if (k.role == AccessNode::Heading && k.level == 0) {
+            int level = std::atoi(attr_of(el, "aria-level").c_str());
+            k.level = level >= 1 && level <= 6 ? level : 2;
+        }
+        // States, whichever role names them.
+        auto tristate = [&](const char* name) {
+            std::string v = lower(attr_of(el, name));
+            if (v == "true") k.flags |= AccessNode::Checkable | AccessNode::Checked;
+            else if (v == "mixed") k.flags |= AccessNode::Checkable | AccessNode::Mixed;
+            else if (v == "false") k.flags |= AccessNode::Checkable;
+        };
+        tristate("aria-checked");
+        tristate("aria-pressed");
+        if (lower(attr_of(el, "aria-selected")) == "true") k.flags |= AccessNode::Selected;
+        std::string expanded = lower(attr_of(el, "aria-expanded"));
+        if (expanded == "true") k.flags |= AccessNode::Expandable | AccessNode::Expanded;
+        else if (expanded == "false") k.flags |= AccessNode::Expandable;
+        if (lower(attr_of(el, "aria-disabled")) == "true" || ((tag == "button" || tag == "input" || tag == "select" || tag == "textarea") && el->get_attr("disabled")))
+            k.flags |= AccessNode::Disabled;
+        return k;
+    };
+    auto actionable = [](Role r) {
+        return r == AccessNode::Button || r == AccessNode::Link || r == AccessNode::Checkbox || r == AccessNode::Switch || r == AccessNode::Radio ||
+               r == AccessNode::Tab || r == AccessNode::Slider || r == AccessNode::TextField;
+    };
+
+    // The text an element's content gives it, as a browser names a button from it: images by their alt or label,
+    // a separate box apart from its neighbours.
+    std::function<void(const litehtml::element::ptr&, std::string&)> text_of = [&](const litehtml::element::ptr& el, std::string& s) {
+        if (el->is_text()) {
+            el->get_text(s);
+            return;
+        }
+        if (unseen(el)) return;
+        std::string tag = tag_of(el);
+        if (tag == "br") {
+            s.push_back(' ');
+            return;
+        }
+        std::string label = attr_of(el, "aria-label");
+        if (label.empty() && tag == "img") label = attr_of(el, "alt");
+        if (label.empty() && tag == "svg") {
+            for (const auto& c : el->children())
+                if (!c->is_text() && tag_of(c) == "title") c->get_text(label);
+            label = collapse_space(label);
+        }
+        bool box = own_box(el);
+        if (box) s.push_back(' ');
+        if (!label.empty() || tag == "img" || tag == "canvas" || tag == "svg") {
+            s += label;
+        } else {
+            for (const auto& c : el->children()) text_of(c, s);
+        }
+        if (box) s.push_back(' ');
+    };
+    // An element no role names counts as a button by an outermost cursor: pointer, unless it holds controls of its own.
+    std::function<bool(const litehtml::element::ptr&)> holds_controls = [&](const litehtml::element::ptr& el) {
+        for (const auto& c : el->children()) {
+            if (c->is_text() || unseen(c)) continue;
+            Kind k = kind_of(c);
+            if (k.any && actionable(k.role)) return true;
+            if (holds_controls(c)) return true;
+        }
+        return false;
+    };
+    auto pointer_button = [&](const litehtml::element::ptr& el) {
+        std::string tag = tag_of(el);
+        if (tag == "html" || tag == "body" || el->css().get_cursor() != "pointer") return false;
+        auto parent = el->parent();
+        if (parent && parent->css().get_cursor() == "pointer") return false;
+        return !holds_controls(el);
+    };
+    auto number = [](const std::string& s, double& v) {
+        if (s.empty()) return false;
+        char* end = nullptr;
+        v = std::strtod(s.c_str(), &end);
+        return end != s.c_str() && std::isfinite(v);
+    };
+    auto value_of = [&](const litehtml::element::ptr& el, Role role, int64_t id) -> std::string {
+        std::string text = attr_of(el, "aria-valuetext");
+        if (!text.empty()) return text;
+        std::string tag = tag_of(el);
+        if (role == AccessNode::TextField) {
+            const Node* n = node(id);
+            return n ? control_value(n) : std::string();
+        }
+        bool native = tag == "progress" || tag == "meter" || tag == "input";
+        double now, lo = 0, hi = native && tag != "input" ? 1 : 100;
+        if (!number(attr_of(el, native ? "value" : "aria-valuenow"), now)) return {};
+        number(attr_of(el, native ? "min" : "aria-valuemin"), lo);
+        number(attr_of(el, native ? "max" : "aria-valuemax"), hi);
+        if (role == AccessNode::Slider) return Json::number(now);
+        if (hi <= lo) return {};
+        return std::to_string(int(std::lround(std::clamp((now - lo) / (hi - lo), 0.0, 1.0) * 100))) + "%";
+    };
+    // A tap at the box's centre, or else at another point of it, that lands on the element or inside it.
+    auto place_tap = [&](AccessNode& a) {
+        const Rect& b = a.box;
+        static const float points[][2] = {{.5f, .5f}, {.25f, .25f}, {.75f, .25f}, {.25f, .75f}, {.75f, .75f}, {.5f, .25f}, {.5f, .75f}, {.25f, .5f}, {.75f, .5f}};
+        for (const auto& p : points) {
+            float x = b.x + b.w * p[0], y = b.y + b.h * p[1];
+            int64_t hit = widget_id_at(x, y, nullptr);
+            if (hit == a.id || is_ancestor(a.id, hit)) {
+                a.tap_x = x;
+                a.tap_y = y;
+                return;
+            }
+        }
+        a.tap_x = b.x + b.w / 2;
+        a.tap_y = b.y + b.h / 2;
+        a.flags |= AccessNode::Unreachable;
+    };
+
+    // The text of the block being walked, read as one node when the block ends or a node of another role cuts it.
+    struct Block {
+        int64_t id = 0;
+        std::string text;
+        Rect box;
+        bool boxed = false;
+        bool live = false;
+    };
+    auto flush = [&](Block& b) {
+        std::string label = collapse_space(b.text);
+        if (!label.empty() && b.boxed) {
+            AccessNode a;
+            a.role = AccessNode::Text;
+            a.id = b.id;
+            a.box = b.box;
+            a.label = std::move(label);
+            if (b.live) a.flags |= AccessNode::Live;
+            out.push_back(std::move(a));
+        }
+        b.text.clear();
+        b.boxed = false;
+    };
+    std::function<void(const litehtml::element::ptr&, Block&, bool, bool)> walk = [&](const litehtml::element::ptr& el, Block& block, bool live, bool svg) {
+        if (el->is_text()) {
+            std::string t;
+            el->get_text(t);
+            block.text += t;
+            Rect r;
+            if (collapse_space(t).empty() || !text_box(el, r)) return;
+            auto parent = el->parent();
+            r = parent ? transformed_box(parent, r) : r;
+            block.box = join(block.box, r, !block.boxed);
+            block.boxed = true;
+            return;
+        }
+        if (unseen(el)) return;
+        std::string tag = tag_of(el);
+        if (tag == "head" || tag == "style" || tag == "title" || tag == "desc") return;
+        std::string live_attr = lower(attr_of(el, "aria-live")), role_attr = lower(attr_of(el, "role"));
+        if (!live_attr.empty()) live = live_attr != "off";
+        else if (role_attr == "status" || role_attr == "alert" || role_attr == "log" || role_attr == "timer") live = true;
+        Kind k = kind_of(el);
+        if (k.decorative) return;
+        bool by_cursor = !k.any && !svg && pointer_button(el);
+        if (by_cursor) {
+            k.any = true;
+            k.role = AccessNode::Button;
+        }
+        int64_t id = container_->widget_id(el, nullptr);
+        if (k.any) {
+            AccessNode a;
+            a.role = k.role;
+            a.id = id;
+            a.level = k.level;
+            a.flags = k.flags | (live ? AccessNode::Live : 0);
+            a.box = visual_box_of(el);
+            a.label = collapse_space(attr_of(el, "aria-label"));
+            if (a.label.empty() && tag == "img") a.label = collapse_space(attr_of(el, "alt"));
+            if (a.label.empty() && tag == "svg") {
+                std::string t;
+                text_of(el, t);
+                a.label = collapse_space(t);
+            }
+            if (a.label.empty() && a.role == AccessNode::TextField) a.label = collapse_space(attr_of(el, "placeholder"));
+            if (a.label.empty() && tag == "input" && a.role == AccessNode::Button) a.label = collapse_space(attr_of(el, "value"));
+            if (a.label.empty() && a.role != AccessNode::Image && a.role != AccessNode::TextField && a.role != AccessNode::Slider && a.role != AccessNode::Progress) {
+                std::string t;
+                for (const auto& c : el->children()) text_of(c, t);
+                a.label = collapse_space(t);
+            }
+            if (a.label.empty()) a.label = collapse_space(attr_of(el, "title"));
+            if (a.role == AccessNode::Slider || a.role == AccessNode::Progress || a.role == AccessNode::TextField) a.value = value_of(el, a.role, id);
+            // Nothing to read and nothing to do (an unlabelled image, an empty box) is left out. A pointer cursor
+            // with no name (a drag area: a seek bar, a dimmer) is no button.
+            bool empty = a.label.empty() && a.value.empty() && !actionable(a.role) && a.role != AccessNode::Progress;
+            if (!(by_cursor && a.label.empty())) {
+                if (empty || (a.box.w <= 0 && a.box.h <= 0)) return;
+                flush(block);
+                if (actionable(a.role)) place_tap(a);
+                out.push_back(std::move(a));
+                return;
+            }
+        }
+        // An SVG drawing or a canvas no role names: only an SVG's <text> is read.
+        if (tag == "canvas") return;
+        bool inner_svg = svg || tag == "svg";
+        if (inner_svg && tag == "text") {
+            std::string t;
+            text_of(el, t);
+            AccessNode a;
+            a.id = id;
+            a.box = visual_box_of(el);
+            a.label = collapse_space(t);
+            a.flags = live ? AccessNode::Live : 0;
+            flush(block);
+            if (!a.label.empty() && (a.box.w > 0 || a.box.h > 0)) out.push_back(std::move(a));
+            return;
+        }
+        if (!inner_svg && own_box(el)) {
+            flush(block);
+            Block mine;
+            mine.id = id;
+            mine.live = live;
+            for (const auto& c : el->children()) walk(c, mine, live, inner_svg);
+            flush(mine);
+            return;
+        }
+        for (const auto& c : el->children()) walk(c, block, live, inner_svg);
+    };
+    Block root;
+    walk(doc->root(), root, false, false);
+    flush(root);
+#endif
+    return out;
+}
+
+const std::string& Renderer::accessibility_json() const {
+#ifdef TW_LITEHTML_TWIDGET
+    litehtml::document* doc = container_->doc();
+    auto [painted, generation, layouts] = container_->paint_key();
+    auto key = std::make_tuple(painted, generation, layouts, doc ? doc->style_epoch() : 0);
+    if (key == access_key_) return access_json_;
+    access_key_ = key;
+    double t0 = now_ms();
+    std::string s = "[";
+    for (const AccessNode& a : accessibility()) {
+        if (s.size() > 1) s.push_back(',');
+        s += "{\"r\":\"" + std::string(role_name(a.role)) + "\",\"id\":" + std::to_string(a.id) + ",\"b\":[" + Json::number(a.box.x) + "," +
+             Json::number(a.box.y) + "," + Json::number(a.box.w) + "," + Json::number(a.box.h) + "]";
+        if (!a.label.empty()) s += ",\"l\":" + Json::quote(a.label);
+        if (!a.value.empty()) s += ",\"v\":" + Json::quote(a.value);
+        if (a.level) s += ",\"lv\":" + std::to_string(a.level);
+        if (a.flags) s += ",\"s\":" + std::to_string(a.flags);
+        if (a.tap_x || a.tap_y) s += ",\"t\":[" + Json::number(a.tap_x) + "," + Json::number(a.tap_y) + "]";
+        s.push_back('}');
+    }
+    s.push_back(']');
+    if (s != access_json_) {
+        access_json_ = std::move(s);
+        access_version_++;
+    }
+    access_builds_++;
+    access_ms_ += now_ms() - t0;
+#endif
+    return access_json_;
+}
+
+uint64_t Renderer::accessibility_version() const {
+    accessibility_json();
+    return access_version_;
 }
 
 // ───────────────────────── text selection ─────────────────────────

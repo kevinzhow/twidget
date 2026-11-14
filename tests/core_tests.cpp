@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <set>
 #include <string>
 #include <thread>
@@ -269,6 +270,123 @@ int main() {
         check(tag.find("color:red") != std::string::npos && tag.find("margin") == std::string::npos, "setting the style attribute replaces every inline declaration (" + tag + ")");
     }
 
+    // ── compositor layers: what the flutter-port branch lets the compositor play ──
+    {
+        StubBackend fb;
+        auto make = [&](Renderer& c, const std::string& css, const std::string& body_ops) {
+            c.set_compositing(true);
+            c.receive(parse(R"({"type":"ops","ops":[
+             {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+             {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+             {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+             {"op":"el","id":20,"tag":"style","attrs":[]},
+             {"op":"css","id":20,"text":")" + css + R"( @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}"},
+             {"op":"ins","parent":3,"id":20,"before":null},)" + body_ops + "]}"));
+            c.paint();
+        };
+        auto layer_ids = [](const Renderer& c) {
+            std::set<int64_t> out;
+            for (const Layer& l : c.composition().layers) out.insert(l.id);
+            return out;
+        };
+        {
+            // An element's own filter goes into its layer's content: CSS filters it in its local space.
+            Renderer c(300, 1, false, fb);
+            make(c, "#f{width:40px;height:40px;margin:20px;background:#ff0000;filter:blur(2px);animation:spin 1s linear infinite}",
+                 R"({"op":"el","id":40,"tag":"div","attrs":[["id","f"]]},{"op":"ins","parent":4,"id":40,"before":null})");
+            const Layer* f = nullptr;
+            for (const Layer& l : c.composition().layers)
+                if (l.id == 40) f = &l;
+            check(f != nullptr, "a spinning element with a filter of its own is a layer");
+            if (f) {
+                bool filtered = !f->content.empty() && f->content.front().kind == Cmd::FilterPush && f->content.back().kind == Cmd::FilterPop;
+                check(filtered, "its content is wrapped in its filter");
+                check(f->bounds.x <= 20 - 2 * 3 && f->bounds.x + f->bounds.w >= 60 + 2 * 3, "its bounds hold the blur's reach");
+            }
+            check(!c.wants_tick(), "and it needs no frames");
+            check(c.composition_debug().find("\"layer\"") != std::string::npos, "composition_debug names it a layer: " + c.composition_debug());
+        }
+        {
+            // An outer <svg> is a box of the HTML layout: its CSS animation is a layer's; an SVG child's is not.
+            Renderer c(300, 1, false, fb);
+            make(c, "svg{display:block;margin:20px;animation:spin 2s linear infinite} g{animation:spin 1s linear infinite}",
+                 R"({"op":"el","id":40,"tag":"svg","ns":"svg","attrs":[["width","40"],["height","40"],["viewBox","0 0 40 40"]]},{"op":"ins","parent":4,"id":40,"before":null},
+                    {"op":"el","id":41,"tag":"rect","ns":"svg","attrs":[["width","40"],["height","40"],["fill","red"]]},{"op":"ins","parent":40,"id":41,"before":null})");
+            check(layer_ids(c).count(40) == 1, "the outer svg is a layer (" + c.composition_debug() + ")");
+            check(!c.wants_tick(), "and needs no frames");
+        }
+        {
+            // An element that shows nothing (scale(0), a badge not shown yet) over a moving one becomes an
+            // empty still layer instead of keeping the mover in the document; an element animating no
+            // property does not count as animated.
+            Renderer c(300, 1, false, fb);
+            make(c, "#m{position:absolute;left:20px;top:20px;width:40px;height:40px;background:#ff0000;animation:spin 1s linear infinite}"
+                    " #b{position:absolute;left:30px;top:30px;width:20px;height:20px;background:#0000ff;transform:scale(0);transition:transform .3s}",
+                 R"({"op":"el","id":40,"tag":"div","attrs":[["id","m"]]},{"op":"ins","parent":4,"id":40,"before":null},
+                    {"op":"el","id":41,"tag":"div","attrs":[["id","b"]]},{"op":"ins","parent":4,"id":41,"before":null})");
+            auto ids = layer_ids(c);
+            check(ids.count(40) == 1 && ids.count(41) == 1, "the mover is a layer and the scale(0) badge over it an empty still one (" + c.composition_debug() + ")");
+        }
+        {
+            // A canvas nothing drew on (a confetti overlay over the whole card) shows nothing and covers nothing.
+            Renderer c(300, 1, false, fb);
+            make(c, "#m{width:40px;height:40px;margin:20px;background:#ff0000;animation:spin 1s linear infinite} canvas{position:absolute;left:0;top:0;width:300px;height:200px}",
+                 R"({"op":"el","id":40,"tag":"div","attrs":[["id","m"]]},{"op":"ins","parent":4,"id":40,"before":null},
+                    {"op":"el","id":41,"tag":"canvas","attrs":[["width","300"],["height","200"]]},{"op":"ins","parent":4,"id":41,"before":null})");
+            check(layer_ids(c).count(40) == 1, "a blank canvas over the mover leaves it a layer (" + c.composition_debug() + ")");
+            c.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":41,"cmds":[["s","fillStyle","#00ff00"],["c","fillRect",0,0,300,200]]}]})"));
+            c.paint();
+            check(layer_ids(c).count(40) == 0 || layer_ids(c).count(41) == 1, "once drawn on, the canvas covers it: the mover goes back to the document or the canvas becomes a layer over it");
+        }
+        {
+            // An element inside an SVG drawing with its own CSS animation is a layer: its track is in document
+            // coordinates (the view box scales by 2), its content the element alone, its clip the <svg>'s box.
+            Renderer c(300, 1, false, fb);
+            make(c, "svg{display:block} g{transform-origin:25px 25px;animation:spin 1s linear infinite} line{stroke:rgba(255,255,255,0);animation:fade 1s infinite}"
+                    " @keyframes fade{from{stroke-opacity:0}to{stroke-opacity:1}}",
+                 R"({"op":"el","id":40,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","100"],["viewBox","0 0 50 50"]]},{"op":"ins","parent":4,"id":40,"before":null},
+                    {"op":"el","id":41,"tag":"g","ns":"svg","attrs":[]},{"op":"ins","parent":40,"id":41,"before":null},
+                    {"op":"el","id":42,"tag":"rect","ns":"svg","attrs":[["width","10"],["height","10"],["fill","#ff0000"]]},{"op":"ins","parent":41,"id":42,"before":null},
+                    {"op":"el","id":43,"tag":"line","ns":"svg","attrs":[["x1","0"],["y1","40"],["x2","50"],["y2","40"]]},{"op":"ins","parent":40,"id":43,"before":null})");
+            const Layer* g = nullptr;
+            for (const Layer& l : c.composition().layers)
+                if (l.id == 41) g = &l;
+            check(g != nullptr, "the spinning <g> is a layer (" + c.composition_debug() + ")");
+            if (g) {
+                auto red = [](const DisplayList& list) {
+                    for (const Command& cmd : list)
+                        if (cmd.kind == Cmd::Path && cmd.path && cmd.path->fill && cmd.path->fill_color.r == 255 && cmd.path->fill_color.g == 0) return true;
+                    return false;
+                };
+                check(red(g->content) && !red(c.paint()), "the rect is in the layer's content, not in the document's");
+                check(g->has_clip && g->clip.x == 0 && g->clip.y == 0 && g->clip.w == 100 && g->clip.h == 100, "clipped to the <svg>'s box");
+                // A quarter turn about (25, 25) in the view box takes its corner (0, 0) to (50, 0): (100, 0) in the document.
+                const auto& keys = g->track.keys;
+                float x = 0, y = 0;
+                for (size_t i = 0; i + 1 < keys.size(); i++) {
+                    if (0.25f < keys[i].t || 0.25f > keys[i + 1].t) continue;
+                    float u = (0.25f - keys[i].t) / (keys[i + 1].t - keys[i].t);
+                    x = (1 - u) * keys[i].matrix.apply_x(0, 0) + u * keys[i + 1].matrix.apply_x(0, 0);
+                    y = (1 - u) * keys[i].matrix.apply_y(0, 0) + u * keys[i + 1].matrix.apply_y(0, 0);
+                }
+                check(std::fabs(x - 100) < 0.5f && std::fabs(y) < 0.5f, "a quarter of the track turns the corner to (100, 0) (" + std::to_string(x) + ", " + std::to_string(y) + ")");
+            }
+            // The line animates stroke-opacity under a stroke with alpha 0: it draws nothing, so it needs no frames.
+            check(c.composition_debug().find("inert") != std::string::npos, "the invisible line is inert (" + c.composition_debug() + ")");
+            check(!c.wants_tick(), "nothing here needs frames");
+        }
+        {
+            // Obscurers are grouped by their topmost one: an <h3> with an inline <small> over a mover is one still layer.
+            Renderer c(300, 1, false, fb);
+            make(c, "#m{position:absolute;left:0;top:0;width:100px;height:60px;background:#ff0000;animation:spin 9s linear infinite} h3{position:relative;margin:20px;font-size:14px}",
+                 R"({"op":"el","id":40,"tag":"div","attrs":[["id","m"]]},{"op":"ins","parent":4,"id":40,"before":null},
+                    {"op":"el","id":41,"tag":"h3","attrs":[]},{"op":"ins","parent":4,"id":41,"before":null},{"op":"text","id":42,"data":"Title "},{"op":"ins","parent":41,"id":42,"before":null},
+                    {"op":"el","id":43,"tag":"small","attrs":[]},{"op":"ins","parent":41,"id":43,"before":null},{"op":"text","id":44,"data":"sub"},{"op":"ins","parent":43,"id":44,"before":null})");
+            auto ids = layer_ids(c);
+            check(ids.count(40) == 1 && ids.count(41) == 1 && ids.count(43) == 0, "the mover and the heading (with its <small>) are layers (" + c.composition_debug() + ")");
+        }
+    }
+
     // ── compositor layers ──
     {
         StubBackend layered_backend;
@@ -359,7 +477,8 @@ int main() {
 
         // More painted over the spinner's sweep than can be made still layers: back to per-frame paint.
         std::string cover;
-        for (int k = 0; k < 4; k++)
+        // MAX_OBSCURERS + 1 boxes (8 since the flutter-port branch).
+        for (int k = 0; k < 9; k++)
             cover += std::string(k ? "," : "") + R"({"op":"el","id":)" + std::to_string(42 + k * 10) + R"(,"tag":"div","attrs":[["style","position:absolute;left:)" + std::to_string(k * 8) +
                      R"(px;top:0;width:30px;height:30px;background:#000"]]},{"op":"ins","parent":4,"id":)" + std::to_string(42 + k * 10) + R"(,"before":null})";
         c.receive(parse(R"({"type":"ops","ops":[)" + cover + "]}"));
@@ -370,7 +489,7 @@ int main() {
         check(c.wants_tick(), "which then needs frames again");
 
         // Width cannot be composited.
-        c.receive(parse(R"({"type":"ops","ops":[{"op":"rm","id":42},{"op":"rm","id":52},{"op":"rm","id":62},{"op":"rm","id":72},{"op":"el","id":43,"tag":"div","attrs":[["id","w"]]},{"op":"ins","parent":4,"id":43,"before":null}]})"));
+        c.receive(parse(R"({"type":"ops","ops":[{"op":"rm","id":42},{"op":"rm","id":52},{"op":"rm","id":62},{"op":"rm","id":72},{"op":"rm","id":82},{"op":"rm","id":92},{"op":"rm","id":102},{"op":"rm","id":112},{"op":"rm","id":122},{"op":"el","id":43,"tag":"div","attrs":[["id","w"]]},{"op":"ins","parent":4,"id":43,"before":null}]})"));
         c.paint();
         bool grows = false;
         for (const Layer& l : c.composition().layers) grows = grows || l.id == 43;
@@ -582,10 +701,13 @@ int main() {
         int builds = c.stats().builds;
         for (int i = 0; i < 3; i++) c.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":4,"name":"padding-top","value":")" + std::to_string(1 + i) + R"(px"}]})"));
         check(c.stats().builds == builds && c.wants_tick(), "while something animates, batches wait for the frame");
-        int patched = c.stats().in_place, serialised = c.stats().builds - c.stats().patched;
+        int patched = c.stats().in_place, serialised = c.stats().builds - c.stats().patched, all = c.stats().builds;
         c.tick();
-        // One build of the three batches (in place), and the animation's own style patches.
-        check(c.stats().in_place == patched + 1 && c.stats().builds - c.stats().patched == serialised, "and the frame builds them once, in place");
+        // One build of the three batches (in place), and the animation's own two style patches (in place too: they
+        // count as such since its pseudo-element patches do).
+        check(c.stats().in_place == patched + 3 && c.stats().builds == all + 3 && c.stats().builds - c.stats().patched == serialised,
+              "and the frame builds them once, in place (" + std::to_string(c.stats().in_place - patched) + " in place of " +
+              std::to_string(c.stats().builds - all) + ")");
         c.touch(0, 250, 250, 0, true, true, 0);
         int before = c.stats().builds;
         c.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":10,"name":"width","value":"90px"}]})"));
@@ -2135,6 +2257,20 @@ int main() {
         auto mixed = strokes("border:3px dashed #000;border-top:3px dashed #f00;border-radius:12px");
         check(mixed.size() == 4, "rounded dashed sides of different colours stroke the centre line under each side's share (" + std::to_string(mixed.size()) + ")");
         check(count(Cmd::Image) >= 13, "a repeated background is drawn once per tile, and the image once (got " + std::to_string(count(Cmd::Image)) + ")");
+        {
+            // With image tiling (the Flutter port's painter): one command, the tile at rect, repeated over the clip.
+            Renderer t(300, 1, false, ib);
+            t.set_image_tiling(true);
+            t.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":11,"tag":"div","attrs":[["style","width:60px;height:40px;background:url(data:image/png;base64,AAAA) 5px 0/20px 10px repeat-x"]]},{"op":"ins","parent":4,"id":11,"before":null}]})J"));
+            DisplayList tl = t.paint();
+            std::vector<const Command*> images;
+            for (const Command& c : tl)
+                if (c.kind == Cmd::Image) images.push_back(&c);
+            check(images.size() == 1 && images[0]->repeat == 1 && images[0]->rect.x == 5 && images[0]->rect.w == 20 && images[0]->clip.w == 60,
+                  "with image tiling a repeated background is one command, repeated across from its tile (" + std::to_string(images.size()) + " images)");
+        }
         bool contained = std::any_of(list.begin(), list.end(), [](const Command& c) { return c.kind == Cmd::Image && c.rect.w == 40 && c.rect.h == 20; });
         check(contained, "object-fit: contain fits the image inside its box");
         bool stops = std::any_of(list.begin(), list.end(), [](const Command& c) {
@@ -2792,6 +2928,1017 @@ int main() {
         int built = p.stats().builds - builds;
         double width = p.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":10}})"))[0]["result"]["width"].asNumber();
         check(built == 1 && width == 70, "which builds the task once (" + std::to_string(built) + " builds)");
+    }
+
+    // ── the test clock: a held time paints the same frame whenever it is painted ──
+    {
+        StubBackend tb;
+        Renderer::set_test_clock(100);
+        Renderer t(300, 1, false, tb);
+        t.receive(parse(PAGE));
+        t.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":12,"name":"class","value":"spin"}]})"));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        t.tick();
+        check(t.last_html().find("transform:rotate(0deg)") != std::string::npos, "held still, the animation stays at its start");
+        Renderer::set_test_clock(100.25);
+        t.tick();
+        check(Renderer::clock() == 100.25 && t.last_html().find("transform:rotate(90deg)") != std::string::npos,
+              "a quarter second later on the held clock it is a quarter turn on");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+        check(Renderer::clock() > 1000 || Renderer::clock() != 100.25, "NaN gives the clock back");
+    }
+
+    // ── ::before / ::after animations: sampled into a sheet of their own ──
+    {
+        StubBackend pb;
+        Renderer::set_test_clock(200);
+        Renderer p(300, 1, false, pb);
+        auto first = p.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}} @keyframes fade{from{opacity:1}to{opacity:0}} #a{width:40px;height:40px} #a::after{content:'';display:block;width:10px;height:10px;background:#f00;animation:spin 1s linear infinite} #a::before{content:'x';animation:fade 2s linear infinite}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},
+         {"op":"ins","parent":4,"id":10,"before":null}]})"));
+        auto out = p.tick();
+        bool start = false;
+        out.insert(out.begin(), first.begin(), first.end());
+        for (const Json& ev : events(out)) start = start || (ev["type"].asString() == "animationstart" && ev["targetId"].asNumber() == 10 && ev["pseudoElement"].asString() == "::after");
+        Renderer::set_test_clock(200.25);
+        p.tick();
+        std::string html = p.last_html();
+        check(html.find("[data-twid=\"10\"]::after{-lh-anim:1;transform:rotate(90deg) !important}") != std::string::npos,
+              "a quarter second in, ::after's spin is written for it: " + html.substr(0, 400));
+        check(html.find("[data-twid=\"10\"]::before{-lh-anim:1;opacity:0.875 !important}") != std::string::npos, "and ::before fades on its own clock");
+        check(p.wants_tick(), "they keep the clock ticking");
+        bool rotated = false;
+        for (const Command& c : p.paint())
+            if (c.kind == Cmd::GroupPush && std::abs(c.matrix[0]) < 1e-3 && std::abs(c.matrix[1] - 1) < 1e-3) rotated = true;
+        check(rotated, "the ::after box paints a quarter turn round");
+        // Later frames patch the boxes' paint values in place: no new document (a sweep behind a card's header
+        // rotating every frame rebuilt the whole card each frame).
+        auto fresh = [&] { return p.stats().builds - p.stats().patched; };
+        int before_fresh = fresh();
+        Renderer::set_test_clock(200.5);
+        p.tick();
+        auto turned = [&](double m0, double m1) {
+            for (const Command& c : p.paint())
+                if (c.kind == Cmd::GroupPush && std::abs(c.matrix[0] - m0) < 1e-3 && std::abs(c.matrix[1] - m1) < 1e-3) return true;
+            return false;
+        };
+        check(fresh() == before_fresh && turned(-1, 0), "half a second in: a half turn, patched without a new document (" +
+              std::to_string(fresh() - before_fresh) + ")");
+        // A class change on the owner restyles it and its boxes from the sheet: the frame still shows its own value.
+        p.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"x"}]})"));
+        Renderer::set_test_clock(200.75);
+        p.tick();
+        check(turned(0, -1), "three quarters in after the owner's restyle: three quarter turns");
+        check(p.last_html().find("[data-twid=\"10\"]::after{-lh-anim:1;transform:rotate(270deg) !important}") != std::string::npos,
+              "the document's HTML has the frame's value");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+        check(start, "animationstart goes to the owner, naming ::after");
+    }
+
+    // ── a spinning ::after is a compositor layer of its own ──
+    {
+        StubBackend lb;
+        Renderer l(300, 1, false, lb);
+        l.set_compositing(true);
+        l.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}} #a{position:relative;width:40px;height:40px;background:#00f} #a::after{content:'';position:absolute;left:10px;top:10px;width:10px;height:10px;background:#f00;animation:spin 1s linear infinite} #a::before{content:'';position:absolute;left:0;top:0;width:8px;height:8px;background:#0f0;animation:spin 2s linear infinite}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["id","a"]]},
+         {"op":"ins","parent":4,"id":10,"before":null}]})"));
+        auto doc = l.paint();
+        const Layer* after = nullptr;
+        for (const Layer& layer : l.composition().layers)
+            if (layer.id == -21) after = &layer;
+        auto red = [](const DisplayList& list) {
+            for (const Command& c : list)
+                if (c.kind == Cmd::FillRect && c.color.r == 255 && c.color.b == 0) return true;
+            return false;
+        };
+        check(after != nullptr, "owner 10's ::after (-21) is a layer: " + l.composition_debug());
+        check(after && red(after->content) && !red(doc), "its box is in the layer, not in the document");
+        check(!l.wants_tick(), "and it needs no frames");
+        bool before = false;
+        for (const Layer& layer : l.composition().layers) before = before || layer.id == -20;
+        check(before, "an absolute ::before with no display of its own is a box, a layer too");
+        // `#a > *` does not reach the pseudo-elements: they stay absolute, layers.
+        l.receive(parse(R"({"type":"ops","ops":[{"op":"css","id":20,"text":"@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}} #a{position:relative;width:40px;height:40px;background:#00f} #a > *{position:relative} #a::after{content:'';position:absolute;left:10px;top:10px;width:10px;height:10px;background:#f00;animation:spin 1s linear infinite} #a::before{content:'';position:absolute;left:0;top:0;width:8px;height:8px;background:#0f0;animation:spin 2s linear infinite}"}]})"));
+        l.paint();
+        int pseudo_layers = 0;
+        for (const Layer& layer : l.composition().layers) pseudo_layers += layer.id < 0;
+        check(pseudo_layers == 2, "a universal child selector does not match ::before / ::after: " + l.composition_debug());
+    }
+
+    // ── left / top of an absolutely positioned box: a translation track ──
+    {
+        StubBackend ob;
+        Renderer o(300, 1, false, ob);
+        o.set_compositing(true);
+        o.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"@keyframes fly{0%{left:0;transform:rotate(90deg)}50%{left:calc(100% - 20px);transform:rotate(90deg)}100%{left:0;transform:rotate(90deg)}} @keyframes grow{to{left:50px}} #p{position:relative;width:200px;height:40px} #m{position:absolute;left:0;top:10px;width:20px;height:20px;background:#f00;animation:fly 2s linear infinite} #n{position:absolute;left:0;right:100px;top:0;height:5px;background:#00f;animation:grow 2s linear infinite}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["id","p"]]},{"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"el","id":11,"tag":"div","attrs":[["id","m"]]},{"op":"ins","parent":10,"id":11,"before":null},
+         {"op":"el","id":12,"tag":"div","attrs":[["id","n"]]},{"op":"ins","parent":10,"id":12,"before":null}]})"));
+        o.paint();
+        const Layer* m = nullptr;
+        bool n = false;
+        for (const Layer& layer : o.composition().layers) {
+            if (layer.id == 11) m = &layer;
+            if (layer.id == 12) n = true;
+        }
+        check(m != nullptr, "an absolute box flying on left is a layer: " + o.composition_debug());
+        if (m) {
+            // Half way the box is 180 px on: its centre (10, 20) lands at (190, 20), turned a quarter.
+            double span = 0;
+            auto keys = resume_track(m->track, m->track.duration / 2, span);
+            const Affine& k = keys.front().matrix;
+            check(!keys.empty() && std::abs(k.apply_x(10, 20) - 190) < 0.5 && std::abs(k.apply_y(10, 20) - 20) < 0.5 && std::abs(k.a) < 1e-3,
+                  "half way its track has moved it by calc(100% - 20px) of the 200 px block, turned (" + std::to_string(k.apply_x(10, 20)) + ")");
+        }
+        check(!n, "a box whose right is set changes size with left: no layer");
+        check(o.wants_tick(), "and that one keeps the frames going");
+    }
+
+    // ── an equaliser bar's height in a fixed flex row: a stretch from the bottom ──
+    {
+        StubBackend eb;
+        Renderer e(300, 1, false, eb);
+        e.set_compositing(true);
+        e.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"@keyframes eq{50%{height:100%}} .eq{display:flex;width:18px;height:20px;align-items:flex-end;gap:2px} .eq i{display:block;width:3px;height:30%;background:#f00;border-radius:1px;animation:eq 1s linear infinite} .eq b{display:block;width:3px;height:30%;background:#f00;border:1px solid #000;animation:eq 1s linear infinite}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["class","eq"]]},{"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"el","id":11,"tag":"i","attrs":[]},{"op":"ins","parent":10,"id":11,"before":null},
+         {"op":"el","id":12,"tag":"b","attrs":[]},{"op":"ins","parent":10,"id":12,"before":null}]})"));
+        e.paint();
+        const Layer* bar = nullptr;
+        bool bordered = false;
+        for (const Layer& layer : e.composition().layers) {
+            if (layer.id == 11) bar = &layer;
+            if (layer.id == 12) bordered = true;
+        }
+        check(bar != nullptr, "a plain bar animating height at the bottom of a fixed flex row is a layer: " + e.composition_debug());
+        if (bar) {
+            double span = 0;
+            auto keys = resume_track(bar->track, bar->track.duration / 2, span);
+            const Affine& k = keys.front().matrix;
+            // 6 px tall at the bottom of a 20 px row (y 14..20); half way 20 px tall: its top at 0, its bottom still 20.
+            check(!keys.empty() && std::abs(k.apply_y(0, 14)) < 0.05 && std::abs(k.apply_y(0, 20) - 20) < 0.05,
+                  "half way the track stretches it to the full row, bottom fixed (" + std::to_string(k.apply_y(0, 14)) + ")");
+        }
+        check(!bordered, "a bar with a border is not a plain fill: no layer");
+    }
+
+    // ── a ::after painted over a moving box becomes a still layer, so the box stays one ──
+    {
+        StubBackend sb;
+        Renderer sr(300, 1, false, sb);
+        sr.set_compositing(true);
+        sr.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"@keyframes spin{to{transform:rotate(360deg)}} #h{position:relative;width:200px;height:80px} #h::after{content:'';position:absolute;right:0;top:0;width:150px;height:80px;background:rgba(255,255,255,.2)} #m{position:absolute;left:100px;top:20px;width:20px;height:20px;background:#f00;animation:spin 1s linear infinite}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["id","h"]]},{"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"el","id":11,"tag":"div","attrs":[["id","m"]]},{"op":"ins","parent":10,"id":11,"before":null}]})"));
+        sr.paint();
+        std::set<int64_t> ids;
+        for (const Layer& layer : sr.composition().layers) ids.insert(layer.id);
+        check(ids.count(11) && ids.count(-21), "the spinner is a layer under its owner's ::after, a still layer: " + sr.composition_debug());
+    }
+
+    // ── a box-shadow pulse: a ring layer under the still dot ──
+    {
+        StubBackend rb;
+        Renderer rr(300, 1, false, rb);
+        rr.set_compositing(true);
+        rr.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"@keyframes pulse{to{box-shadow:0 0 0 10px rgba(52,199,89,0)}} #d{margin:20px;width:8px;height:8px;border-radius:50%;background:#34c759;box-shadow:0 0 0 0 rgba(52,199,89,.5);animation:pulse 1.6s ease-out infinite} #e{margin:20px;width:8px;height:8px;border-radius:2px;background:#000;box-shadow:0 0 0 0 #f00;animation:pulse 1s infinite}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["id","d"]]},{"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"el","id":11,"tag":"div","attrs":[["id","e"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
+        auto doc = rr.paint();
+        const auto& layers = rr.composition().layers;
+        int ring = -1, dot = -1;
+        bool square = false;
+        for (size_t i = 0; i < layers.size(); i++) {
+            if (layers[i].id == (int64_t(10) | (int64_t(1) << 50))) ring = int(i);
+            if (layers[i].id == 10) dot = int(i);
+            if (layers[i].id == 11) square = true;
+        }
+        check(ring >= 0 && dot == ring + 1, "the pulse is a ring layer right under the dot's own: " + rr.composition_debug());
+        if (ring >= 0 && dot >= 0) {
+            bool shadow = false;
+            for (const Command& c : layers[dot].content) shadow = shadow || c.kind == Cmd::Shadow;
+            check(!shadow && layers[ring].content.size() == 1 && layers[ring].content[0].kind == Cmd::FillRect, "the dot's layer has no shadow, the ring is one disc");
+            double span = 0;
+            auto keys = resume_track(layers[ring].track, layers[ring].track.duration * 0.999, span);
+            check(!keys.empty() && std::abs(keys.front().opacity) < 0.02 && std::abs(keys.front().matrix.a - 1) < 0.02, "at the end it is the widest and gone");
+            keys = resume_track(layers[ring].track, 0, span);
+            check(!keys.empty() && std::abs(keys.front().opacity - 1) < 0.02 && std::abs(keys.front().matrix.a - 4.0 / 14) < 0.02, "at the start it is the dot's size, at full strength");
+        }
+        check(!square, "a square box's spread shadow is no scaled disc: no ring");
+    }
+
+    // ── SVG 2 geometry properties in CSS: r from a sheet and from an animation ──
+    {
+        StubBackend gb;
+        Renderer::set_test_clock(300);
+        Renderer g(300, 1, false, gb);
+        g.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":".dot{r:5;fill:#f00} .grow{animation:grow 1s linear infinite} @keyframes grow{from{r:4}to{r:12}}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":40,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","100"]]},{"op":"ins","parent":4,"id":40,"before":null},
+         {"op":"el","id":41,"tag":"circle","ns":"svg","attrs":[["class","dot"],["cx","50"],["cy","50"]]},{"op":"ins","parent":40,"id":41,"before":null},
+         {"op":"el","id":42,"tag":"circle","ns":"svg","attrs":[["class","dot grow"],["cx","20"],["cy","20"],["r","2"]]},{"op":"ins","parent":40,"id":42,"before":null}]})"));
+        auto bbox = [&](int id) {
+            return g.receive(parse(R"({"type":"query","qid":9,"query":{"q":"svg","id":)" + std::to_string(id) + R"(,"method":"getBBox","args":[]}})"))[0]["result"]["width"].asNumber();
+        };
+        check(std::abs(bbox(41) - 10) < 0.01, "a circle with no r attribute takes r: 5 from the sheet (width " + std::to_string(bbox(41)) + ")");
+        Renderer::set_test_clock(300.5);
+        g.tick();
+        check(std::abs(bbox(42) - 16) < 0.01, "an animated r beats the attribute: half way from 4 to 12 is 8 (width " + std::to_string(bbox(42)) + ")");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // ── layout_debug_json: elements by nth-of-type path, text runs, animated values ──
+    {
+        StubBackend lb;
+        Renderer d(300, 1, false, lb);
+        Renderer::set_test_clock(500);
+        d.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"p{margin:0;line-height:20px} .s{width:10px;height:10px;animation:spin 2s linear infinite} @keyframes spin{from{opacity:0}to{opacity:1}} i{display:none}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"p","attrs":[]},
+         {"op":"text","id":11,"data":"ab "},
+         {"op":"el","id":12,"tag":"b","attrs":[]},
+         {"op":"text","id":13,"data":"cd"},
+         {"op":"text","id":14,"data":" ef"},
+         {"op":"el","id":15,"tag":"p","attrs":[]},
+         {"op":"el","id":16,"tag":"div","attrs":[["class","s"]]},
+         {"op":"el","id":17,"tag":"i","attrs":[]},
+         {"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"ins","parent":10,"id":11,"before":null},
+         {"op":"ins","parent":10,"id":12,"before":null},
+         {"op":"ins","parent":12,"id":13,"before":null},
+         {"op":"ins","parent":10,"id":14,"before":null},
+         {"op":"ins","parent":4,"id":15,"before":null},
+         {"op":"ins","parent":4,"id":16,"before":null},
+         {"op":"ins","parent":4,"id":17,"before":null}
+        ]})"));
+        d.paint();
+        Renderer::set_test_clock(500.5);
+        d.tick();
+        Json j = parse(d.layout_debug_json());
+        auto el = [&](const std::string& path) -> Json {
+            for (const Json& e : j["el"].arr())
+                if (e[0].asString() == path) return e;
+            return Json();
+        };
+        check(el("body>p:2")[1].asNumber() == 15 && el("body>p:1>b:1")[1].asNumber() == 12, "layout_debug_json: paths count siblings of the same tag (" + j["el"].dump() + ")");
+        check(el("body>div:1")[5].asNumber() == 10 && el("body>div:1")[6].asNumber() == 10 && el("body>div:1")[4].asNumber() == 20,
+              "the div's border box is 10 x 10 under the 20 px line (" + el("body>div:1").dump() + ")");
+        check(int(el("body>i:1")[7].asNumber()) & 2, "a display: none element is flagged as not laid out");
+        check(int(el("body>p:1>b:1")[7].asNumber()) & 4, "an inline element is flagged inline");
+        std::string runs;
+        for (const Json& t : j["tx"].arr()) runs += t[0].asString() + "#" + std::to_string(int(t[1].asNumber())) + "=" + t[7].asString() + " ";
+        check(runs.find("body>p:1#0=ab") != std::string::npos && runs.find("body>p:1>b:1#0=cd") != std::string::npos && runs.find("body>p:1#1=ef") != std::string::npos,
+              "text runs: the p's two runs either side of the b, the b's own (" + runs + ")");
+        bool baseline = false;
+        for (const Json& t : j["tx"].arr())
+            if (t[7].asString() == "ab") baseline = std::abs(t[6].asNumber() - (t[3].asNumber() + t[5].asNumber() - std::round(16 * 0.2))) < 0.01;
+        check(baseline, "a fragment's baseline is its (rounded) descent above its box's bottom (" + j["tx"].dump() + ")");
+        bool opacity = false;
+        for (const Json& a : j["an"].arr())
+            if (a[0].asString() == "body>div:1") opacity = std::abs(std::atof(a[2]["opacity"].asString().c_str()) - 0.25) < 0.01;
+        check(opacity, "the animated opacity a quarter of the way: 0.25 (" + j["an"].dump() + ")");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // ── transition-delay: from calc(var()) in the shorthand, and a longhand over the shorthand (Chromium staggers them) ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        Renderer::set_test_clock(700);
+        d.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"div{height:10px;opacity:1} .v{--d:40ms;transition:opacity 300ms linear calc(var(--n) * var(--d) + 0 * 1ms)} .s{transition:opacity 300ms linear} .l{transition-property:opacity;transition-duration:300ms;transition-timing-function:linear;transition-delay:.1s} .r{transition-delay:1s} .r.s{transition:opacity 300ms linear} .off{opacity:0}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["class","v"],["style","--n:2"]]},
+         {"op":"el","id":11,"tag":"div","attrs":[["class","s"],["style","transition-delay:90ms"]]},
+         {"op":"el","id":12,"tag":"div","attrs":[["class","l"]]},
+         {"op":"el","id":13,"tag":"div","attrs":[["class","s"]]},
+         {"op":"el","id":14,"tag":"div","attrs":[["class","r s"]]},
+         {"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"ins","parent":4,"id":11,"before":null},
+         {"op":"ins","parent":4,"id":12,"before":null},
+         {"op":"ins","parent":4,"id":13,"before":null},
+         {"op":"ins","parent":4,"id":14,"before":null}
+        ]})"));
+        d.paint();
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"v off"},{"op":"attr","id":11,"name":"class","value":"s off"},
+            {"op":"attr","id":12,"name":"class","value":"l off"},{"op":"attr","id":13,"name":"class","value":"s off"},{"op":"attr","id":14,"name":"class","value":"r s off"}]})"));
+        d.tick();
+        auto opacity = [&](double t, const std::string& path) {
+            Renderer::set_test_clock(700 + t);
+            d.tick();
+            Json j = parse(d.layout_debug_json());
+            for (const Json& a : j["an"].arr())
+                if (a[0].asString() == path && a[2]["opacity"].isString()) return std::atof(a[2]["opacity"].asString().c_str());
+            return -1.0;
+        };
+        // div:1 waits 80 ms, div:2 90 ms, div:3 100 ms, div:4 none, div:5 none (its shorthand comes after the longhand).
+        double v_wait = opacity(0.079, "body>div:1"), s_wait = opacity(0.089, "body>div:2"), l_wait = opacity(0.099, "body>div:3");
+        check(std::fabs(v_wait - 1) < 1e-3 && std::fabs(s_wait - 1) < 1e-3 && std::fabs(l_wait - 1) < 1e-3,
+              "a delayed transition holds its start value through the delay (got " + std::to_string(v_wait) + ", " + std::to_string(s_wait) + ", " + std::to_string(l_wait) + ")");
+        double v_half = opacity(0.230, "body>div:1"), s_half = opacity(0.240, "body>div:2"), l_half = opacity(0.250, "body>div:3"), none = opacity(0.150, "body>div:4");
+        double reset = opacity(0.150, "body>div:5");
+        check(std::fabs(v_half - 0.5) < 1e-3 && std::fabs(s_half - 0.5) < 1e-3 && std::fabs(l_half - 0.5) < 1e-3 && std::fabs(none - 0.5) < 1e-3,
+              "and is half way 150 ms after it (calc(var()) in the shorthand, a transition-delay over the shorthand, the longhands; got " +
+                  std::to_string(v_half) + ", " + std::to_string(s_half) + ", " + std::to_string(l_half) + ", " + std::to_string(none) + ")");
+        check(std::fabs(reset - 0.5) < 1e-3, "a shorthand that wins over an earlier transition-delay resets it, as in the cascade (got " + std::to_string(reset) + ")");
+        double v_end = opacity(0.370, "body>div:1");
+        check(v_end > 0.03 && v_end < 0.04, "and ends 300 ms after its delay, not at 300 ms (got " + std::to_string(v_end) + ")");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // ── colours interpolate in premultiplied sRGB (CSS Color 4 §12.3, as Chromium) ──
+    {
+        std::string fade = interpolate("transparent", "rgb(33, 110, 57)", 0.34);
+        std::string mix = interpolate("rgba(255, 0, 0, 1)", "rgba(0, 0, 255, 0.5)", 0.5);
+        std::string opaque = interpolate("#000000", "#ffffff", 0.5);
+        std::string shadow = interpolate("0 0 4px transparent", "0 0 8px rgba(0, 0, 255, 1)", 0.5);
+        check(fade == "rgba(33, 110, 57, 0.34)", "a fade from transparent keeps the colour, not darker (got " + fade + ")");
+        check(mix == "rgba(170, 0, 85, 0.75)", "two alphas mix premultiplied (got " + mix + ")");
+        check(opaque == "rgba(127.5, 127.5, 127.5, 1)", "opaque colours mix as before (got " + opaque + ")");
+        check(shadow == "0 0 6px rgba(0, 0, 255, 0.5)", "a colour inside a longer value too (got " + shadow + ")");
+    }
+
+    // ── a gradient background layer is drawn in its tile (background-size, -position) and repeated as -repeat says ──
+    {
+        StubBackend gb;
+        Renderer d(300, 1, false, gb);
+        d.receive(parse(R"J({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":10,"tag":"div","attrs":[["style","width:80px;height:40px;background:linear-gradient(#0000ff,#0000ff) 10px 10px/20px 10px no-repeat"]]},
+         {"op":"el","id":11,"tag":"div","attrs":[["style","width:80px;height:40px;background:linear-gradient(90deg,#ff0000,#0000ff) 0 0/20px 100% repeat-x"]]},
+         {"op":"el","id":12,"tag":"div","attrs":[["style","width:80px;height:40px;background:linear-gradient(#00ff00,#000000)"]]},
+         {"op":"ins","parent":4,"id":10,"before":null},{"op":"ins","parent":4,"id":11,"before":null},{"op":"ins","parent":4,"id":12,"before":null}
+        ]})J"));
+        std::vector<Command> lin;
+        for (const Command& c : d.paint())
+            if (c.kind == Cmd::Linear) lin.push_back(c);
+        bool tile = lin.size() == 6 && lin[0].clip.x == 10 && lin[0].clip.y == 10 && lin[0].clip.w == 20 && lin[0].clip.h == 10;
+        bool across = tile;
+        for (int i = 0; tile && i < 4; i++) {
+            const Command& c = lin[1 + i];
+            across = across && c.clip.x == 20 * i && c.clip.y == 40 && c.clip.w == 20 && c.clip.h == 40 && c.ax == 20 * i && c.bx == 20 * i + 20;
+        }
+        bool whole = lin.size() == 6 && lin[5].clip.w == 80 && lin[5].clip.h == 40;
+        check(tile, "a sized no-repeat gradient is clipped to its tile (" + std::to_string(lin.size()) + " gradients)");
+        check(across && whole, "repeat-x draws it once per tile, the gradient moved along; a layer the size of its box stays one command");
+    }
+
+    // ── an SVG shape's animation is a layer above the document only when no later shape of the drawing reaches it ──
+    {
+        StubBackend sb;
+        Renderer::set_test_clock(800);
+        Renderer g(300, 1, false, sb);
+        g.set_compositing(true);
+        g.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":".pu{transform-box:fill-box;transform-origin:center;animation:pu 2s linear infinite} @keyframes pu{from{transform:scale(1)}to{transform:scale(3)}}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":40,"tag":"svg","ns":"svg","attrs":[["width","200"],["height","60"]]},{"op":"ins","parent":4,"id":40,"before":null},
+         {"op":"el","id":41,"tag":"circle","ns":"svg","attrs":[["class","pu"],["cx","30"],["cy","30"],["r","5"]]},{"op":"ins","parent":40,"id":41,"before":null},
+         {"op":"el","id":42,"tag":"circle","ns":"svg","attrs":[["cx","30"],["cy","30"],["r","5"]]},{"op":"ins","parent":40,"id":42,"before":null},
+         {"op":"el","id":43,"tag":"circle","ns":"svg","attrs":[["class","pu"],["cx","150"],["cy","30"],["r","5"]]},{"op":"ins","parent":40,"id":43,"before":null}]})"));
+        g.paint();
+        g.tick();
+        std::string why = g.composition_debug();
+        auto reason = [&](int id) {
+            size_t at = why.find("[" + std::to_string(id) + ",");
+            return at == std::string::npos ? std::string() : why.substr(at, why.find(']', at) - at);
+        };
+        check(reason(41).find("a later shape draws over it") != std::string::npos, "a pulse under a dot drawn after it stays in the document (" + reason(41) + ")");
+        check(reason(43).find("layer") != std::string::npos && reason(43).find("later shape") == std::string::npos,
+              "the last shape's pulse is a layer (" + reason(43) + ")");
+        // Scaled about its own centre: the last key, scale 3, maps cx to itself; after cx moves, about the new one.
+        auto centre = [&]() {
+            for (const Layer& l : g.composition().layers)
+                if (l.id == 43 && !l.track.keys.empty()) {
+                    const Affine& m = l.track.keys.back().matrix;
+                    return m.a != 1 ? m.e / (1 - m.a) : -1.0f;
+                }
+            return -1.0f;
+        };
+        float before = centre();
+        g.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":43,"name":"cx","value":"100"}]})"));
+        for (double t : {800.1, 800.2}) {
+            Renderer::set_test_clock(t);
+            g.tick();
+            g.paint();
+        }
+        float after = centre();
+        check(std::fabs(before - 150) < 0.5 && std::fabs(after - 100) < 0.5,
+              "a new cx bakes the track about the new centre (fill-box; " + std::to_string(before) + " then " + std::to_string(after) + ")");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // ── a dotted border's dots are round past 3 device pixels (square at DPR 1 for 2 px, round at DPR 2) ──
+    {
+        auto cap = [&](double dpr) {
+            StubBackend db;
+            Renderer d(300, dpr, false, db);
+            d.receive(parse(R"({"type":"ops","ops":[
+             {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+             {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+             {"op":"el","id":10,"tag":"div","attrs":[["style","width:60px;height:40px;border-bottom:2px dotted #333"]]},{"op":"ins","parent":4,"id":10,"before":null}
+            ]})"));
+            for (const Command& c : d.paint())
+                if (c.kind == Cmd::Path && c.path && c.path->stroke && !c.path->dashes.empty()) return c.path->line_cap;
+            return -1;
+        };
+        int one = cap(1), two = cap(2);
+        check(one == 0 && two == 1, "2 px dots: square at DPR 1, round at DPR 2 (caps " + std::to_string(one) + ", " + std::to_string(two) + ")");
+    }
+
+    // ── layout_debug_json: a display: none <svg> or <img> (which keep a render item) is not laid out, nor what it holds ──
+    {
+        StubBackend hb;
+        Renderer d(300, 1, false, hb);
+        d.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".a .b svg{display:none} .a .i{display:inline} img{display:none}"},{"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"p","attrs":[["class","a"]]},{"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"el","id":11,"tag":"span","attrs":[["class","b"]]},{"op":"ins","parent":10,"id":11,"before":null},
+         {"op":"el","id":12,"tag":"svg","ns":"svg","attrs":[["class","i"],["width","24"],["height","24"]]},{"op":"ins","parent":11,"id":12,"before":null},
+         {"op":"el","id":13,"tag":"circle","ns":"svg","attrs":[["cx","5"],["cy","5"],["r","5"]]},{"op":"ins","parent":12,"id":13,"before":null},
+         {"op":"el","id":14,"tag":"img","attrs":[]},{"op":"ins","parent":10,"id":14,"before":null}
+        ]})"));
+        d.paint();
+        Json j = parse(d.layout_debug_json());
+        int hidden = 0;
+        for (const Json& e : j["el"].arr()) {
+            if ((e[0].asString() == "body>p:1>span:1>svg:1" || e[0].asString() == "body>p:1>img:1") && (int(e[7].asNumber()) & 2)) hidden++;
+            // A shape in it is, as a browser reports it, a 0 x 0 box in a drawing.
+            if (e[0].asString() == "body>p:1>span:1>svg:1>circle:1" && int(e[7].asNumber()) == 1 && e[5].asNumber() == 0 && e[6].asNumber() == 0) hidden++;
+        }
+        check(hidden == 3, "a hidden svg (the (0,3,1) rule over the (0,2,0) one) and a hidden img are not laid out, its circle is 0 x 0 (" + j["el"].dump() + ")");
+    }
+
+    // ── a border-collapse table's cell owns half of each collapsed border (getBoundingClientRect, as Chromium) ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        auto out = d.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":"table{border-collapse:collapse;table-layout:fixed;width:202px} td{border:2px solid #000;padding:0;height:20px} .s{border-collapse:separate}"},{"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"table","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"el","id":11,"tag":"tbody","attrs":[]},{"op":"ins","parent":10,"id":11,"before":null},
+         {"op":"el","id":12,"tag":"tr","attrs":[]},{"op":"ins","parent":11,"id":12,"before":null},
+         {"op":"el","id":13,"tag":"td","attrs":[]},{"op":"ins","parent":12,"id":13,"before":null},
+         {"op":"el","id":14,"tag":"td","attrs":[]},{"op":"ins","parent":12,"id":14,"before":null}
+        ]})"));
+        auto rect = [&](int id) {
+            for (const Json& m : d.receive(Json::object().set("type", "query").set("qid", 3).set("query", Json::object().set("q", "rect").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        Json a = rect(13), b = rect(14);
+        double pitch = b["x"].asNumber() - a["x"].asNumber();
+        check(std::fabs(a["width"].asNumber() - pitch) < 0.01, "adjacent collapsed cells do not overlap: width " + a.dump() + " = pitch " + std::to_string(pitch));
+    }
+
+    // ── a row's hidden flips in place (no new document), and [hidden] selectors still match ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        d.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".r{display:flex;height:10px} .r[hidden]{display:none} .x{height:5px}"},{"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["class","r"]]},{"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"el","id":11,"tag":"div","attrs":[["class","x"]]},{"op":"ins","parent":4,"id":11,"before":null}
+        ]})"));
+        d.paint();
+        auto y = [&](int id) {
+            Json j = parse(d.layout_debug_json());
+            for (const Json& e : j["el"].arr())
+                if (e[1].asNumber() == id) return e[4].asNumber();
+            return -1.0;
+        };
+        int in_place = d.stats().in_place;
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"hidden","value":""}]})"));
+        double hidden = y(11);
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"rattr","id":10,"name":"hidden"}]})"));
+        double shown = y(11);
+        check(hidden == 0 && shown == 10, "hidden on and off moves the next row up and down (" + std::to_string(hidden) + ", " + std::to_string(shown) + ")");
+        check(d.stats().in_place == in_place + 2, "both in place, without a new document (" + std::to_string(d.stats().in_place - in_place) + ")");
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"r a"},{"op":"el","id":12,"tag":"p","attrs":[]},{"op":"ins","parent":4,"id":12,"before":null}]})"));
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"hidden","value":""}]})"));
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":13,"tag":"p","attrs":[]},{"op":"ins","parent":4,"id":13,"before":null}]})"));
+        check(y(11) == 0, "after a patched hidden, a structural change builds the document with it (" + std::to_string(y(11)) + ")");
+        // An empty element's first text is a patch too (a row a list shows for the first time).
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":30,"tag":"span","attrs":[["class","pts"]]},{"op":"ins","parent":11,"id":30,"before":null}]})"));
+        int before = d.stats().in_place;
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"text","id":31,"data":"9,800"},{"op":"ins","parent":30,"id":31,"before":null}]})"));
+        bool text = d.last_html().find("9,800") != std::string::npos || parse(d.layout_debug_json()).dump().find("9,800") != std::string::npos;
+        check(text && d.stats().in_place == before + 1, "the first text of an empty element goes in place (" + std::to_string(d.stats().in_place - before) + ")");
+    }
+
+    // ── a row's top, height and width set by a script patch fast and lay out ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        d.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":10,"tag":"div","attrs":[["style","position:relative;height:100px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"el","id":11,"tag":"div","attrs":[["style","position:absolute;left:0;top:0px;height:10px;width:50%"]]},{"op":"ins","parent":10,"id":11,"before":null},
+         {"op":"el","id":12,"tag":"div","attrs":[["style","height:5px;width:20%"]]},{"op":"ins","parent":11,"id":12,"before":null}
+        ]})"));
+        d.paint();
+        auto box = [&](int id) {
+            Json j = parse(d.layout_debug_json());
+            for (const Json& e : j["el"].arr())
+                if (e[1].asNumber() == id) return std::vector<double>{e[3].asNumber(), e[4].asNumber(), e[5].asNumber(), e[6].asNumber()};
+            return std::vector<double>{};
+        };
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":11,"name":"style","value":"position:absolute;left:0;top:30px;height:20px;width:80%"},{"op":"attr","id":12,"name":"style","value":"height:5px;width:50%"}]})"));
+        auto a = box(11), b = box(12);
+        check(a.size() == 4 && a[1] == 30 && a[3] == 20 && a[2] == 240 && b.size() == 4 && b[1] == 30 && b[2] == 120,
+              "top, height and width patched: the row moves, grows and its bar follows");
+    }
+
+    // ── grid-area: 1 / 1 stacks items in one cell (a card's front and back faces) ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        d.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":".g{display:grid} .f{grid-area:1 / 1;height:30px} .b{grid-area:1 / 1;height:50px}"},{"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["class","g"]]},{"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"el","id":11,"tag":"div","attrs":[["class","f"]]},{"op":"ins","parent":10,"id":11,"before":null},
+         {"op":"el","id":12,"tag":"div","attrs":[["class","b"]]},{"op":"ins","parent":10,"id":12,"before":null}
+        ]})"));
+        d.paint();
+        Json j = parse(d.layout_debug_json());
+        double fy = -1, by = -1, gh = -1;
+        for (const Json& e : j["el"].arr()) {
+            if (e[1].asNumber() == 11) fy = e[4].asNumber();
+            if (e[1].asNumber() == 12) by = e[4].asNumber();
+            if (e[1].asNumber() == 10) gh = e[6].asNumber();
+        }
+        check(fy == 0 && by == 0 && gh == 50, "grid-area 1 / 1: both in the first cell, the grid as tall as the taller (" + std::to_string(fy) + ", " + std::to_string(by) + ", " + std::to_string(gh) + ")");
+    }
+
+    // ── a collapsed cell without a border of its own on a side gets half of its neighbour's there ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        d.receive(parse(R"({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},{"op":"css","id":20,"text":"table{border-collapse:collapse;width:200px} td{padding:0;height:20px} .a td{border-bottom:2px solid #000}"},{"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"table","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null},
+         {"op":"el","id":11,"tag":"tbody","attrs":[]},{"op":"ins","parent":10,"id":11,"before":null},
+         {"op":"el","id":12,"tag":"tr","attrs":[["class","a"]]},{"op":"ins","parent":11,"id":12,"before":null},
+         {"op":"el","id":13,"tag":"td","attrs":[]},{"op":"ins","parent":12,"id":13,"before":null},
+         {"op":"el","id":14,"tag":"tr","attrs":[]},{"op":"ins","parent":11,"id":14,"before":null},
+         {"op":"el","id":15,"tag":"td","attrs":[]},{"op":"ins","parent":14,"id":15,"before":null}
+        ]})"));
+        auto rect = [&](int id) {
+            for (const Json& m : d.receive(Json::object().set("type", "query").set("qid", 3).set("query", Json::object().set("q", "rect").set("id", id))))
+                if (m["type"].asString() == "result") return m["result"];
+            return Json();
+        };
+        Json a = rect(13), b = rect(15);
+        double pitch = b["y"].asNumber() - a["y"].asNumber();
+        check(std::fabs(a["height"].asNumber() - pitch) < 0.01, "a row under a row with only a border-bottom starts in that border's middle: " + a.dump() + " " + b.dump());
+    }
+
+    // ── layout_debug_json: a run of &nbsp; is text (as a browser reads it), a run of spaces is not ──
+    {
+        StubBackend nb;
+        Renderer d(300, 1, false, nb);
+        d.receive(parse("{\"type\":\"ops\",\"ops\":[{\"op\":\"el\",\"id\":2,\"tag\":\"html\",\"adopt\":\"html\",\"attrs\":[]},{\"op\":\"el\",\"id\":3,\"tag\":\"head\",\"adopt\":\"head\",\"attrs\":[]},"
+                        "{\"op\":\"el\",\"id\":4,\"tag\":\"body\",\"adopt\":\"body\",\"attrs\":[]},{\"op\":\"el\",\"id\":10,\"tag\":\"div\",\"attrs\":[]},{\"op\":\"ins\",\"parent\":4,\"id\":10,\"before\":null},"
+                        "{\"op\":\"text\",\"id\":11,\"data\":\"\xC2\xA0\"},{\"op\":\"ins\",\"parent\":10,\"id\":11,\"before\":null},{\"op\":\"el\",\"id\":12,\"tag\":\"div\",\"attrs\":[]},"
+                        "{\"op\":\"ins\",\"parent\":4,\"id\":12,\"before\":null},{\"op\":\"text\",\"id\":13,\"data\":\"  \"},{\"op\":\"ins\",\"parent\":12,\"id\":13,\"before\":null}]}"));
+        d.paint();
+        Json j = parse(d.layout_debug_json());
+        std::string runs;
+        for (const Json& t : j["tx"].arr()) runs += t[0].asString() + " ";
+        check(runs == "body>div:1 ", "the &nbsp; div has a text run, the spaces one none (" + runs + ")");
+    }
+
+    // ── CJK: a line breaks between kana too, not before 。 or small kana, not after 「 (UAX #14, as Chromium) ──
+    {
+        StubBackend jb;  // 8 px a byte: a kana or ideograph is 24 px
+        Renderer d(300, 1, false, jb);
+        d.receive(parse("{\"type\":\"ops\",\"ops\":[{\"op\":\"el\",\"id\":2,\"tag\":\"html\",\"adopt\":\"html\",\"attrs\":[]},{\"op\":\"el\",\"id\":3,\"tag\":\"head\",\"adopt\":\"head\",\"attrs\":[]},"
+                        "{\"op\":\"el\",\"id\":4,\"tag\":\"body\",\"adopt\":\"body\",\"attrs\":[[\"style\",\"margin:0\"]]},"
+                        "{\"op\":\"el\",\"id\":10,\"tag\":\"p\",\"attrs\":[[\"style\",\"width:50px;margin:0\"]]},{\"op\":\"ins\",\"parent\":4,\"id\":10,\"before\":null},"
+                        "{\"op\":\"text\",\"id\":11,\"data\":\"\xE3\x81\x82\xE3\x81\x84\xE3\x81\x86\xE3\x80\x82\xE3\x80\x8C\xE3\x81\x88\xE3\x81\x8A\xE3\x81\xA3\"},{\"op\":\"ins\",\"parent\":10,\"id\":11,\"before\":null}]}"));
+        d.paint();
+        Json j = parse(d.layout_debug_json());
+        std::map<double, std::string> lines;
+        for (const Json& t : j["tx"].arr()) lines[t[3].asNumber()] += t[7].asString();
+        std::string got;
+        for (const auto& [y, text] : lines) got += text + "|";
+        // あいう。「えおっ: あい | う。 | 「え | おっ
+        check(got == "\xE3\x81\x82\xE3\x81\x84|\xE3\x81\x86\xE3\x80\x82|\xE3\x80\x8C\xE3\x81\x88|\xE3\x81\x8A\xE3\x81\xA3|", "kana break per character, 。 and small っ stay with the one before, 「 with the one after (" + got + ")");
+    }
+
+    // ── SVG path data, dash lists and SVG lengths interpolate as Chromium mixes them ──
+    {
+        std::string half = interpolate("d", "M0 0L10 10", "path(\"M 0 10 L 20 30\")", 0.5);
+        std::string mixed = interpolate("d", "M10 10l5 0", "M10 10L20 10", 0.5);
+        std::string other = interpolate("d", "M0 0L10 10", "M0 0C1 1 2 2 3 3", 0.4);
+        check(half == "path(\"M 0 5 L 15 20\")", "two paths of the same commands mix point by point, written as path() (got " + half + ")");
+        check(mixed == "path(\"M 10 10 L 17.5 10\")", "a relative command mixes with its absolute pair in absolute coordinates (got " + mixed + ")");
+        check(!interpolable("d", "M0 0L10 10", "M0 0C1 1 2 2 3 3") && other == "path(\"M 0 0 L 10 10\")",
+              "paths of other commands are discrete: no transition, the nearer end (got " + other + ")");
+        std::string dashes = interpolate("stroke-dasharray", "10 5", "20", 0.5);
+        std::string offset = interpolate("stroke-dashoffset", "100", "0px", 0.25);
+        check(dashes == "15px, 12.5px", "dash lists repeat to a common length, then mix (got " + dashes + ")");
+        check(offset == "75px", "a plain number is a length in px (got " + offset + ")");
+        check(!interpolable("stroke-dasharray", "none", "4 2") && !interpolable("line-height", "0", "22px") && interpolable("line-height", "0px", "22px"),
+              "none with a dash list, and a plain line-height with a length, are discrete");
+        std::string calc = interpolate("left", "0", "calc(50% - 10px)", 0.5), mix = interpolate("width", "20px", "50%", 0.5);
+        check(calc == "calc(25% - 5px)" && mix == "calc(25% + 10px)", "lengths, percentages and calc() mix as px + % (got " + calc + ", " + mix + ")");
+        check(!interpolable("fill", "none", "#1c1c1e") && interpolable("fill", "#000000", "#1c1c1e") && interpolable("transform", "none", "rotate(30deg)"),
+              "fill: none with a colour is discrete (a transition does not fade it in from transparent black); none with a transform is not");
+        std::string over = interpolate("opacity", "0", "1", 1.2);
+        check(over == "1", "an overshooting easing leaves opacity at 1 (got " + over + ")");
+    }
+
+    // ── what transitions see: before-change values, inherit, presentation attributes; what the export shows after an end ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        Renderer::set_test_clock(900);
+        d.receive(parse(R"J({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
+         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"div{height:10px} .p{background-color:#000000} .w{animation-delay:.5s} .k{animation:k 1s linear both;animation-delay:inherit} .f{animation:f .2s linear forwards} @keyframes k{from{opacity:0}to{opacity:1}} @keyframes f{to{opacity:.3}} .line{transition:d 1s linear} .red{color:#ff0000} .glow{animation:glow 1s linear} @keyframes glow{50%{color:#0000ff}} .v{--lo:0;--hi:1;animation:vv 1s linear} @keyframes vv{from{opacity:var(--lo)}to{opacity:var(--hi)}}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["class","p"]]},
+         {"op":"el","id":11,"tag":"div","attrs":[["class","w"]]},
+         {"op":"el","id":12,"tag":"div","attrs":[["class","k"]]},
+         {"op":"el","id":13,"tag":"div","attrs":[["class","f"]]},
+         {"op":"ins","parent":4,"id":10,"before":null},{"op":"ins","parent":4,"id":11,"before":null},{"op":"ins","parent":11,"id":12,"before":null},
+         {"op":"ins","parent":4,"id":13,"before":null},
+         {"op":"el","id":14,"tag":"div","attrs":[["class","red"]]},{"op":"el","id":15,"tag":"div","attrs":[["class","glow"]]},
+         {"op":"ins","parent":4,"id":14,"before":null},{"op":"ins","parent":14,"id":15,"before":null},
+         {"op":"el","id":16,"tag":"div","attrs":[["class","v"]]},{"op":"ins","parent":4,"id":16,"before":null},
+         {"op":"el","id":30,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","20"]]},{"op":"ins","parent":4,"id":30,"before":null},
+         {"op":"el","id":31,"tag":"path","ns":"svg","attrs":[["class","line"],["d","M0 0L10 10"],["stroke","#000"]]},{"op":"ins","parent":30,"id":31,"before":null},
+         {"op":"el","id":32,"tag":"circle","ns":"svg","attrs":[["cx","10"],["cy","10"],["r","5"],["stroke","#000"],["stroke-dasharray","100 100"],["stroke-dashoffset","100"]]},
+         {"op":"ins","parent":30,"id":32,"before":null}
+        ]})J"));
+        d.paint();
+        d.tick();
+        // One batch gives the plain div a transition and a new colour, moves the path, and gives the circle a transition
+        // of the offset its attribute sets: each starts from the value before the batch.
+        d.receive(parse(R"J({"type":"ops","ops":[
+         {"op":"attr","id":10,"name":"style","value":"transition:background-color 1s linear;background-color:#ffffff"},
+         {"op":"attr","id":31,"name":"d","value":"M0 0L30 10"},
+         {"op":"attr","id":32,"name":"style","value":"transition:stroke-dashoffset 1s linear;stroke-dashoffset:0"}
+        ]})J"));
+        d.tick();
+        auto value = [&](double t, const std::string& path, const std::string& property) {
+            Renderer::set_test_clock(900 + t);
+            d.tick();
+            Json j = parse(d.layout_debug_json());
+            for (const Json& a : j["an"].arr())
+                if (a[0].asString() == path && a[2][property].isString()) return a[2][property].asString();
+            return std::string("-");
+        };
+        std::string bg = value(0.5, "body>div:1", "background-color");
+        check(bg == "rgba(127.5, 127.5, 127.5, 1)", "a transition declared in the same change as the new value runs from the old one (got " + bg + ")");
+        std::string path = value(0.5, "body>svg:1>path:1", "d");
+        check(path == "path(\"M 0 0 L 20 10\")", "a new d attribute transitions as a declared d (got " + path + ")");
+        std::string dash = value(0.5, "body>svg:1>circle:1", "stroke-dashoffset");
+        check(dash == "50px", "from the stroke-dashoffset attribute, a presentation attribute (got " + dash + ")");
+        std::string vars = value(0.25, "body>div:5", "opacity");
+        check(vars == "0.25", "keyframes of var() mix as their values (got " + vars + ")");
+        std::string glow = value(0.25, "body>div:4>div:1", "color");
+        check(glow == "rgba(127.5, 0, 127.5, 1)", "a keyframe without the colour is at the inherited one (got " + glow + ")");
+        std::string waiting = value(0.25, "body>div:2>div:1", "opacity"), running = value(1.0, "body>div:2>div:1", "opacity");
+        check(waiting == "0" && running == "0.5", "animation-delay: inherit waits as long as the parent's (got " + waiting + ", " + running + ")");
+        std::string filled = value(0.6, "body>div:3", "opacity");
+        check(filled != "-" && std::fabs(std::atof(filled.c_str()) - 0.3) < 1e-6, "an ended animation that fills forwards is still in the export (got " + filled + ")");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // ── border-color transitions from the colour a border shorthand set; a background from none starts transparent ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        Renderer::set_test_clock(960);
+        d.receive(parse(R"J({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"div{height:10px} .b{border:2px solid #000000;transition:border-color 1s linear,background 1s linear} .b.on{border-color:#ffffff;border-top-color:transparent;background:#ffffff}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["class","b"]]},{"op":"ins","parent":4,"id":10,"before":null}]})J"));
+        d.paint();
+        d.tick();
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"b on"}]})"));
+        d.tick();
+        Renderer::set_test_clock(960.5);
+        d.tick();
+        Json j = parse(d.layout_debug_json());
+        std::string border = "-", background = "-", top = "-";
+        for (const Json& a : j["an"].arr())
+            if (a[1].asNumber() == 10) {
+                if (a[2]["border-left-color"].isString()) border = a[2]["border-left-color"].asString();
+                if (a[2]["border-top-color"].isString()) top = a[2]["border-top-color"].asString();
+                if (a[2]["background"].isString()) background = a[2]["background"].asString();
+            }
+        check(border == "rgba(127.5, 127.5, 127.5, 1)", "a side's colour from the border shorthand's (got " + border + ")");
+        check(top == "rgba(0, 0, 0, 0.5)", "a later border-top-color of its own fades to transparent alone, as a spinner's does (got " + top + ")");
+        check(background == "rgba(255, 255, 255, 0.5)", "a background declared anew fades in from transparent (got " + background + ")");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // ── a background layer clipped to the padding box follows the padding edge's curves (a gradient border) ──
+    {
+        StubBackend gb;
+        Renderer d(300, 1, false, gb);
+        d.receive(parse(R"J({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":10,"tag":"div","attrs":[["style","width:100px;height:40px;border:2px solid transparent;border-radius:16px;background:linear-gradient(#ffffff,#ffffff) padding-box,linear-gradient(90deg,#0000ff,#ff0000) border-box"]]},
+         {"op":"ins","parent":4,"id":10,"before":null}]})J"));
+        std::vector<Command> lin;
+        for (const Command& c : d.paint())
+            if (c.kind == Cmd::Linear) lin.push_back(c);
+        bool inner = lin.size() == 2 && lin[1].radii.tlx == 14 && lin[1].radii.bry == 14 && lin[1].rect.x == 2 && lin[1].rect.w == 100;
+        bool outer = lin.size() == 2 && lin[0].radii.tlx == 16 && lin[0].rect.w == 104;
+        check(inner && outer, "the padding-box layer is rounded by 16 - 2 = 14 inside the padding box; the border-box one by 16 (" + std::to_string(lin.size()) + " gradients)");
+    }
+
+    // ── a colour that stops being declared transitions to the inherited one ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        Renderer::set_test_clock(990);
+        d.receive(parse(R"J({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;color:#000000"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"div{height:10px} .t{transition:color 1s linear} .muted{color:#ffffff}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["class","t muted"]]},{"op":"ins","parent":4,"id":10,"before":null}]})J"));
+        d.paint();
+        d.tick();
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"t"}]})"));
+        d.tick();
+        Renderer::set_test_clock(990.5);
+        d.tick();
+        std::string col = "-";
+        Json j = parse(d.layout_debug_json());
+        for (const Json& a : j["an"].arr())
+            if (a[1].asNumber() == 10 && a[2]["color"].isString()) col = a[2]["color"].asString();
+        check(col == "rgba(127.5, 127.5, 127.5, 1)", "a colour no longer declared transitions to the inherited one (got " + col + ")");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // ── background-position transitions ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        Renderer::set_test_clock(980);
+        d.receive(parse(R"J({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"div{height:10px;background:linear-gradient(#000,#fff);background-size:200% 100%;background-position:25% 50%;transition:background-position 1s linear} .go{background-position:75% 50%}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[]},{"op":"ins","parent":4,"id":10,"before":null}]})J"));
+        d.paint();
+        d.tick();
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"go"}]})"));
+        d.tick();
+        Renderer::set_test_clock(980.5);
+        d.tick();
+        std::string pos = "-";
+        Json j = parse(d.layout_debug_json());
+        for (const Json& a : j["an"].arr())
+            if (a[1].asNumber() == 10 && a[2]["background-position"].isString()) pos = a[2]["background-position"].asString();
+        check(pos == "50% 50%", "background-position transitions (got " + pos + ")");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // ── a running transition goes on when its element stops declaring one; display: none stops it ──
+    {
+        StubBackend tb;
+        Renderer d(300, 1, false, tb);
+        Renderer::set_test_clock(950);
+        d.receive(parse(R"J({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":20,"tag":"style","attrs":[]},
+         {"op":"css","id":20,"text":"div{height:10px;opacity:1} .tr{transition:opacity 1s linear} .off{opacity:0} .gone{display:none}"},
+         {"op":"ins","parent":3,"id":20,"before":null},
+         {"op":"el","id":10,"tag":"div","attrs":[["class","tr"]]},{"op":"el","id":11,"tag":"div","attrs":[["class","tr"]]},
+         {"op":"ins","parent":4,"id":10,"before":null},{"op":"ins","parent":4,"id":11,"before":null}]})J"));
+        d.paint();
+        d.tick();
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"tr off"},{"op":"attr","id":11,"name":"class","value":"tr off"}]})"));
+        d.tick();
+        Renderer::set_test_clock(950.2);
+        d.tick();
+        d.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":10,"name":"class","value":"off"},{"op":"attr","id":11,"name":"class","value":"off gone"}]})"));
+        d.tick();
+        Renderer::set_test_clock(950.5);
+        d.tick();
+        Json j = parse(d.layout_debug_json());
+        std::string kept = "-", stopped = "-";
+        for (const Json& a : j["an"].arr()) {
+            if (a[1].asNumber() == 10 && a[2]["opacity"].isString()) kept = a[2]["opacity"].asString();
+            if (a[1].asNumber() == 11 && a[2]["opacity"].isString()) stopped = a[2]["opacity"].asString();
+        }
+        check(kept == "0.5", "a transition whose declaration goes away runs on (got " + kept + ")");
+        check(stopped == "-", "under display: none it stops (got " + stopped + ")");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // ── dashes: percentages of the viewport's normalised diagonal, and in pathLength's units ──
+    {
+        StubBackend sb;
+        Renderer d(300, 1, false, sb);
+        d.receive(parse(R"J({"type":"ops","ops":[
+         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},{"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
+         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+         {"op":"el","id":30,"tag":"svg","ns":"svg","attrs":[["width","100"],["height","100"],["viewBox","0 0 100 100"]]},{"op":"ins","parent":4,"id":30,"before":null},
+         {"op":"el","id":31,"tag":"path","ns":"svg","attrs":[["d","M0 10L100 10"],["stroke","#000"],["pathLength","10"],["stroke-dasharray","1 1"],["stroke-dashoffset","0.5"]]},
+         {"op":"ins","parent":30,"id":31,"before":null},
+         {"op":"el","id":32,"tag":"path","ns":"svg","attrs":[["d","M0 50L100 50"],["stroke","#000"],["stroke-dasharray","10%"]]},
+         {"op":"ins","parent":30,"id":32,"before":null}
+        ]})J"));
+        std::vector<std::vector<float>> dashes;
+        std::vector<float> offsets;
+        for (const Command& c : d.paint())
+            if (c.kind == Cmd::Path && c.path && c.path->stroke) {
+                dashes.push_back(c.path->dashes);
+                offsets.push_back(c.path->dash_offset);
+            }
+        auto near = [](const std::vector<float>& v, float x) { return v.size() == 2 && std::fabs(v[0] - x) < 0.01 && std::fabs(v[1] - x) < 0.01; };
+        check(dashes.size() == 2 && near(dashes[0], 10) && std::fabs(offsets[0] - 5) < 0.01, "pathLength 10 on a 100 long path: dashes and offset ten times longer");
+        check(dashes.size() == 2 && near(dashes[1], 10), "10% of a 100 x 100 viewport's diagonal is 10");
+    }
+
+    // ── Ruby: the annotation over its base, centred, the pair as wide as the wider; <rp> hidden ──
+    {
+        StubBackend rb;  // 8 px a byte at any size
+        Renderer d(300, 1, false, rb);
+        d.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"p","attrs":[["style","margin:0;font-size:20px;line-height:40px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"a"},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"ruby"},{"op":"ins","parent":10,"id":12,"before":null},
+            {"op":"text","id":13,"data":"BB"},{"op":"ins","parent":12,"id":13,"before":null},
+            {"op":"el","id":14,"tag":"rp"},{"op":"ins","parent":12,"id":14,"before":null},{"op":"text","id":15,"data":"("},{"op":"ins","parent":14,"id":15,"before":null},
+            {"op":"el","id":16,"tag":"rt"},{"op":"ins","parent":12,"id":16,"before":null},{"op":"text","id":17,"data":"RRRR"},{"op":"ins","parent":16,"id":17,"before":null},
+            {"op":"text","id":18,"data":"c"},{"op":"ins","parent":10,"id":18,"before":null}]})J"));
+        DisplayList list = d.paint();
+        std::map<std::string, std::pair<int, int>> at;
+        for (const Command& c : list)
+            if (c.kind == Cmd::Text) at[c.text] = {int(c.x), int(c.y)};
+        // a: 8 px; the pair: RRRR's 32 px, BB centred in it; c after the pair; RRRR above BB, on one line with a and c.
+        check(at.count("RRRR") && at.count("BB") && at.count("c") && !at.count("("), "ruby: base, annotation and c drawn, no <rp>");
+        check(at["BB"].first == 16 && at["RRRR"].first == 8 && at["c"].first == 40, "ruby: the annotation widens the pair, the base centred in it (BB@" +
+              std::to_string(at["BB"].first) + " RRRR@" + std::to_string(at["RRRR"].first) + " c@" + std::to_string(at["c"].first) + ")");
+        check(at["RRRR"].second < at["BB"].second - 10 && at["BB"].second == at["c"].second && at["a"].second == at["c"].second,
+              "ruby: the annotation over the base, the base on the line's baseline");
+    }
+
+    // ── CJK line breaks: 。　 stays together and the ideographic space hangs; （abc） is one word ──
+    {
+        StubBackend jb;  // 8 px a byte: a kana or ideograph is 24 px
+        auto lines_of = [&](const std::string& style, const std::string& text) {
+            Renderer d(300, 1, false, jb);
+            d.receive(parse("{\"type\":\"ops\",\"ops\":[{\"op\":\"el\",\"id\":2,\"tag\":\"html\",\"adopt\":\"html\",\"attrs\":[]},{\"op\":\"el\",\"id\":3,\"tag\":\"head\",\"adopt\":\"head\",\"attrs\":[]},"
+                            "{\"op\":\"el\",\"id\":4,\"tag\":\"body\",\"adopt\":\"body\",\"attrs\":[[\"style\",\"margin:0\"]]},"
+                            "{\"op\":\"el\",\"id\":10,\"tag\":\"p\",\"attrs\":[[\"style\",\"" + style + "\"]]},{\"op\":\"ins\",\"parent\":4,\"id\":10,\"before\":null},"
+                            "{\"op\":\"text\",\"id\":11,\"data\":\"" + text + "\"},{\"op\":\"ins\",\"parent\":10,\"id\":11,\"before\":null}]}"));
+            d.paint();
+            Json j = parse(d.layout_debug_json());
+            std::map<double, std::string> lines;
+            for (const Json& t : j["tx"].arr()) lines[t[3].asNumber()] += t[7].asString();
+            std::string got;
+            for (const auto& [y, line] : lines) got += line + "|";
+            return got;
+        };
+        // あい。　う in 72 px: あい。　 | う (the space hangs past the end); before, the space began line 2.
+        std::string got = lines_of("width:72px;margin:0", "\xE3\x81\x82\xE3\x81\x84\xE3\x80\x82\xE3\x80\x80\xE3\x81\x86");
+        check(got == "\xE3\x81\x82\xE3\x81\x84\xE3\x80\x82\xE3\x80\x80|\xE3\x81\x86|", "the ideographic space after 。 ends the line and hangs (" + got + ")");
+        // あ（abcd） in 96 px: あ | （abcd）; before, （a stayed on line 1 and bcd） went on.
+        got = lines_of("width:96px;margin:0", "\xE3\x81\x82\xEF\xBC\x88" "abcd\xEF\xBC\x89");
+        check(got == "\xE3\x81\x82|\xEF\xBC\x88" "abcd\xEF\xBC\x89|", "a bracketed Latin word is not broken after its first letter (" + got + ")");
+    }
+
+    // ── Vertical text (writing-mode: vertical-rl on the root): the page turned, upright CJK turned back ──
+    {
+        StubBackend vb;
+        Renderer d(300, 1, false, vb);
+        d.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[["style","writing-mode:vertical-rl"]]},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"p","attrs":[["style","margin:0"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"text","id":11,"data":"あAB"},{"op":"ins","parent":10,"id":11,"before":null}]})J"));
+        DisplayList list = d.paint();
+        int depth = 0, upright_font = 0, sideways_font = 0, upright_depth = 0, sideways_depth = 0;
+        bool turned = false, back = false;
+        for (const Command& c : list) {
+            if (c.kind == Cmd::GroupPush) {
+                depth++;
+                if (c.matrix[0] == 0 && c.matrix[1] == 1 && c.matrix[2] == -1 && c.matrix[3] == 0 && c.matrix[4] == 300) turned = true;
+                if (c.matrix[0] == 0 && c.matrix[1] == -1 && c.matrix[2] == 1 && c.matrix[3] == 0) back = true;
+            } else if (c.kind == Cmd::GroupPop) {
+                depth--;
+            } else if (c.kind == Cmd::Text && c.text == "\xE3\x81\x82") {
+                upright_font = c.font;
+                upright_depth = depth;
+            } else if (c.kind == Cmd::Text && c.text == "AB") {
+                sideways_font = c.font;
+                sideways_depth = depth;
+            }
+        }
+        check(turned, "vertical-rl: the page is turned 90 degrees clockwise from the viewport's right edge");
+        check(back && upright_depth == sideways_depth + 1, "vertical-rl: an upright kana is turned back inside the page's turn, Latin is not");
+        check(upright_font && sideways_font && upright_font != sideways_font, "vertical-rl: upright glyphs use their own font (with vert)");
+    }
+
+    // ── 縦中横 and 傍点: a combined run upright in one em, a mark per character but not on punctuation ──
+    {
+        StubBackend vb;
+        Renderer d(300, 1, false, vb);
+        d.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[["style","writing-mode:vertical-rl"]]},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font-size:16px"]]},
+            {"op":"el","id":10,"tag":"p","attrs":[["style","margin:0"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span","attrs":[["style","-webkit-text-combine:horizontal"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"text","id":12,"data":"12"},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":13,"tag":"span","attrs":[["style","-webkit-text-emphasis-style:filled circle"]]},{"op":"ins","parent":10,"id":13,"before":null},
+            {"op":"text","id":14,"data":"\u3042\u3044\u3002"},{"op":"ins","parent":13,"id":14,"before":null}]})J"));
+        DisplayList list = d.paint();
+        float squeeze = 0;
+        int marks = 0;
+        for (size_t i = 0; i + 1 < list.size(); i++) {
+            if (list[i].kind == Cmd::GroupPush && list[i + 1].kind == Cmd::Text && list[i + 1].text == "12") squeeze = list[i].matrix[1];
+            if (list[i].kind == Cmd::Text && list[i].text == "\xE2\x97\x8F") marks++;
+        }
+        // The stub measures 12 as 16 px, an em: drawn upright (the turn back) without squeezing.
+        check(squeeze == -1, "text-combine-upright (as -webkit-text-combine): the run is turned back upright in one em");
+        check(marks == 2, "text-emphasis (as -webkit-): a filled circle on あ and い, none on 。 (" + std::to_string(marks) + ")");
     }
 
     std::printf("%d failure(s)\n", failures);

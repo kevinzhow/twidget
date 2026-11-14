@@ -47,6 +47,9 @@ public:
 private:
     struct Face {
         QFont font;
+        /// Qt rounds a font's pixel size to a whole one: a fractional size is made `1 / scale` times as
+        /// large (a whole size) and measured and drawn scaled back by `scale`.
+        qreal scale = 1;
         FontMetrics metrics;
         std::unordered_map<std::string, float> widths;
     };

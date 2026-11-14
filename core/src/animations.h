@@ -81,6 +81,13 @@ struct TransitionSpec {
 /// Interpolates two CSS values number by number when they have the same shape (colours normalised,
 /// `none` transforms expanded to identities, shorter transform lists padded); otherwise flips at 0.5.
 std::string interpolate(const std::string& a, const std::string& b, double t);
+/// `property`'s value at `t` between `a` and `b`, as Chromium mixes it: SVG path data (`d`) when both paths have the
+/// same commands, dash lists repeated to a common length, SVG lengths in px; nullopt when the pair is discrete.
+std::optional<std::string> interpolate_property(const std::string& property, const std::string& a, const std::string& b, double t);
+/// The same, a discrete pair flipping at 0.5; the value is written as a declaration of `property` takes it.
+std::string interpolate(const std::string& property, const std::string& a, const std::string& b, double t);
+/// Whether `a` and `b` interpolate: a transition starts only between such values (CSS Transitions §3, as Chromium).
+bool interpolable(const std::string& property, const std::string& a, const std::string& b);
 
 /// One `Element.animate()` effect as the sandbox reports it. Times in milliseconds; `start_ms` is
 /// already on the renderer's clock.
@@ -126,7 +133,15 @@ public:
     void set_style_sheets(const std::vector<std::string>& texts);
     /// The declared values of every element after a build; starts, restarts and stops animations
     /// and starts transitions where a watched value changed.
-    void update(const std::unordered_map<int64_t, Declared>& declarations, double now);
+    /// `before`: the values (watched()) elements had before the change that led here, for those not read until now: an
+    /// element that starts to declare a transition in the same change as a new value transitions from its old one.
+    /// `displayed`: whether an element is in the document and displayed; one that is keeps its running transitions when
+    /// it stops declaring any (without it, they stop).
+    /// `inherited`: the value an element inherits for a property (its parent's computed colour), for a colour that is
+    /// declared on one side of a change only.
+    using Inherited = std::function<std::optional<std::string>(int64_t, const std::string&)>;
+    void update(const std::unordered_map<int64_t, Declared>& declarations, double now, const std::unordered_map<int64_t, Declared>* before = nullptr,
+                const std::function<bool(int64_t)>& displayed = nullptr, const Inherited& inherited = nullptr);
     /// Style overrides at `now`, and the animation events crossed since the last sample.
     StyleOverrides sample(double now);
     /// Something will change on the next frame.
@@ -140,12 +155,19 @@ public:
     /// Elements whose animations, transitions or Web Animations still change something at `now`:
     /// not ended, paused, held or finished.
     std::vector<int64_t> animated_ids(double now) const;
+    /// What `sample` writes values for at `now`: animated_ids and the ended animations that fill forwards.
+    std::vector<int64_t> sampled_ids(double now) const;
+    /// (element, property) for the CSS animations whose keyframes set one of `properties` that the element does not
+    /// declare: its value there is what it inherits, which the renderer supplies in `underlying`.
+    std::vector<std::pair<int64_t, std::string>> undeclared(const std::vector<std::string>& properties) const;
     /// Every property the animations of `id` write.
     std::vector<std::string> animated_properties(int64_t id) const;
     /// What `sample` would write for `id` at `t`, without events and without changing any state.
     StyleValues peek(int64_t id, double t) const;
     /// `property` of `id` without its animations: as declared, or the property's initial value.
     std::string base_value(int64_t id, const std::string& property) const { return underlying_value(id, property); }
+    /// `id` is watched: its declared values are known (a before-change snapshot needs nothing of it).
+    bool knows(int64_t id) const { return bases_.count(id) != 0; }
     /// `id` declares an animation or a transition, whether or not one runs now.
     bool declares_motion(int64_t id) const;
     struct Plan {
@@ -191,6 +213,11 @@ public:
     /// The motions at `now` into `out` when it is given, and a hash of the set either way: equal sets hash equal.
     uint64_t heavy_motion(double now, std::vector<Motion>* out) const;
 
+    /// False while the page loads: its first script's changes are its first style, from which nothing transitions
+    /// (in a browser the parser runs the inline scripts before the first style). Renderer::set_loading.
+    bool transitions_allowed = true;
+    /// Substitutes the var() of a keyframe or declared value for an element (its custom properties); set by the renderer.
+    std::function<std::string(int64_t, const std::string&)> resolve_vars;
     /// The value an element has without animations, for Web Animations that add to it or leave a
     /// keyframe open. The renderer sets it before `sample`.
     std::unordered_map<int64_t, Declared> underlying;
@@ -224,7 +251,11 @@ private:
     std::string underlying_value(int64_t id, const std::string& property) const;
     /// `events` null: a peek, which reports nothing.
     std::optional<StyleValues> sample_animation(int64_t id, Running& item, const std::vector<Keyframe>& frames, double now, std::vector<AnimationEvent>* events) const;
-    StyleValues values(const std::vector<Keyframe>& frames, const Declared& base, double progress, const AnimationSpec& spec) const;
+    StyleValues values(int64_t id, const std::vector<Keyframe>& frames, const Declared& base, double progress, const AnimationSpec& spec) const;
+    /// `value` with its var() substituted for element `id` (resolve_vars), as keyframes are computed before they mix.
+    std::string with_vars(int64_t id, const std::string& value) const {
+        return resolve_vars && value.find("var(") != std::string::npos ? resolve_vars(id, value) : value;
+    }
     std::optional<std::string> transition_value(int64_t id, const std::string& property, double now) const;
     void prune_overrides();
     /// `only` non-zero: that target alone.

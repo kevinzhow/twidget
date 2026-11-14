@@ -28,6 +28,12 @@ target_link_libraries(twidget-qt-demo PRIVATE twidget::qt twidget-sandbox Qt6::W
 target_compile_definitions(twidget-qt-demo PRIVATE
     TW_WIDGET_JS="${TWIDGET_WIDGET_SANDBOX}/packages/desktop/WidgetJS"
     TW_CORPUS="${TWIDGET_WIDGET_SANDBOX}/corpus")
+# Parity snapshots: each card at fixed renderer times on the held clock (snap.cpp).
+add_executable(twidget-qt-snap snap.cpp widget_view.cpp qt_renderer.cpp)
+target_link_libraries(twidget-qt-snap PRIVATE twidget::qt twidget-sandbox Qt6::Widgets)
+target_compile_definitions(twidget-qt-snap PRIVATE
+    TW_WIDGET_JS="${TWIDGET_WIDGET_SANDBOX}/packages/desktop/WidgetJS"
+    TW_CORPUS="${TWIDGET_WIDGET_SANDBOX}/corpus")
 if(MSVC)
     target_compile_options(twidget-qt-demo PRIVATE /utf-8 /W3)
     target_compile_definitions(twidget-qt-demo PRIVATE NOMINMAX)

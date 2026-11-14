@@ -145,6 +145,44 @@ public:
     /// The matrix maps the box to where it shows: the CSS transforms around it as last painted, and its
     /// layer's track as of now, so a host lays its selection again while a layer moves. "[]" when none.
     std::string selectable_text_json() const;
+    /// A widget's accessibility summary: one node per element a screen reader reads or acts on, in document
+    /// order, not one per DOM node. widget-sandbox's profile gives HTML no accessibility semantics in v1 (D21) but
+    /// keeps `role`, `alt`, `title` and `aria-*` on the elements; the summary reads them as a browser would,
+    /// with the tags' own roles (button, a[href], h1–h6, img, details>summary, input, progress) and, for an
+    /// element no role names, an outermost `cursor: pointer` as a button.
+    struct AccessNode {
+        enum Role { Text, Heading, Button, Link, Image, Checkbox, Switch, Radio, Tab, Slider, Progress, TextField };
+        enum Flags : uint32_t {
+            Disabled = 1,
+            Checked = 2,
+            Mixed = 4,
+            Checkable = 8,   // has a checked or pressed state (aria-checked, aria-pressed, a checkbox's)
+            Selected = 16,
+            Expanded = 32,
+            Expandable = 64, // has an expanded state (aria-expanded, a <details>' summary)
+            Live = 128,      // inside an aria-live region other than off
+            Unreachable = 256, // a tap at `tap` does not reach the element (something covers all of it)
+        };
+        Role role = Text;
+        int64_t id = 0;     // the element's widget id; a text's is its block's (or the nearest with one)
+        Rect box;           // where it shows (its CSS transforms included), document CSS px
+        std::string label;  // aria-label, alt, the text, title
+        std::string value;  // a slider's or a progress' (aria-valuetext, or a percentage), a text field's text
+        int level = 0;      // a heading's, 1–6
+        uint32_t flags = 0;
+        float tap_x = 0, tap_y = 0; // where a tap reaches it: the platform activates it with a pointer press there
+    };
+    /// Built afresh from the document as laid out.
+    std::vector<AccessNode> accessibility() const;
+    /// accessibility() as JSON, `[{"r": role, "id", "b": [x, y, w, h], "l": label, "v": value, "lv": level,
+    /// "s": flags, "t": [x, y]}, ...]` (empty fields left out), made again only when the document, its layout or
+    /// its styles changed; accessibility_version() moves only when the JSON does.
+    const std::string& accessibility_json() const;
+    uint64_t accessibility_version() const;
+    /// Diagnostics: how often accessibility_json() made the summary afresh, and the time it took in all (ms).
+    uint64_t accessibility_builds() const { return access_builds_; }
+    double accessibility_ms() const { return access_ms_; }
+    static const char* role_name(AccessNode::Role role);
     /// One display frame: coalesced move events go out and animations advance. Returns renderer → host messages.
     std::vector<twidget::Json> tick();
     /// Something waits for the next frame: a running animation, a coalesced move, or messages a build in
@@ -157,10 +195,39 @@ public:
     /// Lets the platform's compositor run transform and opacity animations (compositor.h). Off by
     /// default: a platform that never turns it on gets every frame painted, as before.
     void set_compositing(bool enabled);
+    /// The host is still running the page's first script (true from creation until its load): changes until then start
+    /// no transition, as a browser's first style comes after the parser has run the inline scripts. Hosts that do not
+    /// say so get transitions from the start.
+    void set_loading(bool loading) { animator_.transitions_allowed = !loading; }
+    /// A repeated background image as one command with Command::repeat (its painter tiles it), not one per tile:
+    /// tiles drawn one by one at fractional positions show seams of a device pixel. Off by default.
+    void set_image_tiling(bool on) { image_tiling_ = on; }
+    bool image_tiling() const { return image_tiling_; }
     /// The layers that go above the display list `paint()` returned last.
     const Composition& composition() const { return composition_; }
+    /// For each element animated at the last composition: [id, tag, svg, "properties", "why it is or is not a layer"].
+    std::string composition_debug() const;
+    /// Diagnostics, for comparing the layout with a browser's (twidget-flutter's tool/chrome_align.py): the
+    /// document as laid out now, its elements keyed by a path a browser can compute from its own DOM.
+    /// `{"w": width, "h": document height, "dpr", "clock": renderer clock,
+    ///   "vars": {the theme variables on the root},
+    ///   "el": [[path, id, tag, x, y, w, h, flags], ...] every element under the body in document order, its border
+    ///         box before transforms (CSS px, document coordinates); flags: 1 inside an <svg> (the box is its
+    ///         geometry's), 2 not laid out (display: none or no box), 4 inline (the union of its line boxes);
+    ///   "tx": [[path, k, x, y, w, h, baseline, text], ...] the text fragments as laid out: the k-th run of the
+    ///         element's child text that is not all white space (consecutive text nodes are one run, comments
+    ///         between them are skipped, an element child ends a run), each fragment's box and its baseline;
+    ///   "an": [[path, id, {property: value}], ...] what the animations, transitions and Web Animations of each
+    ///         animated element give at the renderer clock, as CSS values (composited ones included)}`.
+    /// A path is `body>tag:n>tag:n...`, n the element's 1-based index among its siblings of the same tag
+    /// (lower case), as `:nth-of-type`. Pseudo-elements and the <head> are left out.
+    std::string layout_debug_json() const;
     /// The renderer clock, in seconds: what `LayerTrack::start` is on.
     static double clock() { return now_s(); }
+    /// Holds the renderer clock (every renderer in the process) at `seconds`; NaN gives it back to the
+    /// steady clock. Animations, transitions and layer tracks sample it, so frames painted at the same
+    /// held time match across platforms: for parity runs and tests, never for a live widget.
+    static void set_test_clock(double seconds);
     /// A backend that decodes images asynchronously (the web) reports the size of image `id` here;
     /// the document is rebuilt with it. Returns renderer → host messages (a `size`, when it changed).
     std::vector<twidget::Json> image_ready(int id, float w, float h);
@@ -337,10 +404,14 @@ private:
     EditorSpec editing_;
     std::string editing_initial_;
     uint64_t editor_generation_ = 0;
+    /// The node an element sits in: a ::before or ::after's owner, any other's parent.
+    const Node* parent_node(int64_t id) const;
     bool is_ancestor(int64_t ancestor, int64_t id) const;
     std::vector<int64_t> chain(int64_t id) const;
     // shadow tree → style attribute, with animation overrides
     void write_style(const Node* n, std::string& out) const;
+    // The sampled values of ::before and ::after (negative ids in overrides_) as a style sheet.
+    void write_pseudo_overrides(std::string& out) const;
     // animations
     static double now_s();
     void build_document(bool patch = false);
@@ -352,6 +423,9 @@ private:
         std::set<const Node*> texts;
     };
     bool attached(const Node* n) const;
+    void note_before_change(bool patch);
+    /// An element the document carries style and class attributes for, empty or not (holes for patches).
+    bool attribute_holes(const Node* n) const;
     void note_attribute(const Node* n, const std::string& name);
     void note_children(const Node* parent, const Node* child);
     /// The log into the document; false, leaving it as it was, when the log cannot say it all.
@@ -384,6 +458,12 @@ private:
         bool svg = false;
         /// A canvas drawn again and again: a still layer whose drawing repaints only it.
         bool canvas = false;
+        /// An element inside an SVG drawing (not its <svg>): content drawn alone, clipped to the <svg>'s box.
+        bool svg_child = false;
+        /// A box-shadow pulse (ring_id): the shadow alone as a disc, `tile`, scaled and faded by the track,
+        /// under the element's own still layer (`shadowless`: its content without its shadows).
+        bool ring = false;
+        bool shadowless = false;
         /// The layer this one moves with (Layer::parent), and the clip clip_of found before it was
         /// dropped or kept, to tell a clip of its own from the parent's.
         int64_t parent = 0;
@@ -391,6 +471,9 @@ private:
         Rect found_clip_rect;
     };
     void update_composition(double now);
+    std::map<int64_t, std::string> why_;
+    /// Elements of an SVG drawing that animate but draw nothing: no frames for them.
+    std::unordered_set<int64_t> inert_;
     // Scripted layers (the Swift renderer's): an element a script moves batch after batch through the
     // layer properties alone becomes a layer, and a batch that only moves such layers moves them
     // without a build or a paint. The document takes the batch with its next build.
@@ -576,6 +659,11 @@ private:
     } selection_;
     mutable std::tuple<const void*, uint32_t, uint64_t, uint64_t> runs_key_{};
     mutable std::vector<TextRun> runs_;
+    mutable std::tuple<const void*, uint32_t, uint64_t, uint64_t> access_key_{};
+    mutable std::string access_json_ = "[]";
+    mutable uint64_t access_version_ = 0;
+    mutable uint64_t access_builds_ = 0;
+    mutable double access_ms_ = 0;
     mutable std::pair<const void*, uint64_t> selectable_key_{};
     mutable bool selectable_ = false;
     std::unordered_set<std::string> prevent_;
@@ -601,6 +689,13 @@ private:
     bool frozen_fatal_ = false;
     std::array<double, 4> last_size_{};  // width, document height, viewport height, dpr as last reported
     uint64_t declared_generation_ = 0;
+    /// Within a rebuild: the watched values of the elements it restyles, as they were before (note_before_change).
+    std::unordered_map<int64_t, Declared> before_change_;
+    /// Elements whose attributes scripts changed since the last rebuild: true when a class or an attribute other than
+    /// style changed (selectors reach the descendants too).
+    std::map<int64_t, bool> restyled_;
+    /// A style sheet of the document mentions a transition.
+    bool sheets_transition_ = false;
     std::unordered_map<int, Touch> touches_;
     int64_t hover_ = 0;
     double hover_x_ = 0, hover_y_ = 0;
@@ -616,10 +711,14 @@ private:
 
     Animator animator_;
     StyleOverrides overrides_;
+    // The ::before / ::after values (negative ids) the built document's sheet holds (write_pseudo_overrides): while
+    // only their paint values move, a frame patches the boxes (Container::patch_generated) instead of a new document.
+    StyleOverrides built_pseudo_;
     std::string sheets_key_;
     bool animating_ = false;  // inside animate(): its own rebuild must not re-enter
 
     bool compositing_ = false;
+    bool image_tiling_ = false;
     std::map<int64_t, Promotion> promoted_;
     std::unordered_set<int64_t> layer_ids_;
     Composition composition_;
