@@ -3050,6 +3050,33 @@ int main() {
         check(Renderer::clock() > 1000 || Renderer::clock() != 100.25, "NaN gives the clock back");
     }
 
+    // ── a widget the host froze keeps its CSS animations (widget-sandbox core.ts freeze()) ──
+    {
+        // CPU, memory or a validator cap stops the script; the renderer stops its own frame loops and input, and the
+        // browser plays the widget's CSS animations on. The frozen look is upstream's: grayscale(.3), the badge.
+        StubBackend fb;
+        Renderer::set_test_clock(300);
+        Renderer f(300, 1, false, fb);
+        f.receive(parse(PAGE));
+        f.receive(parse(R"({"type":"ops","ops":[{"op":"attr","id":12,"name":"class","value":"spin"}]})"));
+        f.tick();
+        f.receive(parse(R"({"type":"frozen","reason":"Widget stopped","fatal":true})"));
+        f.tick();
+        Renderer::set_test_clock(300.25);
+        bool due = f.wants_tick();
+        f.tick();
+        std::string html = f.last_html();
+        check(due && html.find("transform:rotate(90deg)") != std::string::npos, "a frozen widget's CSS animation plays on (a quarter turn after a quarter second)");
+        check(html.find("data-tw-frozen=\"fatal\"") != std::string::npos && html.find("body{filter:grayscale(.3)}") != std::string::npos &&
+                  html.find("pointer-events:none") != std::string::npos && html.find("Widget stopped") != std::string::npos,
+              "with upstream's frozen look: grayscale(.3), the badge");
+        bool filtered = false;
+        for (const Command& cmd : f.paint()) filtered = filtered || cmd.kind == Cmd::FilterPush;
+        check(filtered, "and the grayscale is painted");
+        auto none = f.receive(parse(R"({"type":"ops","ops":[]})"));
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
     // ── ::before / ::after animations: sampled into a sheet of their own ──
     {
         StubBackend pb;
