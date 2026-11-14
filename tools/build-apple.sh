@@ -29,9 +29,9 @@ for arch in $archs; do
     -DCMAKE_SYSTEM_NAME="$system" -DCMAKE_OSX_SYSROOT="$sysroot" -DCMAKE_OSX_ARCHITECTURES="$arch" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$target" >/dev/null
   cmake --build "$build" --target twidget_litehtml
-  # One archive for the linker: the platform glue, the core and the fork.
+  # One archive for the linker: the platform glue, the core (with its display-list encoding) and the fork.
   libtool -static -o "$build/libtwidget_litehtml_all.a" \
-    "$build/libtwidget_litehtml.a" "$build/libtwidget_core.a" "$build/liblitehtml.a" 2>/dev/null
+    "$build/libtwidget_litehtml.a" "$build/libtwidget_core.a" "$build/libtwidget_display_list.a" "$build/liblitehtml.a" 2>/dev/null
   libs="$libs $build/libtwidget_litehtml_all.a"
 done
 [ -n "$libs" ] || { echo "build-apple.sh: no supported arch in ARCHS='$archs'" >&2; exit 1; }

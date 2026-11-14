@@ -23,8 +23,42 @@ if(NOT TWIDGET_WIDGET_SANDBOX)
     set(TWIDGET_WIDGET_SANDBOX "${CMAKE_CURRENT_SOURCE_DIR}/../widget-sandbox")
 endif()
 set(TW_SANDBOX_INCLUDE "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/include")
+# twidget::text (text/: HarfBuzz and the system's font matcher) is built on Linux desktops (it needs pkg-config's
+# HarfBuzz and fontconfig there) and on Android; other hosts measure text with their own backends.
+if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID) AND NOT EMSCRIPTEN)
+    set(TW_TEXT_DEFAULT ON)
+else()
+    set(TW_TEXT_DEFAULT OFF)
+endif()
+option(TWIDGET_TEXT "Build twidget::text, fonts and text measurement on HarfBuzz" ${TW_TEXT_DEFAULT})
+# litehtml, twidget::text and the display list's encoding need no widget-sandbox: without one, only they are built
+# (what a host that lays out documents of its own builds on).
+option(TWIDGET_LITEHTML_ONLY "Build only litehtml, twidget::text and the display-list encoding (implied when widget-sandbox is missing)" OFF)
 if(NOT EXISTS "${TW_SANDBOX_INCLUDE}/twidget/json.h")
-    message(FATAL_ERROR "widget-sandbox not found at ${TWIDGET_WIDGET_SANDBOX}: check it out next to twidget or set TWIDGET_WIDGET_SANDBOX to its path")
+    message(STATUS "widget-sandbox not found at ${TWIDGET_WIDGET_SANDBOX}: building litehtml, twidget::text and the display-list encoding only")
+    set(TWIDGET_LITEHTML_ONLY ON)
+endif()
+if(TWIDGET_LITEHTML_ONLY)
+    set(TW_LITEHTML "${CMAKE_CURRENT_SOURCE_DIR}/litehtml")
+    file(GLOB TW_GUMBO_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/gumbo/*.c")
+    file(GLOB TW_LITEHTML_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/*.cpp")
+    add_library(litehtml STATIC ${TW_GUMBO_SOURCES} ${TW_LITEHTML_SOURCES})
+    add_library(twidget::litehtml ALIAS litehtml)
+    target_include_directories(litehtml
+        PUBLIC "${TW_LITEHTML}/include" "${TW_LITEHTML}/include/litehtml" "${TW_LITEHTML}/gumbo-include"
+        PRIVATE "${TW_LITEHTML}/src")
+    target_compile_options(litehtml PRIVATE -w)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/core/display_list.cmake")
+    if(TWIDGET_TEXT)
+        add_subdirectory(text)
+    endif()
+    if(TWIDGET_BUILD_TESTS)
+        enable_testing()
+        add_executable(twidget_text_selection_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/text_selection_tests.cpp")
+        target_link_libraries(twidget_text_selection_tests PRIVATE twidget::litehtml)
+        add_test(NAME twidget_text_selection COMMAND twidget_text_selection_tests)
+    endif()
+    return()
 endif()
 # Who gets a press: the gesture policy every client shares (widget-sandbox v0.1.2 or later).
 set(TW_GESTURE_POLICY "${TWIDGET_WIDGET_SANDBOX}/packages/desktop/sandbox/src/gesture_policy.cpp")
@@ -82,11 +116,13 @@ add_library(twidget_core STATIC
     "${TW_CORE}/src/encode.cpp"
     "${TW_CORE}/src/filters.cpp"
     "${TW_CORE}/src/paint_policy.cpp"
-    "${TW_CORE}/src/png.cpp"
     "${TW_GESTURE_POLICY}")
 add_library(twidget::core ALIAS twidget_core)
 target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include" "${TW_SANDBOX_INCLUDE}" PRIVATE "${TW_GENERATED}")
-target_link_libraries(twidget_core PUBLIC litehtml)
+# The display list's binary encoding and the image header reader, which hosts without the core share
+# (core/display_list.cmake).
+include("${TW_CORE}/display_list.cmake")
+target_link_libraries(twidget_core PUBLIC litehtml twidget::display_list)
 target_compile_definitions(twidget_core PUBLIC TW_LITEHTML_TWIDGET)
 if(MSVC)
     target_compile_options(twidget_core PRIVATE /utf-8 /W3)
@@ -130,6 +166,11 @@ elseif(WIN32)
     endif()
 endif()
 
+# Fonts and text measurement on HarfBuzz (text/), which twidget_flutter's cards and other hosts build on.
+if(TWIDGET_TEXT)
+    add_subdirectory(text)
+endif()
+
 # Qt hosts (Telegram Desktop) on any desktop OS: fonts, images, canvases and the painter on QPainter.
 if(TWIDGET_QT)
     find_package(Qt6 REQUIRED COMPONENTS Gui)
@@ -161,6 +202,19 @@ if(TWIDGET_BUILD_TESTS)
         target_compile_options(twidget_paint_exclusion_rules_tests PRIVATE /utf-8)
     endif()
     add_test(NAME twidget_core COMMAND twidget_core_tests)
+    # litehtml's text selection over vertical-rl text and ruby, without TwidgetCore.
+    add_executable(twidget_text_selection_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/text_selection_tests.cpp")
+    target_link_libraries(twidget_text_selection_tests PRIVATE twidget::litehtml)
+    if(MSVC)
+        target_compile_options(twidget_text_selection_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME twidget_text_selection COMMAND twidget_text_selection_tests)
+    add_executable(twidget_accessibility_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/accessibility_tests.cpp")
+    target_link_libraries(twidget_accessibility_tests PRIVATE twidget::core)
+    if(MSVC)
+        target_compile_options(twidget_accessibility_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME twidget_accessibility COMMAND twidget_accessibility_tests)
     # The heavy-box rule against widget-sandbox's shared fixture, the one every client's renderer implements.
     add_executable(twidget_paint_policy_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/paint_policy_tests.cpp")
     target_link_libraries(twidget_paint_policy_tests PRIVATE twidget::core)

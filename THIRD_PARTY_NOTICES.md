@@ -9,6 +9,13 @@ twidget includes code from these projects. Their license texts are kept next to 
 | [three.js](https://github.com/mrdoob/three.js) r160 | `apple/Sources/Twidget3D/Resources/three.js` | MIT, Copyright (c) 2010-2023 three.js authors, see the file's header |
 | [Phosphor Icons](https://github.com/phosphor-icons/core) 2.1.1 (a subset, unmodified) | `apple/Sources/TwidgetAssets/icons`, and the path data in `apple/Sources/TwidgetAssets/twa_icon_data.inc` | MIT, Copyright (c) 2023 Phosphor Icons, see `apple/Sources/TwidgetAssets/icons/LICENSE` |
 
+twidget::text (`text/`) is built with HarfBuzz, on Android fetched at build time at a pinned release (SHA-256 in
+`text/CMakeLists.txt`) unless a checkout is given, elsewhere the system's; it is not in this repository:
+
+| Project | Used for | License |
+|---|---|---|
+| [HarfBuzz](https://github.com/harfbuzz/harfbuzz) 12.3.2 | text shaping | MIT ("Old MIT"), see its `COPYING` |
+
 QuickJS is not included: it comes with [widget-sandbox](https://github.com/TelegramMessenger/widget-sandbox), which the
 build takes as a dependency, under its own notices.
 
