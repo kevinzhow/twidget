@@ -11,6 +11,10 @@ namespace litehtml
         explicit el_break(const std::shared_ptr<litehtml::document>& doc);
 
         bool is_break() const override;
+        /// A <br> is a line break whatever its display (but none), as in Blink, which makes a <br> a line break box
+        /// for any other display (here: litehtml's own <br>, display: inline-block): calibre's <br class="calibre1"/> with .calibre1 { display: block } would otherwise
+        /// be an empty block, losing a chapter's leading empty line and every blank line.
+        void compute_styles(bool recursive = true) override;
     };
 } // namespace litehtml
 
