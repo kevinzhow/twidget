@@ -642,6 +642,8 @@ constexpr int MAX_CANVASES = 64;
 constexpr size_t MAX_LAYERS = 256;
 /// Static elements painted over a wanted layer that may become layers of their own to let it be one.
 constexpr size_t MAX_OBSCURERS = 8;
+/// The boxes painted over a wanted layer that are looked at to find those: the obscurers and their descendants.
+constexpr size_t MAX_OBSCURER_BOXES = 64;
 constexpr double MAX_LAYER_PIXELS = 4096.0 * 4096.0;
 constexpr double MIN_LAYER_SPAN = 0.1;
 /// An element moved by style ops in three batches running becomes a scripted layer: batches at most
@@ -4892,7 +4894,9 @@ void Renderer::update_composition(double now) {
             if (budget == 0) break;
             const Promotion& wanted_layer = next[id];
             if (wanted_layer.reach.empty() || !container_->covered(elements[id], wanted_layer.reach, trace, ignore_all)) continue;
-            auto found = container_->obscurers(elements[id], wanted_layer.reach, trace, ignore_all, MAX_OBSCURERS);
+            // The limit is on the layers this takes, not on the boxes found: an obscurer's descendants (the digits of a
+            // clock over a sweeping highlight) go in its layer, so they count only after that.
+            auto found = container_->obscurers(elements[id], wanted_layer.reach, trace, ignore_all, MAX_OBSCURER_BOXES);
             if (!found || found->empty()) continue;
             // A descendant of another obscurer goes in that one's layer (a <small> inside the <h3>).
             {
@@ -4901,7 +4905,7 @@ void Renderer::update_composition(double now) {
                     if (std::none_of(found->begin(), found->end(), [&](int64_t other) { return other != o && is_ancestor(other, o); })) tops.push_back(o);
                 *found = std::move(tops);
             }
-            if (found->size() > budget) continue;
+            if (found->size() > MAX_OBSCURERS || found->size() > budget) continue;
             std::vector<std::pair<int64_t, Promotion>> still;
             for (int64_t other : *found) {
                 const Node* n = node(pseudo_owner(other));

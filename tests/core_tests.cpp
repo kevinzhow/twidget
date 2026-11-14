@@ -385,6 +385,24 @@ int main() {
             auto ids = layer_ids(c);
             check(ids.count(40) == 1 && ids.count(41) == 1 && ids.count(43) == 0, "the mover and the heading (with its <small>) are layers (" + c.composition_debug() + ")");
         }
+        {
+            // The obscurer limit counts layers, not boxes: one clock of 12 digits over a sweep is one still layer (the
+            // flash-sale hero: the clock's digits used to count one by one and kept the sweep painted every frame).
+            Renderer c(300, 1, false, fb);
+            std::string ops = R"({"op":"el","id":40,"tag":"div","attrs":[["id","m"]]},{"op":"ins","parent":4,"id":40,"before":null},
+                    {"op":"el","id":41,"tag":"div","attrs":[["id","clock"]]},{"op":"ins","parent":4,"id":41,"before":null})";
+            for (int i = 0; i < 12; i++) {
+                int id = 50 + 2 * i;
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"span","attrs":[["class","d"]]},{"op":"ins","parent":41,"id":)" + std::to_string(id) +
+                       R"(,"before":null},{"op":"text","id":)" + std::to_string(id + 1) + R"(,"data":"8"},{"op":"ins","parent":)" + std::to_string(id) + R"(,"id":)" +
+                       std::to_string(id + 1) + R"(,"before":null})";
+            }
+            make(c, "#m{position:absolute;left:0;top:0;width:200px;height:60px;background:#ff0000;animation:spin 9s linear infinite} #clock{position:relative;margin:10px} "
+                    ".d{display:inline-block;width:12px;background:#333;color:#fff}",
+                 ops);
+            auto ids = layer_ids(c);
+            check(ids.count(40) == 1 && ids.count(41) == 1 && ids.count(50) == 0, "the mover and the clock (with its 12 digits) are layers (" + c.composition_debug() + ")");
+        }
     }
 
     // ── compositor layers ──
