@@ -50,6 +50,9 @@ namespace litehtml
         {_overflow_wrap_,          overflow_wrap_strings               },
         {_word_break_,             word_break_strings                  },
         {_user_select_,            user_select_strings                 },
+        {_writing_mode_,           writing_mode_strings                },
+        {_text_orientation_,       text_orientation_strings            },
+        {_text_combine_upright_,   text_combine_strings                },
 
         {_font_style_,             font_style_strings                  },
         {_font_variant_,           font_variant_strings                },
@@ -326,6 +329,11 @@ namespace litehtml
         "bottom", "box-shadow", "border-color", "max-height", "stroke-dashoffset", "fill", "stroke", "translate",
         "scale", "rotate", "filter", "letter-spacing", "font-size", "margin-top", "margin-left", "flex-grow",
         "transform-origin", "backdrop-filter", "pointer-events", "touch-action", "quotes", "object-fit", "object-position", "text-overflow",
+        "stroke-dasharray", "stroke-width", "d", "line-height", "margin-right", "margin-bottom", "background-position",
+        "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+        // Fragmentation, for a reader's page breaker (CSS Fragmentation 3 §3, CSS 2.1 §13.3.1).
+        "break-before", "break-after", "break-inside", "page-break-before", "page-break-after", "page-break-inside",
+        "orphans", "widows",
     };
 
     static const std::map<string_id, string_id>& raw_declaration_ids()
@@ -344,6 +352,29 @@ namespace litehtml
         const auto& ids = raw_declaration_ids();
         auto        it  = ids.find(name);
         return it == ids.end() ? empty_id : it->second;
+    }
+
+    // The raw longhands a raw shorthand resets (transition, animation): as in the cascade, a shorthand declared after a
+    // longhand, or more specifically, puts the longhand back to the shorthand's value, and a longhand after it wins.
+    static const std::vector<string_id>& raw_longhands(string_id name)
+    {
+        static const std::map<string_id, std::vector<string_id>>& map = *new std::map<string_id, std::vector<string_id>>([] {
+            std::map<string_id, std::vector<string_id>> m;
+            auto raws = [](std::initializer_list<const char*> names) {
+                std::vector<string_id> out;
+                for(const char* n : names)
+                    out.push_back(raw_declaration_id(_id(n)));
+                return out;
+            };
+            m[_id("transition")] = raws({"transition-property", "transition-duration", "transition-timing-function", "transition-delay"});
+            m[_id("animation")]  = raws({"animation-name", "animation-duration", "animation-timing-function", "animation-delay",
+                                         "animation-iteration-count", "animation-direction", "animation-fill-mode",
+                                         "animation-play-state"});
+            return m;
+        }());
+        static const std::vector<string_id> none;
+        auto it = map.find(name);
+        return it == map.end() ? none : it->second;
     }
 
     bool is_raw_declaration(string_id name)
@@ -437,6 +468,8 @@ namespace litehtml
         if(string_id raw = raw_declaration_id(name); raw != empty_id && !value.empty() && !suppress_raw)
         {
             add_parsed_property(raw, property_value(value, important, has_var(value)));
+            for(string_id longhand : raw_longhands(name))
+                add_parsed_property(longhand, property_value(css_token_vector{css_token(IDENT, raw_shorthand_reset)}, important));
         }
 
         // Note: empty value is a valid value for a custom property.
@@ -468,6 +501,20 @@ namespace litehtml
             name = _overflow_wrap_;
         if(name == __webkit_user_select_)
             name = _user_select_;
+        if(name == __webkit_writing_mode_ || name == __epub_writing_mode_)
+            name = _writing_mode_;
+        if(name == __webkit_text_orientation_ || name == __epub_text_orientation_)
+            name = _text_orientation_;
+        if(name == __webkit_text_combine_ || name == __epub_text_combine_)
+            name = _text_combine_upright_;
+        if(name == __webkit_text_emphasis_)
+            name = _text_emphasis_;
+        if(name == __webkit_text_emphasis_style_ || name == __epub_text_emphasis_style_)
+            name = _text_emphasis_style_;
+        if(name == __webkit_text_emphasis_color_ || name == __epub_text_emphasis_color_)
+            name = _text_emphasis_color_;
+        if(name == __webkit_text_emphasis_position_ || name == __epub_text_emphasis_position_)
+            name = _text_emphasis_position_;
         if(ident == "inherit")
         {
             return inherit_property(name, important);
@@ -525,6 +572,9 @@ namespace litehtml
         case _overflow_wrap_:
         case _word_break_:
         case _user_select_:
+        case _writing_mode_:
+        case _text_orientation_:
+        case _text_combine_upright_:
 
         case _font_style_:
         case _font_variant_:
@@ -727,6 +777,8 @@ namespace litehtml
             if(int n = parse_1234_values(value, clr, parse_color, container))
             {
                 add_four_properties(_border_top_color_, clr, n, important);
+                const web_color* four[4] = {&clr[0], &clr[n > 1], &clr[n / 3 * 2], &clr[n / 2 + n / 4]};
+                raw_border_colors(four, important);
             }
             break;
 
@@ -1091,6 +1143,12 @@ namespace litehtml
         case _stroke_dasharray_:
         case _stroke_dashoffset_:
         case _text_anchor_:
+        case _cx_:
+        case _cy_:
+        case _r_:
+        case _rx_:
+        case _ry_:
+        case _d_:
         case _box_shadow_:
         case _text_shadow_:
         case _filter_:
@@ -1106,6 +1164,7 @@ namespace litehtml
         case _grid_template_rows_:
         case _grid_auto_rows_:
         case _grid_column_:
+        case _grid_area_:
         case _grid_row_:
         case _grid_column_start_:
         case _grid_column_end_:
@@ -1332,6 +1391,28 @@ namespace litehtml
         return true;
     }
 
+    // A colour as a raw declaration's tokens (rgba(), or currentcolor).
+    static css_token_vector raw_color(const web_color& color)
+    {
+        std::string text = color.is_current_color
+                               ? std::string("currentcolor")
+                               : "rgba(" + std::to_string(color.red) + "," + std::to_string(color.green) + "," + std::to_string(color.blue) + "," +
+                                     std::to_string(color.alpha / 255.0) + ")";
+        return normalize(text, f_componentize | f_remove_whitespace);
+    }
+
+    // The raw border-*-color longhands a border shorthand sets (border, border-color, border-top, ...): what a
+    // transition of a side's colour starts from, as the cascade has it (a later border-top-color wins).
+    void style::raw_border_colors(const web_color* colors[4], bool important)
+    {
+        if(suppress_raw)
+            return;
+        static const char* const names[] = {"border-top-color", "border-right-color", "border-bottom-color", "border-left-color"};
+        for(int i = 0; i < 4; i++)
+            if(colors[i])
+                add_parsed_property(raw_declaration_id(_id(names[i])), property_value(raw_color(*colors[i]), important));
+    }
+
     void style::parse_border(const css_token_vector& tokens, bool important, document_container* container)
     {
         css_length   width;
@@ -1357,6 +1438,8 @@ namespace litehtml
         {
             add_parsed_property(name, property_value(color, important));
         }
+        const web_color* all[4] = {&color, &color, &color, &color};
+        raw_border_colors(all, important);
     }
 
     // https://drafts.csswg.org/css-backgrounds/#border-shorthands
@@ -1376,6 +1459,11 @@ namespace litehtml
         add_parsed_property(_id(_s(name) + "-width"), property_value(width, important));
         add_parsed_property(_id(_s(name) + "-style"), property_value(style, important));
         add_parsed_property(_id(_s(name) + "-color"), property_value(color, important));
+        {
+            const web_color* side[4] = {name == _border_top_ ? &color : nullptr, name == _border_right_ ? &color : nullptr,
+                                        name == _border_bottom_ ? &color : nullptr, name == _border_left_ ? &color : nullptr};
+            raw_border_colors(side, important);
+        }
     }
 
     bool parse_length(const css_token& tok, css_length& length, int options, css_values keywords)
@@ -2665,8 +2753,10 @@ namespace litehtml
                 }
                 value = {css_token(IDENT, "unset")};
             }
+            std::vector<string_id> longhands = at(shorthands, name);
+            longhands.insert(longhands.end(), raw_longhands(name).begin(), raw_longhands(name).end());
             std::vector<std::pair<string_id, property_value>> later;
-            for(auto longhand : at(shorthands, name))
+            for(auto longhand : longhands)
             {
                 auto it = m_properties.find(longhand);
                 if(it != m_properties.end() && it->second.m_order > prop.m_order &&
@@ -2680,7 +2770,7 @@ namespace litehtml
             // if it is a standard css property it will be parsed and properly added as typed property
             add_property(name, value, "", prop.m_important, el->get_document()->container());
             // The longhands it wrote take its place in the cascade, not a fresh later one.
-            for(auto longhand : at(shorthands, name))
+            for(auto longhand : longhands)
             {
                 auto it = m_properties.find(longhand);
                 if(it != m_properties.end())

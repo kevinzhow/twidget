@@ -30,6 +30,21 @@ namespace litehtml
     // CSS Properties types
     using css_line_height_t = css_property<css_length, pixel_t>;
 
+    class css_properties;
+    /// A value made from a css_properties object and kept with it, that a copy does not take along (the copy may
+    /// change; element::css_w() drops it from an object it is about to change).
+    struct css_derived_cache
+    {
+        std::shared_ptr<css_properties> value;
+        css_derived_cache() = default;
+        css_derived_cache(const css_derived_cache&) {}
+        css_derived_cache& operator=(const css_derived_cache&)
+        {
+            value.reset();
+            return *this;
+        }
+    };
+
     class css_properties
     {
       private:
@@ -43,6 +58,12 @@ namespace litehtml
         overflow_wrap         m_overflow_wrap  = overflow_wrap_normal;
         word_break            m_word_break     = word_break_normal;
         user_select           m_user_select    = user_select_auto;
+        writing_mode          m_writing_mode   = writing_mode_horizontal_tb;
+        text_orientation      m_text_orientation = text_orientation_mixed;
+        uint_ptr              m_font_upright   = 0;  // vertical text: the font with the vert feature, for upright glyphs
+        text_combine          m_text_combine   = text_combine_none;
+        uint_ptr              m_font_emphasis  = 0;  // text-emphasis: the marks' font, half the size (vert in vertical text)
+        font_metrics          m_emphasis_metrics;
         style_display         m_display        = display_inline;
         visibility            m_visibility     = visibility_visible;
         appearance            m_appearance     = appearance_none;
@@ -143,6 +164,7 @@ namespace litehtml
         bool              m_keyword_size       = true;
         bool              m_generic_mono       = false;
 
+        void      to_vertical_rl();
         void      compute_font(const html_tag* el, const std::shared_ptr<document>& doc);
         void      compute_background(const html_tag* el, const std::shared_ptr<document>& doc);
         void      compute_flex(const html_tag* el, const std::shared_ptr<document>& doc);
@@ -153,8 +175,13 @@ namespace litehtml
         void      snap_border_width(css_length& width, const std::shared_ptr<document>& doc);
 
       public:
+        /// element::text_css() of an element with this style that is not display: inline (whose text's style
+        /// depends on nothing else).
+        mutable css_derived_cache text_css_cache;
         void compute(const html_tag* el, const std::shared_ptr<document>& doc);
         void compute_background_color(const html_tag* el);
+        // width, height and the offsets again (an inline style patch of them).
+        void compute_box_lengths(const html_tag* el, const std::shared_ptr<document>& doc);
         void compute_opacity(const html_tag* el);
         void compute_transform(const html_tag* el, const std::shared_ptr<document>& doc);
 
@@ -176,6 +203,16 @@ namespace litehtml
         overflow_wrap get_overflow_wrap() const { return m_overflow_wrap; }
         /// Not inherited: `auto` follows the parent's, as in browsers.
         user_select get_user_select() const { return m_user_select; }
+        writing_mode get_writing_mode() const { return m_writing_mode; }
+        /// writing-mode: vertical-rl (the only vertical mode the fork lays out): lines are columns, right to left.
+        bool is_vertical_rl() const { return m_writing_mode == writing_mode_vertical_rl; }
+        text_orientation get_text_orientation() const { return m_text_orientation; }
+        /// text-combine-upright: all (or the prefixed horizontal), 縦中横: the text sits upright in one em.
+        bool combines_upright() const { return m_text_combine == text_combine_all || m_text_combine == text_combine_horizontal; }
+        uint_ptr get_font_emphasis() const { return m_font_emphasis; }
+        const font_metrics& get_emphasis_metrics() const { return m_emphasis_metrics; }
+        /// The font upright glyphs of vertical text are drawn with: get_font() with OpenType vert (vertical forms).
+        uint_ptr get_font_upright() const { return m_font_upright ? m_font_upright : get_font(); }
         void set_overflow_wrap(overflow_wrap value) { m_overflow_wrap = value; }
         word_break get_word_break() const { return m_word_break; }
         void set_word_break(word_break value) { m_word_break = value; }

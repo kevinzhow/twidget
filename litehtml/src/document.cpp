@@ -1,5 +1,7 @@
 #include "html.h"
 #include "document.h"
+#include "vertical.h"
+#include <cstdio>
 #include <string_view>
 #include <unordered_set>
 #include "document_container.h"
@@ -438,7 +440,7 @@ namespace litehtml
             "outline-width", "outline-style", "outline-offset", "visibility", "fill", "fill-opacity", "stroke", "stroke-opacity",
             "stroke-width", "stroke-dasharray", "stroke-dashoffset", "stop-color", "stop-opacity", "border-color",
             "border-top-color", "border-right-color", "border-bottom-color", "border-left-color", "text-decoration-color",
-            "caret-color", "cursor", "-lh-anim"};
+            "caret-color", "cursor", "-lh-anim", "d"};
         return paint.count(name) != 0;
     }
 
@@ -501,10 +503,26 @@ namespace litehtml
                 id = _opacity_;
             else if(d.first == "background-color")
                 id = _background_color_;
+            // A box's size and offsets (a list's rows moved and resized on a frame loop): recomputed alone, then laid
+            // out, instead of the element's whole style computed again.
+            else if(d.first == "width")
+                id = _width_;
+            else if(d.first == "height")
+                id = _height_;
+            else if(d.first == "top")
+                id = _top_;
+            else if(d.first == "left")
+                id = _left_;
+            else if(d.first == "right")
+                id = _right_;
+            else if(d.first == "bottom")
+                id = _bottom_;
             else
                 return false;
             if(id != _background_color_)
                 patch.box = false;
+            if(id == _width_ || id == _height_ || id == _top_ || id == _left_ || id == _right_ || id == _bottom_)
+                patch.layout = true;
             patch.names.push_back(id);
             patch.text += d.first;
             patch.text += ':';
@@ -612,7 +630,7 @@ namespace litehtml
             "caret-color", "cursor", "-lh-anim"};
         static const std::unordered_set<std::string>& svg = *new std::unordered_set<std::string>{
             "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-dasharray", "stroke-dashoffset",
-            "stop-color", "stop-opacity"};
+            "stop-color", "stop-opacity", "d"};
         auto a = split_style_declarations(before), b = split_style_declarations(after);
         std::map<std::string, std::string> left, right;
         for(const auto& d : a)
@@ -805,6 +823,24 @@ namespace litehtml
                                               (*content == '\n' || *content == '\r');
                 const bool child_raw = e.tag == GUMBO_TAG_STYLE || e.tag == GUMBO_TAG_SCRIPT || e.tag == GUMBO_TAG_TITLE ||
                                        textarea_newline || e.tag == GUMBO_TAG_NOSCRIPT;
+                // An empty HTML element: a text hole of no length between its tags, so that the first text a script
+                // gives it (a list's row shown for the first time) is a patch, not a new document.
+                if(e.children.length == 0 && !child_raw && content && e.tag_namespace == GUMBO_NAMESPACE_HTML && e.original_end_tag.data == content &&
+                   content >= base && content < base + size && *content == '<' && e.tag != GUMBO_TAG_TEXTAREA && e.tag != GUMBO_TAG_SELECT &&
+                   !getenv("LH_NO_EMPTY_TEXT_HOLES"))
+                {
+                    auto owner = m_node_elements.find(node);
+                    if(owner != m_node_elements.end() && owner->second.size() == 1)
+                    {
+                        span s;
+                        s.start      = (size_t)(content - base);
+                        s.end        = s.start;
+                        s.hole.text  = true;
+                        s.hole.node  = node;
+                        s.hole.owner = owner->second.front();
+                        spans.push_back(std::move(s));
+                    }
+                }
                 for(unsigned int i = 0; i < e.children.length; i++)
                     walk(static_cast<const GumboNode*>(e.children.data[i]), child_raw);
                 break;
@@ -949,6 +985,8 @@ namespace litehtml
     // 1: patched (or nothing changed), 0: the frame does not fit the template, -1: fits but needs a rebuild.
     int document::update_from_template(const std::string& html, bool* changed)
     {
+        if(m_attrs_diverged)
+            return 0;  // see update_from_string
         invalidate_paint();
         std::vector<std::pair<size_t, std::string>> changes;
         size_t                                      pos = 0;
@@ -1012,6 +1050,42 @@ namespace litehtml
         return apply_template_values(changes, changed) == 1;
     }
 
+    bool document::patch_generated_style(const std::shared_ptr<element>& el, const std::string& declarations)
+    {
+        static const bool disabled = getenv("LH_NO_GENERATED_PATCH") != nullptr;
+        auto tag = std::dynamic_pointer_cast<html_tag>(el);
+        if(disabled || !tag || !m_root || !m_finalized || (el->tag() != __tag_before_ && el->tag() != __tag_after_) ||
+           declarations.find_first_of("\\{}!\"'<") != std::string::npos || declarations.find("/*") != std::string::npos ||
+           declarations.find("var(") != std::string::npos || declarations.find("--") != std::string::npos ||
+           declarations.find("url(") != std::string::npos)
+            return false;
+        std::vector<string_id> names;
+        std::string            text;
+        for(const auto& d : split_style_declarations(declarations))
+        {
+            string_id id;
+            if(d.first == "transform")
+                id = _transform_;
+            else if(d.first == "opacity")
+                id = _opacity_;
+            else if(d.first == "background-color")
+                id = _background_color_;
+            else
+                return false;
+            if(std::find(names.begin(), names.end(), id) != names.end())
+                return false;
+            names.push_back(id);
+            text += d.first;
+            text += ':';
+            text += d.second;
+            text += ';';
+        }
+        if(names.empty())
+            return true;
+        invalidate_paint();
+        return tag->patch_generated_properties(names, text);
+    }
+
     void document::begin_layout_patch()
     {
         m_layout_origins.clear();
@@ -1043,6 +1117,8 @@ namespace litehtml
                     owner = hole.owner.get();
                 else if(!hole.text_elements.empty() && hole.text_elements.front()->parent())
                     owner = hole.text_elements.front()->parent().get();
+                else if(hole.text_elements.empty() && hole.owner)
+                    owner = hole.owner.get();  // an empty element's text hole
                 if(owner)
                     m_owner_holes[owner].push_back(i);
             }
@@ -1051,8 +1127,30 @@ namespace litehtml
         std::vector<size_t>                         seen;
         list.reserve(changes.size());
         seen.reserve(changes.size());
+        m_attr_overrides.clear();
+        // Boolean attributes ride on their element's class hole: its value as the other changes leave it.
+        std::vector<const hole_change*> attributes;
         for(const auto& change : changes)
         {
+            if(!change.attribute)
+                continue;
+            static const bool disabled = getenv("LH_NO_ATTRIBUTE_PATCH") != nullptr;
+            auto it = change.owner ? m_owner_holes.find(change.owner.get()) : m_owner_holes.end();
+            if(disabled || it == m_owner_holes.end())
+                return false;
+            size_t found = m_holes.size();
+            for(size_t i : it->second)
+                if(m_holes[i].cls)
+                    found = i;
+            if(found == m_holes.size())
+                return false;
+            m_attr_overrides[found].emplace_back(change.name, change.present);
+            attributes.push_back(&change);
+        }
+        for(const auto& change : changes)
+        {
+            if(change.attribute)
+                continue;
             auto it = change.owner ? m_owner_holes.find(change.owner.get()) : m_owner_holes.end();
             if(it == m_owner_holes.end())
                 return false;
@@ -1071,16 +1169,24 @@ namespace litehtml
             const html_hole& hole = m_holes[found];
             if(change.value.find('<') != std::string::npos || (!hole.text && change.value.find(hole.close) != std::string::npos))
                 return false;
-            if(hole.text && (hole.text_elements.empty() || hole.text_elements.front()->parent().get() != change.owner.get()))
+            if(hole.text && (hole.text_elements.empty() ? hole.owner.get() != change.owner.get()
+                                                        : hole.text_elements.front()->parent().get() != change.owner.get()))
                 return false;
             if(std::find(seen.begin(), seen.end(), found) != seen.end())
                 return false;
             seen.push_back(found);
-            if(change.value != hole.value)
+            if(change.value != hole.value || m_attr_overrides.count(found))
                 list.emplace_back(found, change.value);
         }
+        for(const auto& [found, names] : m_attr_overrides)
+            if(std::find(seen.begin(), seen.end(), found) == seen.end())
+                list.emplace_back(found, m_holes[found].value);
         std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-        return apply_template_values(list, changed) == 1;
+        const bool ok = apply_template_values(list, changed) == 1;
+        if(ok && !m_attr_overrides.empty())
+            m_attrs_diverged = true;
+        m_attr_overrides.clear();
+        return ok;
     }
 
     bool document::template_html(std::string& out) const
@@ -1134,7 +1240,8 @@ namespace litehtml
         {
             const size_t       i = change.first;
             const std::string& v = change.second;
-            if(i >= m_holes.size() || v == m_holes[i].value)
+            const auto overrides = m_attr_overrides.find(i);
+            if(i >= m_holes.size() || (v == m_holes[i].value && overrides == m_attr_overrides.end()))
                 continue;
             if(v.find_first_of("&\r") != std::string::npos || v.find('\0') != std::string::npos)
                 return -1;
@@ -1143,6 +1250,19 @@ namespace litehtml
                 string_map attrs;
                 if(!class_change_allowed(m_holes[i], v, attrs))
                     return -1;
+                if(overrides != m_attr_overrides.end())
+                {
+                    for(const auto& [name, present] : overrides->second)
+                    {
+                        if(present)
+                            attrs[name] = "";
+                        else
+                            attrs.erase(name);
+                    }
+                    // The attributes as they will be must be ones a retag allows (selectors that read them).
+                    if(!retag_allowed(m_holes[i].owner, m_holes[i].owner->get_tagName(), false, attrs, false))
+                        return -1;
+                }
                 classes.emplace_back(&change - changes.data(), std::move(attrs));
                 continue;
             }
@@ -1167,11 +1287,12 @@ namespace litehtml
                         return -1;
                 }
             }
-            if(m_holes[i].text && !m_holes[i].text_elements.front()->parent())
+            if(m_holes[i].text && (m_holes[i].text_elements.empty() ? !m_holes[i].owner : !m_holes[i].text_elements.front()->parent()))
                 return -1;
             if(m_holes[i].text && v[0] == '\n')
             {
-                const char* tag = m_holes[i].text_elements.front()->parent()->get_tagName();
+                const char* tag = m_holes[i].text_elements.empty() ? m_holes[i].owner->get_tagName()
+                                                                   : m_holes[i].text_elements.front()->parent()->get_tagName();
                 if(tag && (!strcmp(tag, "pre") || !strcmp(tag, "listing") || !strcmp(tag, "textarea")))
                     return -1;
             }
@@ -1205,7 +1326,11 @@ namespace litehtml
             html_hole& hole   = m_holes[changes[entry.first].first];
             int        region = 0;
             auto       tag    = std::static_pointer_cast<html_tag>(hole.owner);
-            const bool fast   = tag->flip_class(hole.value, changes[entry.first].second, m_match_epoch, &region);
+            // A boolean attribute that changes with it: no cached class flip (they assume the other attributes).
+            const bool attributes = m_attr_overrides.count(changes[entry.first].first) != 0;
+            if(attributes)
+                tag->forget_flips();
+            const bool fast = !attributes && tag->flip_class(hole.value, changes[entry.first].second, m_match_epoch, &region);
             if(!fast)
             {
                 if(!apply_retag(hole.owner, entry.second, true, &region))
@@ -1213,7 +1338,7 @@ namespace litehtml
                     keep_tree  = false;
                     paint_only = false;
                     tag->forget_flips();
-                } else
+                } else if(!attributes)
                 {
                     tag->note_flip(hole.value, changes[entry.first].second, region);
                 }
@@ -1236,9 +1361,11 @@ namespace litehtml
         {
             const std::string& value   = changes[k].second;
             html_hole&         hole    = m_holes[changes[k].first];
-            const bool         inplace = hole.text && retext_in_place(hole.text_elements, value.c_str(), words);
+            const bool         inplace = hole.text && !hole.text_elements.empty() && retext_in_place(hole.text_elements, value.c_str(), words);
             const bool         background = background_changes[k];
-            const property_patch* patch   = property_patches[k].names.empty() ? nullptr : &property_patches[k];
+            const property_patch* fast    = property_patches[k].names.empty() ? nullptr : &property_patches[k];
+            // A patch of sizes or offsets restyles fast but lays out like any such change: only paint-only ones count here.
+            const property_patch* patch   = fast && !fast->layout ? fast : nullptr;
             if(hole.text ? !inplace : hole.src || !hole.attr.empty() || (!width_changes[k] && !patch && !background))
                 allow_shallow_width = false;
             if(allow_shallow_width && width_changes[k] && shallow_width_owner(hole.owner))
@@ -1357,8 +1484,8 @@ namespace litehtml
             {
                 hole.owner->set_attr("style", hole.value.c_str());
                 restyle.push_back(hole.owner);
-                if(patch && !outermost_svg(hole.owner))
-                    patched[hole.owner.get()] = patch;
+                if(fast && !outermost_svg(hole.owner))
+                    patched[hole.owner.get()] = fast;
                 continue;
             }
             elements_list created;
@@ -1366,9 +1493,18 @@ namespace litehtml
                 hole.value.c_str(),
                 [this, &created](const char* text) { created.push_back(std::make_shared<el_text>(text, shared_from_this())); },
                 [this, &created](const char* text) { created.push_back(std::make_shared<el_space>(text, shared_from_this())); });
-            hole.text_elements.front()->parent()->replace_children(hole.text_elements, created);
-            if(keep_tree && !replace_text_renderers(hole.text_elements, created))
+            if(hole.text_elements.empty())
+            {
+                // An empty element's first text: new children, so the render tree is made again (still no parse).
+                for(const auto& el : created)
+                    hole.owner->appendChild(el);
                 keep_tree = false;
+            } else
+            {
+                hole.text_elements.front()->parent()->replace_children(hole.text_elements, created);
+                if(keep_tree && !replace_text_renderers(hole.text_elements, created))
+                    keep_tree = false;
+            }
             hole.text_elements.assign(created.begin(), created.end());
             new_text.insert(new_text.end(), created.begin(), created.end());
         }
@@ -1659,7 +1795,9 @@ namespace litehtml
         m_patch_regions.clear();
         if(changed)
             *changed = false;
-        if(!m_gumbo || !m_root || !m_finalized)
+        // Attributes patched outside the parsed source (boolean attributes through update_holes): neither the template
+        // nor the source tree says what the elements hold any more, so the caller parses a fresh document.
+        if(!m_gumbo || !m_root || !m_finalized || m_attrs_diverged)
             return false;
         if(m_template_ok && !getenv("LH_NO_TEMPLATE"))
         {
@@ -2400,6 +2538,41 @@ namespace litehtml
         m_mode = mode;
     }
 
+    namespace
+    {
+        struct cached_styles
+        {
+            css                               styles;
+            media_query_list_list::vector     media;  // what the parse registered (scoped entries)
+            uint64_t                          scope = 0;
+        };
+        std::mutex& styles_cache_mutex()
+        {
+            static std::mutex& m = *new std::mutex;
+            return m;
+        }
+        std::unordered_map<std::string, cached_styles>& styles_cache()
+        {
+            static auto& c = *new std::unordered_map<std::string, cached_styles>;
+            return c;
+        }
+        std::unordered_map<std::string, cached_styles>& scoped_styles_cache()
+        {
+            static auto& c = *new std::unordered_map<std::string, cached_styles>;
+            return c;
+        }
+    } // namespace
+
+    void document::release_stylesheet_scope(uint64_t scope)
+    {
+        if(!scope)
+            return;
+        std::lock_guard<std::mutex> lock(styles_cache_mutex());
+        auto&                       cache = scoped_styles_cache();
+        for(auto it = cache.begin(); it != cache.end();)
+            it = it->second.scope == scope ? cache.erase(it) : std::next(it);
+    }
+
     void document::finalize_from_external_root(const std::shared_ptr<element>& root, const std::string& base_master_styles,
                                                const std::string& user_styles)
     {
@@ -2474,25 +2647,42 @@ namespace litehtml
             m_root->parse_attributes();
 
             // Parsed and sorted document stylesheets are immutable, so documents built from the same
-            // <style> text share one parse. Media and imports register per-document state while parsing,
-            // so sheets that use them are parsed every time.
-            static std::mutex&                           styles_cache_mutex = *new std::mutex;
-            static std::unordered_map<std::string, css>& styles_cache = *new std::unordered_map<std::string, css>;
-            std::string                                 styles_key;
-            bool                                        styles_cacheable = !m_css.empty();
+            // <style> text share one parse. Media and imports register per-document state while parsing (media
+            // lists; an import's text comes from the container), so sheets that use them are parsed every time,
+            // unless the container gives a stylesheet cache scope: then they are shared within it, keyed by the
+            // media features as well, with the media lists the parse registered.
+            const uint64_t scope            = container()->stylesheet_cache_scope();
+            std::string    styles_key;
+            bool           styles_cacheable = !m_css.empty();
+            bool           scoped           = false;
             for(const auto& css : m_css)
             {
                 // Viewport lengths are folded to px while parsing, so such a sheet holds for one viewport.
                 if(css.media != "" || css.text.find("@media") != std::string::npos || css.text.find("@import") != std::string::npos || has_viewport_units(css.text))
                 {
-                    styles_cacheable = false;
-                    break;
+                    if(!scope)
+                    {
+                        styles_cacheable = false;
+                        break;
+                    }
+                    scoped = true;
                 }
             }
             bool styles_hit = false;
             if(styles_cacheable)
             {
                 styles_key.push_back(static_cast<char>('0' + static_cast<int>(m_mode)));
+                if(scoped)
+                {
+                    char features[256];
+                    std::snprintf(features, sizeof features, "S%llu:%d:%g:%g:%g:%g:%d:%d:%d:%g\x1d",
+                                  static_cast<unsigned long long>(scope), static_cast<int>(m_media.type),
+                                  static_cast<double>(m_media.width), static_cast<double>(m_media.height),
+                                  static_cast<double>(m_media.device_width), static_cast<double>(m_media.device_height),
+                                  m_media.color, m_media.color_index, m_media.monochrome,
+                                  static_cast<double>(m_media.resolution));
+                    styles_key.append(features);
+                }
                 for(const auto& css : m_css)
                 {
                     styles_key.append(css.baseurl);
@@ -2500,16 +2690,20 @@ namespace litehtml
                     styles_key.append(css.text);
                     styles_key.push_back('\x1f');
                 }
-                std::lock_guard<std::mutex> lock(styles_cache_mutex);
-                auto                        it = styles_cache.find(styles_key);
-                if(it != styles_cache.end())
+                std::lock_guard<std::mutex> lock(styles_cache_mutex());
+                auto&                       cache = scoped ? scoped_styles_cache() : styles_cache();
+                auto                        it    = cache.find(styles_key);
+                if(it != cache.end())
                 {
-                    m_styles   = it->second;
+                    m_styles = it->second.styles;
+                    for(const auto& media : it->second.media)
+                        add_media_list(media);
                     styles_hit = true;
                 }
             }
             if(!styles_hit)
             {
+                const size_t media_before = m_media_lists.size();
                 // parse style sheets linked in document
                 for(const auto& css : m_css)
                 {
@@ -2526,10 +2720,14 @@ namespace litehtml
                 m_styles.sort_selectors();
                 if(styles_cacheable)
                 {
-                    std::lock_guard<std::mutex> lock(styles_cache_mutex);
-                    if(styles_cache.size() > 128)
-                        styles_cache.clear();
-                    styles_cache.emplace(std::move(styles_key), m_styles);
+                    cached_styles entry{m_styles, {}, scoped ? scope : 0};
+                    entry.media.assign(m_media_lists.begin() + static_cast<std::ptrdiff_t>(media_before), m_media_lists.end());
+                    std::lock_guard<std::mutex> lock(styles_cache_mutex());
+                    auto&                       cache = scoped ? scoped_styles_cache() : styles_cache();
+                    // Scoped entries hold a book's whole stylesheets (hundreds of KB parsed): few are kept.
+                    if(cache.size() > (scoped ? 16u : 128u))
+                        cache.clear();
+                    cache.emplace(std::move(styles_key), std::move(entry));
                 }
             }
 
@@ -2791,6 +2989,49 @@ namespace litehtml
                             elements.push_back(std::make_shared<el_space>(text, shared_from_this()));
                         });
                 }
+                // Each piece's place in the source text node (UTF-16 units, as a DOM counts them), when the pieces
+                // are the node's text in order.
+                {
+                    uint32_t at = 0;
+                    std::string joined;
+                    auto first = elements.begin();
+                    std::advance(first, before);
+                    for(auto k = first; k != elements.end(); ++k)
+                    {
+                        auto text = std::static_pointer_cast<el_text>(*k);
+                        std::string piece;
+                        text->get_text(piece);
+                        text->set_source(static_cast<uint32_t>(node->v.text.start_pos.offset), at);
+                        for(size_t b = 0; b < piece.size(); b++)
+                        {
+                            const unsigned char c = static_cast<unsigned char>(piece[b]);
+                            if((c & 0xC0) != 0x80)
+                                at += c >= 0xF0 ? 2 : 1;
+                        }
+                        joined += piece;
+                    }
+                    if(joined != node->v.text.text)
+                    {
+                        for(auto k = first; k != elements.end(); ++k)
+                            std::static_pointer_cast<el_text>(*k)->set_source(UINT32_MAX, 0);
+                    } else if(parseTextNode && std::distance(first, elements.end()) > 1)
+                    {
+                        // The pieces share the node's text as one run, which the container shapes once (their widths
+                        // with the font's kerning between them).
+                        auto     run = std::make_shared<shaped_text>();
+                        run->text    = std::move(joined);
+                        uint32_t b   = 0;
+                        for(auto k = first; k != elements.end(); ++k)
+                        {
+                            auto        text = std::static_pointer_cast<el_text>(*k);
+                            std::string piece;
+                            text->get_text(piece);
+                            if(typeid(*text) == typeid(el_text))
+                                text->set_run(run, b, b + static_cast<uint32_t>(piece.size()));
+                            b += static_cast<uint32_t>(piece.size());
+                        }
+                    }
+                }
                 if(m_track_nodes)
                 {
                     auto it = elements.begin();
@@ -2818,7 +3059,9 @@ namespace litehtml
                 std::string str = node->v.text.text;
                 for(size_t i = 0; i < str.length(); i++)
                 {
-                    elements.push_back(std::make_shared<el_space>(str.substr(i, 1).c_str(), shared_from_this()));
+                    auto space = std::make_shared<el_space>(str.substr(i, 1).c_str(), shared_from_this());
+                    space->set_source(static_cast<uint32_t>(node->v.text.start_pos.offset), static_cast<uint32_t>(i));
+                    elements.push_back(space);
                 }
             }
             break;
@@ -2971,7 +3214,7 @@ namespace litehtml
     bool document::layout_cache_enabled() const
     {
         static const bool disabled = getenv("LH_NO_LAYOUT_CACHE") != nullptr;
-        return !disabled;
+        return !disabled && !m_layout_cache_off;
     }
 
     bool document::layout_cache_check() const
@@ -3119,10 +3362,15 @@ namespace litehtml
                 invalidate_layout_cache();
             }
             m_layout_marked.clear();
+            m_vertical = m_root->css().is_vertical_rl();
+            if(!m_vertical)
+                for(const auto& child : m_root->children())
+                    if(child->tag() == _body_)
+                        m_vertical = child->css().is_vertical_rl();
             containing_block_context cb_context;
-            cb_context.width       = max_width;
+            cb_context.width       = m_vertical ? viewport.height : max_width;
             cb_context.width.type  = containing_block_context::cbc_value_type_absolute;
-            cb_context.height      = viewport.height;
+            cb_context.height      = m_vertical ? viewport.width : viewport.height;
             cb_context.height.type = containing_block_context::cbc_value_type_absolute;
 
             if(rt == render_fixed_only)
@@ -3151,12 +3399,39 @@ namespace litehtml
                 m_size.width  = 0;
                 m_size.height = 0;
                 m_root_render->calc_document_size(m_size);
+                if(m_vertical)
+                    std::swap(m_size.width, m_size.height);
             }
         }
         return ret;
     }
 
     void document::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, bool cull)
+    {
+        if(m_root && m_root_render && m_vertical)
+        {
+            // Turned onto the page: the laid-out (logical) x runs down, y runs right to left from the viewport's
+            // right edge. The clip goes the other way, into logical coordinates.
+            const pixel_t right = m_layout_viewport.width + x;
+            paint_group   group;
+            group.matrix = vertical_rl_matrix(float(right), float(y));
+            group.bounds = position(0_px, 0_px, m_size.height, m_size.width);
+            m_container->begin_group(hdc, group);
+            if(clip)
+            {
+                position logical(clip->y - y, right - clip->x - clip->width, clip->height, clip->width);
+                draw_laid_out(hdc, 0_px, 0_px, &logical, cull);
+            } else
+            {
+                draw_laid_out(hdc, 0_px, 0_px, nullptr, cull);
+            }
+            m_container->end_group(hdc);
+            return;
+        }
+        draw_laid_out(hdc, x, y, clip, cull);
+    }
+
+    void document::draw_laid_out(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, bool cull)
     {
         if(m_root && m_root_render)
         {

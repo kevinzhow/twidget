@@ -55,6 +55,8 @@ namespace litehtml
 
         /// text-overflow: ellipsis: cuts the lines too long for the box and places their "…".
         void    apply_ellipsis(pixel_t room);
+        /// Moves lines down where ruby annotations would reach the line above (render_item_ruby_pair).
+        void    make_room_for_ruby();
 
         rendered_width _render_content(pixel_t x, pixel_t y, bool second_pass,
                                        const containing_block_context& self_size, formatting_context* fmt_ctx) override;
@@ -70,6 +72,11 @@ namespace litehtml
         void    apply_vertical_align() override;
 
       public:
+        /// The line boxes, in the content box's coordinates (a reader's page breaker cuts between them).
+        const std::vector<std::unique_ptr<litehtml::line_box>>& line_boxes() const { return m_line_boxes; }
+        /// ruby-align: space-around for a box of one line (render_item_ruby_pair): its items spread over `width`,
+        /// half a gap at each end.
+        void space_around(pixel_t width);
         explicit render_item_inline_context(std::shared_ptr<element> src_el) :
             render_item_block(std::move(src_el))
         {

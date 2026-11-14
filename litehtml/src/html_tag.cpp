@@ -28,12 +28,37 @@ namespace litehtml
     litehtml::html_tag::html_tag(const element::ptr& parent, const std::string& style) :
         element(parent->get_document())
     {
-        litehtml::style st;
-        st.add(style);
-        add_style(st);
+        // Anonymous boxes come in numbers (a ruby's pairs, table parts): the style string is parsed once, and boxes
+        // with the same string under parents of the same style share the style they compute.
+        thread_local std::unordered_map<std::string, litehtml::style> parsed;
+        auto it = parsed.find(style);
+        if(it == parsed.end())
+        {
+            if(parsed.size() > 256)
+                parsed.clear();
+            litehtml::style st;
+            st.add(style);
+            it = parsed.emplace(style, std::move(st)).first;
+        }
+        add_style(it->second);
         m_anonymous_style = true;
         this->parent(parent);
+        auto        doc = get_document();
+        std::string key;
+        if(doc->style_sharing_enabled() && parent->css().get_shared_id() != 0)
+        {
+            key = "anonymous " + std::to_string(parent->css().get_shared_id()) + " " + style;
+            if(auto hit = doc->share_lookup(key))
+            {
+                doc->note_style_change();
+                mark_layout_dirty();
+                m_css = std::move(hit);
+                return;
+            }
+        }
         compute_styles();
+        if(!key.empty())
+            doc->share_store(key, m_css);
     }
 
     bool litehtml::html_tag::appendChild(const element::ptr& el)
@@ -231,11 +256,38 @@ namespace litehtml
     void litehtml::html_tag::apply_stylesheet(const litehtml::css& stylesheet)
     {
         apply_scope scope;
-        for(const auto& sel : stylesheet.selectors())
-            apply_selector(sel);
+        const auto& index = stylesheet.index();
+        if(index.built)
+        {
+            // The selectors this element can match (css::selector_index), in the stylesheet's order.
+            std::vector<uint32_t> candidates(index.other);
+            auto                  add = [&](const std::unordered_map<string_id, std::vector<uint32_t>>& map, string_id key) {
+                auto it = map.find(key);
+                if(it != map.end())
+                    candidates.insert(candidates.end(), it->second.begin(), it->second.end());
+            };
+            add(index.by_tag, m_tag);
+            for(const auto& c : m_classes)
+                add(index.by_class, c);
+            std::sort(candidates.begin(), candidates.end());
+            candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+            const auto& selectors = stylesheet.selectors();
+            for(uint32_t i : candidates)
+                apply_selector(selectors[i]);
+        } else
+        {
+            for(const auto& sel : stylesheet.selectors())
+                apply_selector(sel);
+        }
 
         for(auto& el : m_children)
         {
+            // ::before and ::after get their rules from the owner's ::before / ::after selectors (above); as
+            // in browsers, no other selector (`*`, `.card > *`) matches them.
+            if(el->tag() == __tag_before_ || el->tag() == __tag_after_)
+            {
+                continue;
+            }
             if(el->css().get_display() != display_inline_text)
             {
                 el->apply_stylesheet(stylesheet);
@@ -306,6 +358,7 @@ namespace litehtml
                 std::swap(state.st_base, m_style_base);
                 std::swap(state.used, m_used_styles);
                 std::swap(state.css, m_css);
+                m_text_css.reset();
                 state.has_base = m_has_style_base;
                 state.kids.resize(m_children.size());
                 size_t i = 0;
@@ -347,6 +400,7 @@ namespace litehtml
         m_used_styles      = std::move(target->used);
         saved->css         = std::move(m_css);
         m_css              = std::move(target->css);
+        m_text_css.reset();
         saved->has_base    = m_has_style_base;
         m_has_style_base   = target->has_base;
         std::swap(saved->kids, target->kids);
@@ -523,7 +577,7 @@ namespace litehtml
     void litehtml::html_tag::get_content_size(size& sz, pixel_t max_width)
     {
         sz.height = 0;
-        if(m_css.get_display() == display_block)
+        if(m_css->get_display() == display_block)
         {
             sz.width = max_width;
         } else
@@ -541,17 +595,17 @@ namespace litehtml
 
         draw_background(hdc, x, y, clip, ri);
 
-        if(m_css.get_display() == display_list_item &&
-           (m_css.get_list_style_type() != list_style_type_none || m_css.get_list_style_image() != ""))
+        if(m_css->get_display() == display_list_item &&
+           (m_css->get_list_style_type() != list_style_type_none || m_css->get_list_style_image() != ""))
         {
-            if(m_css.clips_contents())
+            if(m_css->clips_contents())
             {
                 position border_box  = pos;
                 border_box          += ri->get_paddings();
                 border_box          += ri->get_borders();
 
                 border_radiuses bdr_radius =
-                    m_css.get_borders().radius.calc_percents(border_box.width, border_box.height);
+                    m_css->get_borders().radius.calc_percents(border_box.width, border_box.height);
 
                 bdr_radius -= ri->get_borders();
                 bdr_radius -= ri->get_paddings();
@@ -561,7 +615,7 @@ namespace litehtml
 
             draw_list_marker(hdc, pos, ri);
 
-            if(m_css.clips_contents())
+            if(m_css->clips_contents())
             {
                 doc_ptr()->container()->del_clip();
             }
@@ -570,13 +624,20 @@ namespace litehtml
 
     std::string html_tag::raw_declaration(const std::string& name) const
     {
-        string_id raw = raw_declaration_id(_id(name));
+        return raw_declaration_of(raw_declaration_id(_id(name)));
+    }
+
+    std::string html_tag::raw_declaration_of(string_id raw) const
+    {
         if(raw == empty_id)
             return {};
         const property_value& value = m_style.get_property(raw);
         if(!value.is<css_token_vector>())
             return {};
-        return get_repr(value.get<css_token_vector>(), 0, -1, true);
+        const auto& tokens = value.get<css_token_vector>();
+        if(tokens.size() == 1 && tokens[0].type == IDENT && tokens[0].name() == raw_shorthand_reset)
+            return {};
+        return get_repr(tokens, 0, -1, true);
     }
 
     const property_value& html_tag::ua_property(string_id name) const
@@ -676,8 +737,8 @@ namespace litehtml
             m_style.add(style, "", doc->container());
         }
         m_style.subst_vars(this);
-        m_css.compute_background_color(this);
-        m_css.set_shared_id(doc->next_share_id());
+        css_w().compute_background_color(this);
+        css_w().set_shared_id(doc->next_share_id());
     }
 
     bool html_tag::patch_inline_properties(const std::vector<string_id>& names, const std::string& patch)
@@ -714,27 +775,90 @@ namespace litehtml
         if(scratch.has_var_property() ||
            !scratch.only_declares([&ids](string_id id) { return std::find(ids.begin(), ids.end(), id) != ids.end(); }))
             return false;
-        const bool group     = m_css.is_paint_group();
-        const bool transform = m_css.get_transform().empty();
+        const bool group     = m_css->is_paint_group();
+        const bool transform = m_css->get_transform().empty();
         doc->note_style_change();
         m_style.replace_properties(ids, m_style_base, scratch);
+        bool box = false;
         for(string_id name : names)
         {
             if(name == _transform_)
-                m_css.compute_transform(this, doc);
+                css_w().compute_transform(this, doc);
             else if(name == _opacity_)
-                m_css.compute_opacity(this);
+                css_w().compute_opacity(this);
+            else if(name == _background_color_)
+                css_w().compute_background_color(this);
             else
-                m_css.compute_background_color(this);
+                box = true;
         }
-        if(m_css.is_paint_group() != group || m_css.get_transform().empty() != transform)
+        if(box)
+            css_w().compute_box_lengths(this, doc);
+        if(m_css->is_paint_group() != group || m_css->get_transform().empty() != transform)
         {
             restore_base_style();
             compute_styles(true);
             return true;
         }
-        m_css.set_shared_id(doc->next_share_id());
+        css_w().set_shared_id(doc->next_share_id());
         return true;
+    }
+
+    bool html_tag::patch_generated_properties(const std::vector<string_id>& names, const std::string& patch)
+    {
+        // Its other properties may use var(): only these, which the patch sets with none, are computed again.
+        if(m_tag != __tag_before_ && m_tag != __tag_after_)
+            return false;
+        for(string_id name : names)
+        {
+            if(name != _transform_ && name != _opacity_ && name != _background_color_)
+                return false;
+        }
+        for(const auto& child : m_children)
+        {
+            if(auto tag = dynamic_cast<const html_tag*>(child.get()))
+            {
+                for(string_id name : names)
+                    if(tag->m_style.get_property(name).is<inherit>())
+                        return false;
+            }
+        }
+        auto             doc = get_document();
+        style            scratch;
+        css_token_vector fast;
+        if(names.size() == 1 && names[0] == _transform_ && patch.size() > 11 &&
+           patch.compare(0, 10, "transform:") == 0 && patch.back() == ';' &&
+           fast_transform_tokens(patch.substr(10, patch.size() - 11), fast))
+        {
+            if(!doc->container() || doc->container()->sanitize_declaration("transform", fast))
+                scratch.add_property(_transform_, fast, "", false, doc->container());
+        } else
+            scratch.add(normalize(patch, f_componentize), "", doc->container());
+        std::vector<string_id> ids;
+        for(string_id name : names)
+        {
+            ids.push_back(name);
+            if(string_id raw = raw_declaration_id(name); raw != empty_id)
+                ids.push_back(raw);
+        }
+        if(scratch.has_var_property() ||
+           !scratch.only_declares([&ids](string_id id) { return std::find(ids.begin(), ids.end(), id) != ids.end(); }))
+            return false;
+        const bool group     = m_css->is_paint_group();
+        const bool transform = m_css->get_transform().empty();
+        doc->note_style_change();
+        // The sheet's values (an animation's are !important there) go: the patch's replace them.
+        m_style.replace_properties(ids, style(), scratch);
+        for(string_id name : names)
+        {
+            if(name == _transform_)
+                css_w().compute_transform(this, doc);
+            else if(name == _opacity_)
+                css_w().compute_opacity(this);
+            else
+                css_w().compute_background_color(this);
+        }
+        css_w().set_shared_id(doc->next_share_id());
+        return m_css->is_paint_group() == group && m_css->get_transform().empty() == transform;
     }
 
     bool html_tag::can_restyle_width_shallow() const
@@ -762,6 +886,7 @@ namespace litehtml
 
     void litehtml::html_tag::compute_styles(bool recursive)
     {
+        m_text_css.reset();
         document::ptr doc = get_document();
         doc->note_style_change();
         mark_layout_dirty();
@@ -798,9 +923,9 @@ namespace litehtml
                 shareKey += us->m_used ? '|' : '!';
                 shareKey += std::to_string(reinterpret_cast<uintptr_t>(us->m_selector.get()));
             }
-            if(const css_properties* hit = doc->share_lookup(shareKey))
+            if(auto hit = doc->share_lookup(shareKey))
             {
-                m_css  = *hit;
+                m_css  = std::move(hit);
                 shared = true;
             }
         }
@@ -818,8 +943,8 @@ namespace litehtml
                 m_style.add(style, "", doc->container());
             }
             m_style.subst_vars(this);
-            m_css.compute(this, doc);
-            m_css.set_shared_id(doc->next_share_id());
+            css_w().compute(this, doc);
+            css_w().set_shared_id(doc->next_share_id());
             if(eligible)
             {
                 doc->share_store(shareKey, m_css);
@@ -1412,14 +1537,14 @@ namespace litehtml
     {
         const auto& skipped_images = get_document()->skip_background_images;
         const bool  skip_images    = !skipped_images.empty() && skipped_images.count(this);
-        const css_border& outline_style = m_css.get_outline();
-        if(!get_background() && !m_css.get_borders().is_visible() && m_css.get_box_shadows().empty() &&
+        const css_border& outline_style = m_css->get_outline();
+        if(!get_background() && !m_css->get_borders().is_visible() && m_css->get_box_shadows().empty() &&
            !(outline_style.width.val() > 0 && outline_style.style != border_style_none))
         {
             return;
         }
         pixel_t inline_reach = 0;
-        for(const auto& shadow : m_css.get_box_shadows())
+        for(const auto& shadow : m_css->get_box_shadows())
         {
             if(!shadow.inset)
             {
@@ -1451,33 +1576,33 @@ namespace litehtml
                 // set left borders radius for the first box
                 if(first)
                 {
-                    bdr.radius.bottom_left_x = m_css.get_borders().radius.bottom_left_x;
-                    bdr.radius.bottom_left_y = m_css.get_borders().radius.bottom_left_y;
-                    bdr.radius.top_left_x    = m_css.get_borders().radius.top_left_x;
-                    bdr.radius.top_left_y    = m_css.get_borders().radius.top_left_y;
+                    bdr.radius.bottom_left_x = m_css->get_borders().radius.bottom_left_x;
+                    bdr.radius.bottom_left_y = m_css->get_borders().radius.bottom_left_y;
+                    bdr.radius.top_left_x    = m_css->get_borders().radius.top_left_x;
+                    bdr.radius.top_left_y    = m_css->get_borders().radius.top_left_y;
                 }
 
                 // set right borders radius for the last box
                 if(last)
                 {
-                    bdr.radius.bottom_right_x = m_css.get_borders().radius.bottom_right_x;
-                    bdr.radius.bottom_right_y = m_css.get_borders().radius.bottom_right_y;
-                    bdr.radius.top_right_x    = m_css.get_borders().radius.top_right_x;
-                    bdr.radius.top_right_y    = m_css.get_borders().radius.top_right_y;
+                    bdr.radius.bottom_right_x = m_css->get_borders().radius.bottom_right_x;
+                    bdr.radius.bottom_right_y = m_css->get_borders().radius.bottom_right_y;
+                    bdr.radius.top_right_x    = m_css->get_borders().radius.top_right_x;
+                    bdr.radius.top_right_y    = m_css->get_borders().radius.top_right_y;
                 }
 
-                bdr.top    = m_css.get_borders().top;
-                bdr.bottom = m_css.get_borders().bottom;
+                bdr.top    = m_css->get_borders().top;
+                bdr.bottom = m_css->get_borders().bottom;
                 if(first)
                 {
-                    bdr.left = m_css.get_borders().left;
+                    bdr.left = m_css->get_borders().left;
                 }
                 if(last)
                 {
-                    bdr.right = m_css.get_borders().right;
+                    bdr.right = m_css->get_borders().right;
                 }
 
-                const auto& inline_shadows = m_css.get_box_shadows();
+                const auto& inline_shadows = m_css->get_box_shadows();
                 position    shadow_box     = box;
                 shadow_box.round();
                 const border_radiuses shadow_radius = bdr.radius.calc_percents(box.width, box.height);
@@ -1542,7 +1667,7 @@ namespace litehtml
             border_box          += ri->get_borders();
 
             position ink = border_box;
-            for(const auto& shadow : m_css.get_box_shadows())
+            for(const auto& shadow : m_css->get_box_shadows())
             {
                 if(!shadow.inset)
                 {
@@ -1551,7 +1676,7 @@ namespace litehtml
                     ink += margins{reach, reach, reach, reach};
                 }
             }
-            pixel_t outline_reach = pixel_t(m_css.get_outline().width.val()) + std::max(0_px, m_css.get_outline_offset());
+            pixel_t outline_reach = pixel_t(m_css->get_outline().width.val()) + std::max(0_px, m_css->get_outline_offset());
             if(outline_reach > 0_px)
             {
                 ink += margins{outline_reach, outline_reach, outline_reach, outline_reach};
@@ -1566,8 +1691,8 @@ namespace litehtml
                 position shadow_box = border_box;
                 shadow_box.round();
                 border_radiuses shadow_radius =
-                    m_css.get_borders().radius.calc_percents(shadow_box.width, shadow_box.height);
-                const auto& shadows = m_css.get_box_shadows();
+                    m_css->get_borders().radius.calc_percents(shadow_box.width, shadow_box.height);
+                const auto& shadows = m_css->get_box_shadows();
                 const bool bare = doc_ptr()->bare_shadows && doc_ptr()->bare_effects == this;
                 for(auto it = shadows.rbegin(); it != shadows.rend(); ++it)
                 {
@@ -1624,17 +1749,17 @@ namespace litehtml
                     }
                 }
 
-                const bool collapsed_table = (m_css.get_display() == display_table || m_css.get_display() == display_inline_table) &&
-                                             m_css.get_border_collapse() == border_collapse_collapse;
+                const bool collapsed_table = (m_css->get_display() == display_table || m_css->get_display() == display_inline_table) &&
+                                             m_css->get_border_collapse() == border_collapse_collapse;
                 if(!ri->defer_borders && !collapsed_table)
                 {
                     ri->draw_borders(hdc, border_box);
                 }
 
-                const css_border& outline = m_css.get_outline();
+                const css_border& outline = m_css->get_outline();
                 if(outline.width.val() > 0 && outline.style != border_style_none)
                 {
-                    pixel_t  grow        = m_css.get_outline_offset() + pixel_t(outline.width.val());
+                    pixel_t  grow        = m_css->get_outline_offset() + pixel_t(outline.width.val());
                     position outline_box = shadow_box;
                     outline_box += margins{grow, grow, grow, grow};
                     borders ob;
@@ -1772,9 +1897,9 @@ namespace litehtml
             lm.pos.height = img_size.height;
         }
 
-        if(m_css.get_list_style_position() == list_style_position_outside)
+        if(m_css->get_list_style_position() == list_style_position_outside)
         {
-            if(m_css.get_list_style_type() >= list_style_type_armenian)
+            if(m_css->get_list_style_type() >= list_style_type_armenian)
             {
                 if(lm.font)
                 {
@@ -1791,7 +1916,7 @@ namespace litehtml
             }
         }
 
-        if(m_css.get_list_style_type() >= list_style_type_armenian)
+        if(m_css->get_list_style_type() >= list_style_type_armenian)
         {
             auto marker_text = get_list_marker_text(lm.index);
             if(marker_text.empty())
@@ -1818,7 +1943,7 @@ namespace litehtml
 
     std::string litehtml::html_tag::get_list_marker_text(int index)
     {
-        switch(m_css.get_list_style_type())
+        switch(m_css->get_list_style_type())
         {
         case litehtml::list_style_type_decimal:
             return std::to_string(index);
@@ -2237,14 +2362,14 @@ namespace litehtml
         if(own_only)
         {
             // return own background with check for empty one
-            if(m_css.get_bg().is_empty())
+            if(m_css->get_bg().is_empty())
             {
                 return nullptr;
             }
-            return &m_css.get_bg();
+            return &m_css->get_bg();
         }
 
-        if(m_css.get_bg().is_empty())
+        if(m_css->get_bg().is_empty())
         {
             // if this is root element (<html>) try to get background from body
             if(is_root())
@@ -2274,7 +2399,7 @@ namespace litehtml
             }
         }
 
-        return &m_css.get_bg();
+        return &m_css->get_bg();
     }
 
     std::string html_tag::dump_get_name()

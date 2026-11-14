@@ -1,0 +1,122 @@
+#include "render_ruby.h"
+
+#include "document.h"
+#include "html_tag.h"
+#include "render_inline_context.h"
+
+std::shared_ptr<litehtml::render_item> litehtml::render_item_ruby::init()
+{
+    // The children as the DOM gives them: base content (text, <rb>, spans), <rt> blocks, <rp> already gone
+    // (display: none makes no render item). Each <rt> closes a pair with the base content before it; base
+    // content after the last <rt> is a pair of its own, with no annotation.
+    std::list<std::shared_ptr<render_item>> pairs;
+    std::list<std::shared_ptr<render_item>> base;
+    auto self = shared_from_this();
+    // One pair (most rubies): the ruby is that pair. Its box is the pair's (the inline formatting context around a
+    // single inline-block adds nothing to it), so the pair needs no element and the ruby no context of its own.
+    size_t count = 0;
+    bool   trailing = false;
+    for(const auto& child : m_children)
+    {
+        if(child->src_el()->tag() == _rt_ && !child->src_el()->is_inline())
+        {
+            count++;
+            trailing = false;
+        } else if(!child->src_el()->is_white_space())
+            trailing = true;
+    }
+    const bool single = count + (trailing ? 1 : 0) == 1 && src_el()->css().get_display() == display_inline_block;
+    auto make_pair = [&](const std::shared_ptr<render_item>& rt) {
+        bool content = false;
+        for(const auto& b : base)
+            if(!b->src_el()->is_white_space())
+                content = true;
+        if(!content && !rt)
+            return;
+        auto pair = std::make_shared<render_item_ruby_pair>(
+            single ? src_el() : std::make_shared<html_tag>(src_el(), "display:inline-block;text-indent:0"));
+        pair->parent(single ? parent() : self);
+        if(rt)
+        {
+            pair->add_child(rt);
+            pair->has_annotation = true;
+        }
+        auto base_el = std::make_shared<html_tag>(src_el(), "display:block;text-align:center;text-indent:0");
+        auto base_ri = std::make_shared<render_item_block>(base_el);
+        for(const auto& b : base)
+            if(content)
+                base_ri->add_child(b);
+        if(!content)
+        {
+            // An annotation over nothing still takes the line's height for its base.
+            base_el = std::make_shared<html_tag>(src_el(), "display:block;text-indent:0;white-space:pre");
+            base_ri = std::make_shared<render_item_block>(base_el);
+        }
+        pair->add_child(base_ri);
+        pairs.push_back(pair);
+        base.clear();
+    };
+    for(const auto& child : m_children)
+    {
+        if(child->src_el()->tag() == _rt_ && !child->src_el()->is_inline())
+            make_pair(child);
+        else
+            base.push_back(child);
+    }
+    make_pair(nullptr);
+    if(single && pairs.size() == 1)
+    {
+        auto ret = pairs.front();
+        for(auto& el : ret->children())
+        {
+            el = el->init();
+            el->parent(ret);
+        }
+        src_el()->add_render(ret);
+        return ret;
+    }
+    m_children = pairs;
+    for(auto& pair : m_children)
+    {
+        for(auto& el : pair->children())
+            el = el->init();
+        pair->src_el()->add_render(pair);
+    }
+    // The pairs are inline-blocks: the ruby is an inline formatting context of them.
+    auto ret = std::make_shared<render_item_inline_context>(src_el());
+    ret->parent(parent());
+    ret->children() = m_children;
+    for(const auto& el : ret->children())
+        el->parent(ret);
+    ret->src_el()->add_render(ret);
+    return ret;
+}
+
+litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_t x, pixel_t y, bool second_pass,
+                                                                       const containing_block_context& self_size,
+                                                                       formatting_context* fmt_ctx)
+{
+    auto ret            = render_item_block_context::_render_content(x, y, second_pass, self_size, fmt_ctx);
+    annotation_overflow = 0_px;
+    if(!has_annotation || m_children.size() < 2)
+        return ret;
+    // ruby-align: space-around, Chromium's default: the narrower of the two spreads over the pair.
+    for(const auto& el : m_children)
+        if(auto inl = std::dynamic_pointer_cast<render_item_inline_context>(el))
+            inl->space_around(el->pos().width);
+    // As Chromium 156 measures it: the annotation's box (its line, line-height: normal) ends where the base's em box
+    // begins. The pair's own box is the base's: the annotation hangs over it, and the inline formatting context
+    // makes room for it between lines (render_item_inline_context::make_room_for_ruby).
+    const auto&   rt      = m_children.front();
+    const auto&   base    = m_children.back();
+    const auto&   rt_fm   = rt->src_el()->css().get_font_metrics();
+    const auto&   base_fm = base->src_el()->css().get_font_metrics();
+    const pixel_t base_em_top = base->top() + base->get_first_baseline() - base_fm.em_top();
+    base->y_shift(rt->bottom() - base_em_top);
+    const pixel_t top = base->top();
+    for(const auto& el : m_children)
+        el->y_shift(-top);
+    annotation_overflow = -(rt->top() + rt->get_first_baseline() - rt_fm.em_top());
+    m_pos.height        = base->bottom();
+    return ret;
+}

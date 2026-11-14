@@ -1,6 +1,9 @@
 #ifndef LITEHTML_STYLESHEET_H
 #define LITEHTML_STYLESHEET_H
 
+#include <unordered_map>
+#include <vector>
+
 #include <utility>
 
 #include "css_selector.h"
@@ -63,10 +66,21 @@ namespace litehtml
         css_selector::vector m_selectors;
 
       public:
+        /// The sorted selectors by what their rightmost compound needs first, as html_tag::apply_selector rejects
+        /// them: a class (by_class), else a tag (by_tag), else nothing cheap to check (other). Positions in
+        /// selectors(), ascending. Built by sort_selectors().
+        struct selector_index
+        {
+            std::unordered_map<string_id, std::vector<uint32_t>> by_class, by_tag;
+            std::vector<uint32_t>                                other;
+            bool                                                 built = false;
+        };
+
         const css_selector::vector& selectors() const
         {
             return m_selectors;
         }
+        const selector_index& index() const { return m_index; }
 
         template <class Input>
         void parse_css_stylesheet(const Input& input, const std::string& baseurl, const std::shared_ptr<document>& doc,
@@ -82,10 +96,12 @@ namespace litehtml
         void add_selector(const css_selector::ptr& selector);
 
         int m_layer_depth = 0;  // inside an @layer block
+        selector_index m_index;
     };
 
     inline void css::add_selector(const css_selector::ptr& selector)
     {
+        m_index.built = false;
         selector->m_order = static_cast<int>(m_selectors.size());
         selector->m_layered = m_layer_depth > 0;
         m_selectors.push_back(selector);

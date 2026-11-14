@@ -236,6 +236,12 @@ namespace litehtml
                 }
 
             default:
+                // @font-face: the container loads the font (CSS Fonts 4 §4); its declarations as written.
+                if(lowcase(rule->name) == "font-face" && rule->block.type == CURLY_BLOCK)
+                {
+                    doc->container()->font_face(get_repr(rule->block.value, 0, -1, true), baseurl);
+                    break;
+                }
                 css_parse_error("unrecognized rule @" + rule->name);
             }
         }
@@ -314,6 +320,21 @@ namespace litehtml
     {
         std::sort(m_selectors.begin(), m_selectors.end(),
                   [](const css_selector::ptr& v1, const css_selector::ptr& v2) { return (*v1) < (*v2); });
+        // An element is offered only the selectors it can match by their first cheap test (its tag, its first
+        // class), in this order: publishers' EPUB sheets have thousands of class rules, and every element was
+        // tested against all of them (a third of a chapter part's layout).
+        m_index = selector_index();
+        for(uint32_t i = 0; i < m_selectors.size(); i++)
+        {
+            const auto& r = m_selectors[i]->m_right;
+            if(!r.m_attrs.empty() && r.m_attrs[0].type == select_class)
+                m_index.by_class[r.m_attrs[0].name].push_back(i);
+            else if(r.m_tag != star_id)
+                m_index.by_tag[r.m_tag].push_back(i);
+            else
+                m_index.other.push_back(i);
+        }
+        m_index.built = true;
     }
 
 } // namespace litehtml

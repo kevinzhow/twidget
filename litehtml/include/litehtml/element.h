@@ -32,7 +32,9 @@ namespace litehtml
         std::weak_ptr<document>               m_doc;
         document*                             m_doc_ptr = nullptr;
         elements_list                         m_children;
-        css_properties                        m_css;
+        // Computed style, shared copy-on-write: a text node's is its parent's text_css(), an element's its own once
+        // css_w() first writes it (until then the shared default).
+        std::shared_ptr<css_properties>       m_css;
         std::list<std::weak_ptr<render_item>> m_renders;
         used_selector::vector                 m_used_styles;
 
@@ -41,6 +43,8 @@ namespace litehtml
 
       private:
         std::map<string_id, int> m_counter_values;
+        mutable std::shared_ptr<css_properties> m_text_css;
+        friend class html_tag;
 
       public:
         explicit element(const std::shared_ptr<document>& doc);
@@ -49,6 +53,9 @@ namespace litehtml
 
         const css_properties& css() const;
         css_properties&       css_w();
+        /// The computed style every text child of this element has (el_text::compute_styles): one object for all of
+        /// them, made again when what it is made from changes.
+        const std::shared_ptr<css_properties>& text_css() const;
 
         bool     in_normal_flow() const;
         bool     is_inline() const;     // returns true if element is inline
@@ -226,12 +233,16 @@ namespace litehtml
 
     inline const css_properties& element::css() const
     {
-        return m_css;
+        return *m_css;
     }
 
     inline css_properties& element::css_w()
     {
-        return m_css;
+        if(m_css.use_count() > 1)
+            m_css = std::make_shared<css_properties>(*m_css);
+        m_css->text_css_cache.value.reset();
+        m_text_css.reset();
+        return *m_css;
     }
 
     inline bool element::is_block_box() const

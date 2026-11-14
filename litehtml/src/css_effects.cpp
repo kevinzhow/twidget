@@ -385,6 +385,19 @@ namespace litehtml
         return std::isfinite(out.number);
     }
 
+    // A token folded from math or env() keeps a written form (repr), as a parsed one has: raw declarations are read back
+    // as text (get_repr), and a folded `calc(2 * 40ms)` without it read back as nothing.
+    static css_token folded_number(double number, const std::string& unit)
+    {
+        css_token tok = unit.empty()  ? css_token(NUMBER, float(number), css_number_number)
+                        : unit == "%" ? css_token(PERCENTAGE, float(number), css_number_number)
+                                      : css_token(DIMENSION, float(number), css_number_number, unit);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%.9g", double(float(number)));
+        tok.repr = std::string(buf) + unit;
+        return tok;
+    }
+
     static bool fold_calc(css_token& tok)
     {
         if(tok.type != CV_FUNCTION || lowcase(tok.name()) != "calc")
@@ -397,12 +410,7 @@ namespace litehtml
             index++;
         if(index != tok.value.size())
             return false;
-        if(value.unit.empty())
-            tok = css_token(NUMBER, float(value.number), css_number_number);
-        else if(value.unit == "%")
-            tok = css_token(PERCENTAGE, float(value.number), css_number_number);
-        else
-            tok = css_token(DIMENSION, float(value.number), css_number_number, value.unit);
+        tok = folded_number(value.number, value.unit);
         return true;
     }
 
@@ -422,7 +430,7 @@ namespace litehtml
         if(tok.value.size() == 1 && (name.rfind("safe-area-inset-", 0) == 0 || name.rfind("keyboard-inset-", 0) == 0 ||
                                      name.rfind("safe-area-max-inset-", 0) == 0))
         {
-            tok = css_token(DIMENSION, 0, css_number_integer, "px");
+            tok = folded_number(0, "px");
             return true;
         }
         return false;
@@ -476,6 +484,7 @@ namespace litehtml
                  int(channel(a.blue, b.blue)), int(std::round(std::min(1.f, std::max(0.f, alpha * multiplier)) * 255)));
         css_token folded(HASH, std::string(hex));
         folded.hash_type = css_hash_unrestricted;
+        folded.repr      = std::string("#") + hex;
         tok = folded;
         return true;
     }
@@ -509,7 +518,7 @@ namespace litehtml
                 container->get_media_features(media);
                 const float width = media.width.value(), height = media.height.value();
                 const float extent = axis == 1 ? width : axis == 2 ? height : axis == 3 ? std::min(width, height) : std::max(width, height);
-                tok = css_token(DIMENSION, extent * tok.n.number / 100, css_number_number, "px");
+                tok = folded_number(extent * tok.n.number / 100, "px");
                 changed = true;
             }
             if(!tok.is_component_value())
@@ -532,12 +541,7 @@ namespace litehtml
                 size_t index = 0;
                 if(!calc_atom(single, index, value, 0))
                     continue;
-                if(value.unit.empty())
-                    tok = css_token(NUMBER, float(value.number), css_number_number);
-                else if(value.unit == "%")
-                    tok = css_token(PERCENTAGE, float(value.number), css_number_number);
-                else
-                    tok = css_token(DIMENSION, float(value.number), css_number_number, value.unit);
+                tok = folded_number(value.number, value.unit);
                 changed = true;
             } else if(name == "color-mix" && fold_color_mix(tok, container))
             {

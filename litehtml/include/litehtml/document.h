@@ -57,6 +57,9 @@ namespace litehtml
       public:
         bool take_table_cells(int count);
         std::unordered_set<const element*> skip_paint;
+        /// While set, SVG painting draws only this element of an SVG drawing (with its ancestors' groups and
+        /// its descendants) and without its own transform and opacity: a compositor layer's content.
+        const element* svg_only = nullptr;
         std::unordered_set<const element*> skip_background_images;
         const element* bare_effects = nullptr;
         bool bare_shadows = false;
@@ -97,6 +100,9 @@ namespace litehtml
         bool     layout_dirty_regions(std::vector<position>& out);
         void     note_layout_origin(const element* el) { m_layout_origins.insert(el); }
         bool     layout_cache_enabled() const;
+        /// Off: no layout is kept for reuse (a document laid out once per size, as a reader's chapter, saves the
+        /// memory: about 300 bytes a box).
+        void     set_layout_cache(bool on) { m_layout_cache_off = !on; }
         bool     layout_cache_check() const;
         uint64_t layout_epoch() const { return m_layout_epoch; }
         void     invalidate_layout_cache() { m_layout_epoch++; }
@@ -147,6 +153,9 @@ namespace litehtml
       private:
         litehtml::css                           m_user_css;
         litehtml::size                          m_size;
+        bool                                    m_vertical = false;
+        bool                                    m_cjk_segment_breaks = false;
+        bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
         std::shared_ptr<element>                m_active_element;
@@ -158,7 +167,7 @@ namespace litehtml
         std::string                             m_text;
         document_mode                           m_mode      = no_quirks_mode;
         bool                                    m_finalized = false;
-        std::map<std::string, css_properties>   m_share_cache;
+        std::map<std::string, std::shared_ptr<css_properties>> m_share_cache;
         int                                     m_next_share_id = 0;
         GumboOutput*                            m_gumbo = nullptr;
         bool                                    m_track_nodes = false;
@@ -200,6 +209,10 @@ namespace litehtml
         bool                                    m_template_ok = false;
         std::unordered_map<const element*, size_t> m_style_holes;
         std::unordered_map<const element*, std::vector<size_t>> m_owner_holes;
+        // update_holes: boolean attributes set (true) or removed (false) with a class hole's change, by hole index; and
+        // whether the document's attributes have left its template since (then the template no longer fits).
+        std::unordered_map<size_t, std::vector<std::pair<std::string, bool>>> m_attr_overrides;
+        bool                                                                  m_attrs_diverged = false;
         std::unordered_map<const void*, std::vector<size_t>> m_node_holes;
 
       public:
@@ -209,12 +222,13 @@ namespace litehtml
         {
             return ++m_next_share_id;
         }
-        const css_properties* share_lookup(const std::string& key) const
+        std::shared_ptr<css_properties> share_lookup(const std::string& key) const
         {
             auto it = m_share_cache.find(key);
-            return it == m_share_cache.end() ? nullptr : &it->second;
+            return it == m_share_cache.end() ? nullptr : it->second;
         }
-        void share_store(const std::string& key, const css_properties& props)
+        /// Elements that share a style share the object (element::css_w() copies it before a change).
+        void share_store(const std::string& key, const std::shared_ptr<css_properties>& props)
         {
             m_share_cache[key] = props;
         }
@@ -233,6 +247,8 @@ namespace litehtml
         uint_ptr  get_font(const font_description& descr, font_metrics* fm);
         pixel_t   render(pixel_t max_width, render_type rt = render_all);
         void      draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, bool cull = false);
+        /// draw() in the laid-out coordinates, which a vertical document turns onto the page first.
+        void      draw_laid_out(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, bool cull = false);
         uint32_t  paint_generation() const { return m_paint_generation; }
         void      note_svg() { m_has_svg = true; }
         bool      has_svg() const { return m_has_svg; }
@@ -247,6 +263,16 @@ namespace litehtml
         pixel_t                      to_pixels(const css_length& val, const font_metrics& metrics, pixel_t size) const;
         pixel_t                      width() const;
         pixel_t                      height() const;
+        /// writing-mode: vertical-rl on the root or on <body> (CSS Writing Modes 3 §8): the document is laid out as a
+        /// horizontal one as wide as the viewport is tall, then turned 90° clockwise onto the page (draw()), its start
+        /// at the viewport's right edge; what does not fit goes on to the left, to negative x. width() and height()
+        /// are the page's. Hit tests and scripts' boxes stay in the laid-out (unturned) coordinates.
+        bool                         vertical() const { return m_vertical; }
+        /// CSS Text 3 §4.1.3: a collapsible segment break (a source newline) between two East Asian wide characters
+        /// (not Hangul) is removed instead of becoming a space, so that Japanese and Chinese text wrapped in the
+        /// source has no gaps. Off by default: Chromium 156 keeps the space, and TwidgetCore matches Chromium.
+        void                         set_cjk_segment_breaks(bool on) { m_cjk_segment_breaks = on; }
+        bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;
         void                         add_stylesheet(const char* str, const char* baseurl, const char* media);
@@ -283,6 +309,9 @@ namespace litehtml
                                               const std::string& master_styles = litehtml::master_css,
                                               const std::string& user_styles   = {});
 
+        /// Forgets the stylesheets parsed under a container's document_container::stylesheet_cache_scope().
+        static void release_stylesheet_scope(uint64_t scope);
+
         // Like createFromString, but keeps the parse tree so update_from_string can patch the document.
         static document::ptr createUpdatableFromString(const std::string& html, document_container* container,
                                                        const std::string& master_styles);
@@ -306,11 +335,16 @@ namespace litehtml
         // checks and restyle as update_from_string. Fails, leaving the document unchanged, when an element has
         // no style attribute in the source or a value could not have come from serialized HTML.
         bool update_styles(const std::vector<std::pair<std::shared_ptr<element>, std::string>>& styles, bool* changed);
+        // Paint-only values of a generated box (::before / ::after, an animation's sample each frame): `declarations`
+        // ("transform:…;opacity:…") replace those properties of `el` in place, with no restyle and no layout. False
+        // when `el` is no generated box, a property is another one, or the box changes kind (the caller builds).
+        bool patch_generated_style(const std::shared_ptr<element>& el, const std::string& declarations);
         struct property_patch
         {
             std::vector<string_id> names;
             std::string            text;
             bool                   box = true;
+            bool                   layout = false;  // a size or an offset: laid out again (the rest repaints only)
         };
         struct hole_change
         {
@@ -318,6 +352,10 @@ namespace litehtml
             std::string              name;
             bool                     text = false;
             std::string              value;
+            // A boolean attribute (`name`, such as hidden) set (present) or removed: the element is restyled as a
+            // class change of it would be (it needs a class attribute, the hole that carries it).
+            bool                     attribute = false;
+            bool                     present   = false;
         };
         // Patches attribute values (`name`) and the text of elements whose only content is one text run (`text`)
         // without an HTML string, through the same checks and restyle as update_from_string. Each value must be the

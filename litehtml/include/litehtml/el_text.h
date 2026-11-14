@@ -7,6 +7,17 @@
 namespace litehtml
 {
     class text_breaker;
+
+    /// A text node's whole text, which its pieces (words and spaces, el_text) are cut from. Shaped once per font by
+    /// the container (document_container::text_advances): a piece's width is then its share of the shaped run, with
+    /// the font's kerning between pieces, as a browser shapes a text node and breaks the shaped result into lines.
+    struct shaped_text
+    {
+        std::string text;
+        /// Per font: the advance before each byte (empty: the container does not shape runs).
+        std::vector<std::pair<uint_ptr, std::vector<pixel_t>>> advances;
+    };
+
     class el_text : public element
     {
       protected:
@@ -19,12 +30,39 @@ namespace litehtml
         int         m_measured_transform = -1;
         std::shared_ptr<text_breaker> m_breaker;
         mutable int8_t m_strong_direction = 2;  // 2: not looked at yet
+        // Where the text came from: the source text node's byte position in the parsed string, and this text's
+        // UTF-16 offset in that node's (decoded) text; UINT32_MAX when it was not parsed from a string.
+        uint32_t m_src_pos = UINT32_MAX;
+        uint32_t m_src_utf16 = 0;
+        // The run this piece was cut from and its bytes in it (none: measured alone).
+        std::shared_ptr<shaped_text> m_run;
+        uint32_t m_run_begin = 0, m_run_end = 0;
+        // Its width shaped alone less its share of the run: what it takes more when it ends a line (Blink shapes a
+        // line's end again after the break, without the kerning with what went to the next line).
+        pixel_t m_end_extra = 0_px;
 
       public:
         el_text(const char* text, const document::ptr& doc);
 
         void get_text(std::string& text) const override;
         void set_text(const std::string& text);
+        void set_source(uint32_t pos, uint32_t utf16)
+        {
+            m_src_pos   = pos;
+            m_src_utf16 = utf16;
+        }
+        /// The run this piece is bytes [begin, end) of (set by the parser when the pieces are the node's text in order).
+        void set_run(const std::shared_ptr<shaped_text>& run, uint32_t begin, uint32_t end)
+        {
+            m_run       = run;
+            m_run_begin = begin;
+            m_run_end   = end;
+            m_measured_font = 0;
+        }
+        /// What this piece takes more than its width when it ends a line (0 when measured alone).
+        pixel_t line_end_extra() const { return m_end_extra; }
+        uint32_t source_pos() const { return m_src_pos; }
+        uint32_t source_utf16() const { return m_src_utf16; }
         void compute_styles(bool recursive) override;
         const std::string& display_text() const { return m_use_transformed ? m_transformed_text : m_text; }
         std::shared_ptr<text_breaker> breaker();

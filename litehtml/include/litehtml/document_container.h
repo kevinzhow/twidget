@@ -47,6 +47,15 @@ namespace litehtml
         virtual void               delete_font(litehtml::uint_ptr hFont)                                            = 0;
         virtual pixel_t            text_width(const char* text, litehtml::uint_ptr hFont)                           = 0;
         virtual std::shared_ptr<text_breaker> create_text_breaker(const std::string&, uint_ptr) { return nullptr; }
+        /// `text` shaped as one run in `hFont`, as a browser shapes a text node before it breaks it into lines (font
+        /// kerning between the pieces included): `prefix[b]` is the advance of the text before byte `b` (text.size() + 1
+        /// entries; meaningful at character boundaries). False when the container does not shape runs: each piece is
+        /// then measured alone (text_width).
+        virtual bool text_advances(const std::string& /*text*/, uint_ptr /*hFont*/, std::vector<pixel_t>& /*prefix*/) { return false; }
+        /// The largest ascent and descent of the fonts `text` is drawn with in `hFont` when fallback fonts draw some of it
+        /// and reach above or below `hFont`'s own; false when `hFont`'s metrics already cover it. A line of
+        /// `line-height: normal` makes room for them (CSS Inline 3 §4.2), as Blink does.
+        virtual bool text_used_extents(const char* /*text*/, uint_ptr /*hFont*/, pixel_t& /*ascent*/, pixel_t& /*descent*/) { return false; }
         virtual void               draw_text(litehtml::uint_ptr hdc, const char* text, litehtml::uint_ptr hFont,
                                              litehtml::web_color color, const litehtml::position& pos)              = 0;
         virtual pixel_t            pt_to_px(float pt) const                                                         = 0;
@@ -124,8 +133,17 @@ namespace litehtml
         virtual bool sanitize_element(std::string& /*tag*/, bool /*svg*/, string_map& /*attrs*/) { return true; }
         virtual bool sanitize_declaration(const std::string& /*name*/, const css_token_vector& /*value*/) { return true; }
         virtual bool sanitize_at_rule(const std::string& /*name*/) { return true; }
+        /// An @font-face rule: its declarations as written, and the URL its src() resolves against.
+        virtual void font_face(const std::string& /*declarations*/, const std::string& /*baseurl*/) {}
         virtual void sanitizer_limit(const char* /*what*/) {}
         virtual void trusted_styles(bool /*trusted*/) {}
+        /// Non-zero: a promise that, under this number, import_css() gives the same text for the same URL and every
+        /// other call a stylesheet's parse makes (font_face, sanitize_*) has the same effect as the first time. Then
+        /// documents of this container share one parse of their stylesheets even when the sheets use @import, @media
+        /// or viewport units (keyed by the media features too; the documents share the parsed sheets' media lists,
+        /// so rebuild them on a media change instead of calling media_changed()). A number is never reused; call
+        /// document::release_stylesheet_scope() with it when the container goes.
+        virtual uint64_t stylesheet_cache_scope() const { return 0; }
         virtual bool controls_active() const { return false; }
         virtual web_color control_accent() const { return web_color(0, 122, 255); }
 

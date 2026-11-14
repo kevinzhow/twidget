@@ -1,4 +1,5 @@
 #include "render_inline_context.h"
+#include "render_ruby.h"
 #include "document.h"
 #include "iterators.h"
 #include "types.h"
@@ -90,6 +91,78 @@ litehtml::size litehtml::render_item_inline_context::text_content_size() const
     return size(width, height);
 }
 
+
+namespace
+{
+    char32_t decode_at(const std::string& s, size_t i)
+    {
+        const unsigned char c0 = s[i];
+        size_t n = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+        n        = std::min(n, s.size() - i);
+        char32_t cp = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
+        for(size_t k = 1; k < n; k++)
+            cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+        return cp;
+    }
+    char32_t first_char(const std::string& s) { return s.empty() ? 0 : decode_at(s, 0); }
+    char32_t last_char(const std::string& s)
+    {
+        if(s.empty())
+            return 0;
+        size_t i = s.size() - 1;
+        while(i > 0 && (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80)
+            i--;
+        return decode_at(s, i);
+    }
+
+    // East_Asian_Width F, W or H, Hangul left out (CSS Text 3 §4.1.3), by blocks.
+    bool east_asian_wide(char32_t c)
+    {
+        if((c >= 0x1100 && c <= 0x11FF) || (c >= 0x3130 && c <= 0x318F) || (c >= 0xAC00 && c <= 0xD7AF) || (c >= 0xFFA0 && c <= 0xFFDC))
+            return false;
+        return (c >= 0x2E80 && c <= 0x303E) || (c >= 0x3041 && c <= 0x33FF) || (c >= 0x3400 && c <= 0x4DBF) ||
+               (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0xA000 && c <= 0xA4CF) || (c >= 0xF900 && c <= 0xFAFF) ||
+               (c >= 0xFE30 && c <= 0xFE4F) || (c >= 0xFF00 && c <= 0xFFE6) || (c >= 0x20000 && c <= 0x3FFFD);
+    }
+
+    // The first (or last) character of an inline item's text: a text's own; a ruby's base text (its readings are
+    // beside the line); none for anything else.
+    char32_t edge_char(const litehtml::element::ptr& el, bool first)
+    {
+        if(!el)
+            return 0;
+        if(el->is_text())
+        {
+            auto text = std::dynamic_pointer_cast<litehtml::el_text>(el);
+            return text ? (first ? first_char(text->display_text()) : last_char(text->display_text())) : 0;
+        }
+        if(el->tag() != litehtml::_ruby_ && !(el->parent() && el->parent()->tag() == litehtml::_ruby_))
+            return 0;
+        const auto& kids = el->children();
+        auto pick = [&](const litehtml::element::ptr& child) -> char32_t {
+            if(child->tag() == litehtml::_rt_ || child->tag() == litehtml::_rp_ || child->is_white_space())
+                return 0;
+            if(child->is_text())
+                return edge_char(child, first);
+            std::string text;
+            child->get_text(text);
+            return first ? first_char(text) : last_char(text);
+        };
+        if(first)
+        {
+            for(auto it = kids.begin(); it != kids.end(); ++it)
+                if(char32_t c = pick(*it))
+                    return c;
+        } else
+        {
+            for(auto it = kids.rbegin(); it != kids.rend(); ++it)
+                if(char32_t c = pick(*it))
+                    return c;
+        }
+        return 0;
+    }
+} // namespace
+
 litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     pixel_t /*x*/, pixel_t /*y*/, bool /*second_pass*/, const containing_block_context& self_size,
     formatting_context* fmt_ctx)
@@ -107,6 +180,9 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     }
 
     bool was_space = false;
+    const bool cjk_breaks = skip_spaces && ws != white_space_pre_line && src_el()->get_document()->cjk_segment_breaks();
+    element::ptr before;           // the last element placed (cjk_breaks)
+    size_t     removed_to = 0;     // events before this one are a removed segment break
 
     go_inside_inline  go_inside_inlines_selector;
     inline_selector   select_inlines;
@@ -146,6 +222,35 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
         {
         case iterator_item_type_child:
             {
+                if(cjk_breaks && index < removed_to && el->src_el()->is_white_space())
+                {
+                    el->skip(true);
+                    return;
+                }
+                if(cjk_breaks && el->src_el()->is_white_space() && !was_space && before && east_asian_wide(edge_char(before, false)))
+                {
+                    // A run of collapsible white space with a segment break in it, between two wide characters:
+                    // removed (CSS Text 3 §4.1.3).
+                    bool   segment = false;
+                    size_t next    = index;
+                    for(; next < events.size(); next++)
+                    {
+                        const auto& e = events[next];
+                        if(e.second != iterator_item_type_child)
+                            continue;
+                        if(!e.first->src_el()->is_white_space())
+                            break;
+                        std::string t;
+                        e.first->src_el()->get_text(t);
+                        segment = segment || t.find('\n') != std::string::npos;
+                    }
+                    if(segment && next < events.size() && east_asian_wide(edge_char(events[next].first->src_el(), true)))
+                    {
+                        removed_to = next;
+                        el->skip(true);
+                        return;
+                    }
+                }
                 // skip spaces to make rendering a bit faster
                 if(skip_spaces)
                 {
@@ -163,6 +268,8 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
                         was_space = el->src_el()->is_break();
                     }
                 }
+                if(cjk_breaks && !el->src_el()->is_white_space())
+                    before = el->src_el();
                 // place element into rendering flow
                 place_inline(std::make_unique<line_box_item>(el), self_size, fmt_ctx);
             }
@@ -187,6 +294,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     m_trailing = 0_px;
 
     finish_last_box(true, self_size);
+    make_room_for_ruby();
     for(const auto& text : m_fragmented_texts)
     {
         text->update_fragment_bounds();
@@ -222,6 +330,85 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     }
 
     return m_rendered_width;
+}
+
+void litehtml::render_item_inline_context::space_around(pixel_t width)
+{
+    if(m_line_boxes.size() != 1)
+        return;
+    std::vector<line_box_item*> items;
+    pixel_t                     left = 0_px, right = 0_px, used = 0_px;
+    for(const auto& item : m_line_boxes.front()->items())
+    {
+        if(item->get_type() != line_box_item::type_text_part || item->get_el()->src_el()->is_white_space())
+            continue;
+        left  = items.empty() ? item->left() : std::min(left, item->left());
+        right = items.empty() ? item->right() : std::max(right, item->right());
+        used += item->width();
+        items.push_back(item.get());
+    }
+    if(items.size() < 2 || width - (right - left) < 0.5_px)
+        return;
+    const pixel_t gap = (width - used) / pixel_t(float(items.size()));
+    pixel_t       x   = gap / 2_px;
+    for(auto* item : items)
+    {
+        item->get_el()->pos().x += x - item->left();
+        x += item->width() + gap;
+    }
+}
+
+void litehtml::render_item_inline_context::make_room_for_ruby()
+{
+    // As Chromium 156: a line whose ruby annotations reach into the line above moves down until their em boxes clear
+    // that line's em boxes. The first line's annotations hang over the box's top.
+    if(m_line_boxes.size() < 2)
+        return;
+    const auto& fm    = css().get_font_metrics();
+    pixel_t     shift = 0_px;
+    for(size_t i = 1; i < m_line_boxes.size(); i++)
+    {
+        auto& line = m_line_boxes[i];
+        if(shift != 0_px)
+            line->y_shift(shift);
+        bool    found = false;
+        pixel_t reach = 0_px;
+        for(const auto& item : line->items())
+        {
+            const auto& el = item->get_el();
+            if(el->src_el()->tag() != _ruby_ || item->get_type() != line_box_item::type_text_part)
+                continue;
+            if(auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(el))
+            {
+                // A ruby of one pair is that pair.
+                if(pair->annotation_overflow > 0_px)
+                {
+                    const pixel_t top = el->pos().y - pair->annotation_overflow;
+                    reach             = found ? std::min(reach, top) : top;
+                    found             = true;
+                }
+                continue;
+            }
+            for(const auto& child : el->children())
+            {
+                auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(child);
+                if(!pair || pair->annotation_overflow <= 0_px)
+                    continue;
+                const pixel_t top = el->pos().y + pair->pos().y - pair->annotation_overflow;
+                reach             = found ? std::min(reach, top) : top;
+                found             = true;
+            }
+        }
+        if(!found)
+            continue;
+        const auto&   prev      = m_line_boxes[i - 1];
+        const pixel_t em_bottom = prev->bottom() - prev->baseline() + fm.em_bottom();
+        if(reach < em_bottom)
+        {
+            line->y_shift(em_bottom - reach);
+            shift += em_bottom - reach;
+        }
+    }
 }
 
 void litehtml::render_item_inline_context::apply_ellipsis(pixel_t room)
@@ -647,11 +834,12 @@ void litehtml::render_item_inline_context::apply_vertical_align()
         pixel_t shift = add;
         if(m_va_applied != 0_px)
         {
-            if(m_last_layout.valid)
+            if(last_layout_valid())
             {
                 const position placed = m_pos;
                 m_layout_dirty        = true;
-                render(m_last_x, m_last_y, m_last_layout.cb, nullptr, m_last_layout.second_pass);
+                const layout_cache c  = *m_cache;
+                render(c.last_x, c.last_y, c.last.cb, nullptr, c.last.second_pass);
                 m_pos = placed;
             } else
                 shift = add - m_va_applied;

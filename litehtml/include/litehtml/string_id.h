@@ -96,14 +96,20 @@ namespace litehtml
 
         _gap_, _row_gap_, _column_gap_, _grid_gap_, _grid_row_gap_, _grid_column_gap_,
         _grid_, _grid_template_, _grid_template_columns_, _grid_template_rows_, _grid_auto_rows_, _grid_column_, _grid_row_,
-        _grid_column_start_, _grid_column_end_, _grid_row_start_, _grid_row_end_,
+        _grid_column_start_, _grid_column_end_, _grid_row_start_, _grid_row_end_, _grid_area_,
         _justify_items_, _justify_self_, _place_items_, _place_self_, _place_content_,
         _letter_spacing_, _word_spacing_, _opacity_, _clip_path_, _box_shadow_, _transform_, _translate_, _rotate_, _scale_, _transform_origin_, _transform_box_, _backface_visibility_, _contain_,
         _accent_color_, _color_scheme_, _outline_, _outline_width_, _outline_style_, _outline_color_, _outline_offset_, _inset_,
         _fill_, _fill_opacity_, _fill_rule_, _stroke_, _stroke_width_, _stroke_opacity_, _stroke_linecap_,
         _stroke_linejoin_, _stroke_miterlimit_, _stroke_dasharray_, _stroke_dashoffset_, _text_anchor_, _text_shadow_,
+        _cx_, _cy_, _r_, _rx_, _ry_, _d_,
         _filter_, _backdrop_filter_, __webkit_backdrop_filter_, __webkit_font_smoothing_, _table_layout_,
         _font_variant_numeric_, _font_feature_settings_,
+        _writing_mode_, __webkit_writing_mode_, __epub_writing_mode_, _text_orientation_, __webkit_text_orientation_,
+        __epub_text_orientation_, _text_combine_upright_, __webkit_text_combine_, __epub_text_combine_,
+        __webkit_text_emphasis_, __webkit_text_emphasis_style_, __webkit_text_emphasis_color_,
+        __webkit_text_emphasis_position_, __epub_text_emphasis_style_, __epub_text_emphasis_color_,
+        __epub_text_emphasis_position_,
 
         // some CSS dimensions
         _deg_, _grad_, _rad_, _turn_,

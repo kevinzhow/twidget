@@ -322,10 +322,28 @@ namespace litehtml
         pixel_t sub_shift;
         // The baseline shift for superscripts.
         pixel_t super_shift;
+        // The size of a device pixel in CSS px (twidget). Half-leadings are floored to it and text lines start on it,
+        // as Chromium lays lines out and paints them in device pixels; the container rounds its ascent and descent
+        // to it.
+        pixel_t device_pixel = 1;
+        // The em box's top above the baseline (twidget: the OS/2 typographic ascent scaled to font_size, as Chromium
+        // places ruby and vertical text on it); 0 when the container does not know, and em_top() estimates it.
+        pixel_t em_ascent = 0;
 
         pixel_t base_line() const
         {
             return descent;
+        }
+        pixel_t em_top() const
+        {
+            if(em_ascent > pixel_t(0.0f))
+                return em_ascent;
+            const pixel_t sum = ascent + descent;
+            return sum > pixel_t(0.0f) ? font_size * ascent / sum : font_size;
+        }
+        pixel_t em_bottom() const
+        {
+            return font_size - em_top();
         }
     };
 

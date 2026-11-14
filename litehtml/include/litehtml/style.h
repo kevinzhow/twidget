@@ -50,6 +50,9 @@ namespace litehtml
     class html_tag;
     string_id raw_declaration_id(string_id name);
     bool      is_raw_declaration(string_id name);
+    // What a `transition` or `animation` shorthand writes into the raw declarations of its longhands: their reset,
+    // which raw_declaration reads as "not declared" (the shorthand's own value applies).
+    const char* const raw_shorthand_reset = "-lh-from-shorthand";
     using props_map = std::map<string_id, property_value>;
 
     // represents a style block, eg. "color: black; display: inline"
@@ -160,6 +163,7 @@ namespace litehtml
         void add_length_property(string_id name, const css_token& val, const css_values& keywords, int options,
                                  bool important);
         template <class T> void add_four_properties(string_id top_name, T val[4], int n, bool important);
+        void raw_border_colors(const web_color* colors[4], bool important);
         void                    remove_property(string_id name, bool important);
     };
 

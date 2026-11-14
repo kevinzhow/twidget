@@ -214,6 +214,10 @@ namespace litehtml
         {
             return m_top + height();
         }
+        const std::list<std::unique_ptr<line_box_item>>& items() const
+        {
+            return m_items;
+        }
         pixel_t top() const
         {
             return m_top;

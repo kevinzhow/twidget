@@ -3,6 +3,7 @@
 #include "element.h"
 #include "document.h"
 #include "render_item.h"
+#include "render_ruby.h"
 #include "render_flex.h"
 #include "render_grid.h"
 #include "render_inline.h"
@@ -20,10 +21,66 @@ namespace litehtml
         return ret;                                                                                                    \
     }
 
+    namespace
+    {
+        const std::shared_ptr<css_properties>& default_css()
+        {
+            static const auto& css = *new std::shared_ptr<css_properties>(std::make_shared<css_properties>());
+            return css;
+        }
+    } // namespace
+
     element::element(const document::ptr& doc) :
         m_doc(doc),
-        m_doc_ptr(doc.get())
+        m_doc_ptr(doc.get()),
+        m_css(default_css())
     {
+    }
+
+    const std::shared_ptr<css_properties>& element::text_css() const
+    {
+        if(m_text_css)
+            return m_text_css;
+        // Not inline: made from this style alone, so elements sharing the style share their text's too.
+        const bool own_only = this->css().get_display() != display_inline;
+        if(own_only && this->css().text_css_cache.value)
+        {
+            m_text_css = this->css().text_css_cache.value;
+            return m_text_css;
+        }
+        // What a text node's style is made of: its parent's (this element's) line height, font, white-space and
+        // wrapping, text-transform; inline text, no float; the offsets of the nearest relatively positioned inline
+        // ancestor (litehtml's rule, unchanged: the position itself ends up static unless there is no block above).
+        auto css = std::make_shared<css_properties>();
+        css->set_display(display_inline_text);
+        css->line_height_w() = this->css().line_height();
+        css->set_font(this->css().get_font());
+        css->set_font_metrics(this->css().get_font_metrics());
+        css->set_white_space(this->css().get_white_space());
+        css->set_overflow_wrap(this->css().get_overflow_wrap());
+        css->set_word_break(this->css().get_word_break());
+        css->set_text_transform(this->css().get_text_transform());
+        css->set_display(display_inline_text);
+        css->set_float(float_none);
+        element::ptr p = std::const_pointer_cast<element>(shared_from_this());
+        while(p && p->css().get_display() == display_inline)
+        {
+            if(p->css().get_position() == element_position_relative)
+            {
+                css->set_offsets(p->css().get_offsets());
+                css->set_position(element_position_relative);
+                break;
+            }
+            p = p->parent();
+        }
+        if(p)
+        {
+            css->set_position(element_position_static);
+        }
+        m_text_css = std::move(css);
+        if(own_only)
+            this->css().text_css_cache.value = m_text_css;
+        return m_text_css;
     }
 
     position element::get_placement() const
@@ -117,7 +174,7 @@ namespace litehtml
 
     std::vector<std::tuple<std::string, std::string>> element::dump_get_attrs()
     {
-        return m_css.dump_get_attrs();
+        return m_css->dump_get_attrs();
     }
 
     void element::dump(dumper& cout)
@@ -160,6 +217,9 @@ namespace litehtml
         } else if(css().get_display() == display_table_row)
         {
             ret = std::make_shared<render_item_table_row>(shared_from_this());
+        } else if(tag() == _ruby_ && css().get_display() == display_inline_block)
+        {
+            ret = std::make_shared<render_item_ruby>(shared_from_this());
         } else if(css().get_display() == display_block || css().get_display() == display_table_cell ||
                   css().get_display() == display_table_caption || css().get_display() == display_list_item ||
                   css().get_display() == display_inline_block)
@@ -307,7 +367,7 @@ namespace litehtml
 
     bool element::is_block_formatting_context() const
     {
-        if(m_css.get_display() == display_block)
+        if(m_css->get_display() == display_block)
         {
             auto par = parent();
             if(par && (par->css().get_display() == display_inline_flex || par->css().get_display() == display_flex ||
@@ -316,12 +376,12 @@ namespace litehtml
                 return true;
             }
         }
-        if(m_css.get_display() == display_inline_block || m_css.get_display() == display_table_cell ||
-           m_css.get_display() == display_inline_flex || m_css.get_display() == display_flex ||
-           m_css.get_display() == display_inline_grid || m_css.get_display() == display_grid ||
-           m_css.get_display() == display_table_caption || is_root() || m_css.get_float() != float_none ||
-           m_css.get_position() == element_position_absolute || m_css.get_position() == element_position_fixed ||
-           !is_one_of(m_css.get_overflow(), overflow_visible, overflow_clip) || m_css.contains(contain_layout | contain_paint))
+        if(m_css->get_display() == display_inline_block || m_css->get_display() == display_table_cell ||
+           m_css->get_display() == display_inline_flex || m_css->get_display() == display_flex ||
+           m_css->get_display() == display_inline_grid || m_css->get_display() == display_grid ||
+           m_css->get_display() == display_table_caption || is_root() || m_css->get_float() != float_none ||
+           m_css->get_position() == element_position_absolute || m_css->get_position() == element_position_fixed ||
+           !is_one_of(m_css->get_overflow(), overflow_visible, overflow_clip) || m_css->contains(contain_layout | contain_paint))
         {
             return true;
         }

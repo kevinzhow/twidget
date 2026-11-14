@@ -386,11 +386,23 @@ namespace litehtml
         case '{':
         case '[':
         case '(':
-            return consume_simple_block(static_cast<char>(token.ch));
+        {
+            if(m_depth >= kMaxNesting) return token;
+            m_depth++;
+            css_token block = consume_simple_block(static_cast<char>(token.ch));
+            m_depth--;
+            return block;
+        }
 
             // Otherwise, if the current input token is a <function-token>, consume a function and return it.
         case FUNCTION:
-            return consume_function(token.name());
+        {
+            if(m_depth >= kMaxNesting) return token;
+            m_depth++;
+            css_token function = consume_function(token.name());
+            m_depth--;
+            return function;
+        }
 
             // Otherwise, return the current input token.
         default:

@@ -2,18 +2,22 @@
 #include "el_image.h"
 #include "render_image.h"
 #include "document_container.h"
+#include "vertical.h"
 
 #include <algorithm>
 
 litehtml::el_image::el_image(const document::ptr& doc) :
     html_tag(doc)
 {
-    m_css.set_display(display_inline_block);
+    css_w().set_display(display_inline_block);
 }
 
 void litehtml::el_image::get_content_size(size& sz, pixel_t /*max_width*/)
 {
     get_document()->container()->get_image_size(m_src.c_str(), nullptr, sz);
+    // Vertical text lays the page out turned (document::vertical()): the picture's height is its laid-out width.
+    if(get_document()->vertical() && css().is_vertical_rl())
+        std::swap(sz.width, sz.height);
 }
 
 bool litehtml::el_image::is_replaced() const
@@ -69,6 +73,23 @@ void litehtml::el_image::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position
             layer.repeat      = background_repeat_no_repeat;
             layer.border_radius =
                 css().get_borders().radius.calc_percents(layer.border_box.width, layer.border_box.height);
+            if(get_document()->vertical() && css().is_vertical_rl())
+            {
+                // Upright on the page: turned back about its centre, as wide as it is laid out tall.
+                const pixel_t cx = pos.x + pos.width / 2_px, cy = pos.y + pos.height / 2_px;
+                position      box(cx - pos.height / 2_px, cy - pos.width / 2_px, pos.height, pos.width);
+                layer.clip_box   = box;
+                layer.origin_box = fitted(box);
+                layer.border_box = box;
+                layer.border_radius = {};
+                paint_group group;
+                group.matrix = upright_matrix(float(cx), float(cy));
+                group.bounds = box;
+                doc_ptr()->container()->begin_group(hdc, group);
+                doc_ptr()->container()->draw_image(hdc, layer, m_src, {});
+                doc_ptr()->container()->end_group(hdc);
+                return;
+            }
             doc_ptr()->container()->draw_image(hdc, layer, m_src, {});
         }
     }

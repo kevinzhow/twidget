@@ -99,20 +99,44 @@ namespace litehtml
             bool                     valid       = false;
             pixel_t                  outer_height = 0_px;
         };
-        bool         m_layout_dirty   = true;
-        bool         m_relayout_pending = false;
-        bool         m_out_of_flow    = true;
-        uint64_t     m_layout_epoch   = 0;
-        layout_entry m_last_layout;
-        position     m_last_pos;
-        pixel_t      m_last_x = 0_px;
-        pixel_t      m_last_y = 0_px;
-        margins      m_last_margins;
-        margins      m_last_padding;
-        margins      m_last_borders;
-        layout_entry m_measured[2];
-        int          m_measured_next = 0;
-        int          m_resolved_layout_safe = -1;
+        /// What the last layouts were and gave, to reuse them (incremental relayout): made by the first layout that
+        /// may be cached, so items that are never laid out on their own (text) or documents without the cache carry
+        /// none of it.
+        struct layout_cache
+        {
+            layout_entry last;
+            position     last_pos;
+            pixel_t      last_x = 0_px;
+            pixel_t      last_y = 0_px;
+            margins      last_margins;
+            margins      last_padding;
+            margins      last_borders;
+            layout_entry measured[2];
+            int          measured_next = 0;
+        };
+        bool                          m_layout_dirty   = true;
+        bool                          m_relayout_pending = false;
+        bool                          m_out_of_flow    = true;
+        int8_t                        m_resolved_layout_safe = -1;
+        uint64_t                      m_layout_epoch   = 0;
+        std::unique_ptr<layout_cache> m_cache;
+
+        layout_cache& cache()
+        {
+            if(!m_cache)
+                m_cache = std::make_unique<layout_cache>();
+            return *m_cache;
+        }
+        bool last_layout_valid() const { return m_cache && m_cache->last.valid; }
+        void forget_layouts(bool last)
+        {
+            if(!m_cache)
+                return;
+            if(last)
+                m_cache->last.valid = false;
+            m_cache->measured[0].valid = false;
+            m_cache->measured[1].valid = false;
+        }
 
         bool                 layout_cacheable(formatting_context* fmt_ctx) const;
         bool                 layout_reusable() const;

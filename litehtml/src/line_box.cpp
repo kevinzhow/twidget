@@ -4,11 +4,25 @@
 #include "render_item.h"
 #include "document.h"
 #include "el_text.h"
+#include "document_container.h"
 #include "types.h"
 #include <algorithm>
 #include <cmath>
 
 //////////////////////////////////////////////////////////////////////////////////////////
+
+namespace
+{
+    // The space above a box's content area in its line: half the leading, floored to a device pixel, as Chromium's
+    // CalculateLeadingSpace does. The leading is negative when the line height is smaller than the font's ascent +
+    // descent (line-height: 1 in most fonts); rounding it toward zero, as litehtml did, put such text up to a pixel
+    // lower than Chromium.
+    litehtml::pixel_t half_leading(litehtml::pixel_t leading, litehtml::pixel_t device_pixel)
+    {
+        const float px = float(device_pixel) > 0 ? float(device_pixel) : 1.0f;
+        return litehtml::pixel_t(std::floor(float(leading) / 2.0f / px + 0.001f) * px);
+    }
+}
 
 litehtml::line_box_item::~line_box_item() = default;
 
@@ -536,11 +550,28 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             {
                 line_max_height.add_item(lbi.get());
                 const pixel_t leading = lbi->get_el()->css().line_height().computed_value - lbi->height();
-                const pixel_t above   = pixel_t(std::trunc(static_cast<float>(leading / 2_px)));
-                leading_boxes.top     = leading_boxes.count ? std::min(leading_boxes.top, lbi->top() - above)
-                                                            : lbi->top() - above;
-                leading_boxes.bottom  = leading_boxes.count ? std::max(leading_boxes.bottom, lbi->bottom() + leading - above)
-                                                            : lbi->bottom() + leading - above;
+                const pixel_t above   = half_leading(leading, lbi->get_el()->css().get_font_metrics().device_pixel);
+                pixel_t       box_top = lbi->top() - above, box_bottom = lbi->bottom() + leading - above;
+                // line-height: normal makes room for the fonts the text is drawn with, fallbacks included (CSS Inline 3
+                // §4.2; Blink's used fonts): Japanese in a Latin primary font gets the CJK font's ascent and descent.
+                if(lbi->get_el()->css().line_height().css_value.is_predefined() &&
+                   lbi->get_el()->src_el()->css().get_display() == display_inline_text)
+                {
+                    const auto& fm = lbi->get_el()->css().get_font_metrics();
+                    pixel_t     used_ascent = 0_px, used_descent = 0_px;
+                    std::string text;
+                    lbi->get_el()->src_el()->get_text(text);
+                    if(!text.empty() &&
+                       lbi->get_el()->src_el()->get_document()->container()->text_used_extents(
+                           text.c_str(), lbi->get_el()->css().get_font(), used_ascent, used_descent))
+                    {
+                        const pixel_t baseline = lbi->bottom() - fm.descent;
+                        box_top    = std::min(box_top, baseline - used_ascent);
+                        box_bottom = std::max(box_bottom, baseline + used_descent);
+                    }
+                }
+                leading_boxes.top     = leading_boxes.count ? std::min(leading_boxes.top, box_top) : box_top;
+                leading_boxes.bottom  = leading_boxes.count ? std::max(leading_boxes.bottom, box_bottom) : box_bottom;
                 leading_boxes.count++;
             } else
             {
@@ -586,7 +617,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
     if(line_max_height.count != 0)
     {
         const pixel_t strut_leading = m_default_line_height.computed_value - m_font_metrics.height;
-        const pixel_t strut_above   = pixel_t(std::trunc(static_cast<float>(strut_leading / 2_px)));
+        const pixel_t strut_above   = half_leading(strut_leading, m_font_metrics.device_pixel);
         pixel_t       top           = -(m_font_metrics.height - m_font_metrics.base_line()) - strut_above;
         pixel_t       bottom        = m_font_metrics.base_line() + strut_leading - strut_above;
         if(leading_boxes.count)
@@ -621,7 +652,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             // We have inline items
             top_shift = std::abs(line_max_height.top.value());
 
-            const pixel_t top_shift_correction = pixel_t(std::trunc(static_cast<float>((line_height.value() - line_max_height.height()) / 2_px)));
+            const pixel_t top_shift_correction = half_leading(line_height.value() - line_max_height.height(), m_font_metrics.device_pixel);
             // We have to calculate the baseline from the top of the line box due to possible round errors.
             // The top_shift_correction is actually text offset from the top of the line box.
             // The (top_shift_correction + line_max_height.height()): is the bottom of the text with shift
@@ -880,7 +911,22 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
             return true;
         }
 
-        if(m_left + m_width + item->width() + trailing > m_right)
+        // CSS Text 3 §4.1.3, as Chromium: an ideographic space ending the line hangs (。　 at a paragraph's turn,
+        // which the CJK line breaking keeps with the text before it).
+        pixel_t hang = 0_px;
+        if(auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get()))
+        {
+            const std::string& shown = text->display_text();
+            if(shown.size() > 3 && shown.compare(shown.size() - 3, 3, "\xE3\x80\x80") == 0 && text->parent())
+                hang = text->get_document()->container()->text_width("\xE3\x80\x80", text->parent()->css().get_font());
+        }
+        // Shaped as one run, a piece ending the line is shaped again without its kerning with the next piece (as
+        // Blink reshapes a line's end): it must fit with that width.
+        pixel_t end_extra = 0_px;
+        if(trailing <= 0_px)
+            if(auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get()))
+                end_extra = text->line_end_extra();
+        if(m_left + m_width + item->width() + end_extra - hang + trailing > m_right)
         {
             return false;
         }

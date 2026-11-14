@@ -61,7 +61,7 @@ namespace litehtml
             style                                       st_base;
             bool                                        has_base = false;
             used_selector::vector                       used;
-            css_properties                              css;
+            std::shared_ptr<css_properties>             css;
             std::vector<css_properties>                 kids;
             std::map<std::string, int>                  regions;
         };
@@ -133,6 +133,9 @@ namespace litehtml
         bool background_color_is_local() const;
         void compute_background_style();
         bool patch_inline_properties(const std::vector<string_id>& names, const std::string& patch);
+        // A ::before / ::after box (no style attribute): its transform, opacity or background colour replaced by
+        // `patch` alone. False, the box perhaps changed, when it starts or stops being a paint group or transformed.
+        bool patch_generated_properties(const std::vector<string_id>& names, const std::string& patch);
         bool can_restyle_width_shallow() const;
         void draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                   const std::shared_ptr<render_item>& ri) override;
@@ -143,6 +146,8 @@ namespace litehtml
         const Type& get_property(string_id name, bool inherited, const Type& default_value,
                                  uint_ptr css_properties_member_offset) const;
         std::string raw_declaration(const std::string& name) const;
+        /// The same by the raw id (raw_declaration_id of the property's id): no lookup of the name.
+        std::string raw_declaration_of(string_id raw) const;
         /// What the UA stylesheet alone gives this element for `name` (`revert`); invalid when nothing.
         const property_value& ua_property(string_id name) const;
         // false when the property is not set, or (*invalid then true) set to the guaranteed-invalid value

@@ -122,8 +122,32 @@ namespace litehtml
             return out;
         }
 
+        /// SVG 2's geometry properties cx, cy, r, rx, ry: declared in CSS (a sheet, the style attribute, an
+        /// animation's sampled value) they win over the attribute. Numbers, px and percentages of `base`.
+        bool css_geometry(const element::ptr& el, const char* name, float base, float& out)
+        {
+            static const string_id ids[] = {_cx_, _cy_, _r_, _rx_, _ry_};
+            string_id id = _id(name);
+            if(std::find(std::begin(ids), std::end(ids), id) == std::end(ids))
+                return false;
+            const auto* tag = dynamic_cast<const html_tag*>(el.get());
+            const css_token_vector* tokens = tag ? tag->get_token_property(id) : nullptr;
+            if(!tokens || tokens->empty())
+                return false;
+            const css_token& tok = (*tokens)[0];
+            if(tok.type == NUMBER || (tok.type == DIMENSION && lowcase(tok.unit()) == "px"))
+                out = tok.n.number;
+            else if(tok.type == PERCENTAGE)
+                out = tok.n.number * base / 100;
+            else
+                return false;
+            return true;
+        }
+
         float attr_length(const element::ptr& el, const char* name, float base, float def)
         {
+            if(float v; css_geometry(el, name, base, v))
+                return v;
             const char* value = el->get_attr(name);
             if(!value || !*value)
             {
@@ -635,6 +659,28 @@ namespace litehtml
             return {};
         }
 
+        // A <path>'s data: the `d` property (`path("…")`, as an animation or a transition writes it) over the attribute.
+        std::string svg_path_data(const element::ptr& el)
+        {
+            if(const auto* tag = dynamic_cast<const html_tag*>(el.get()))
+            {
+                if(const auto* tokens = tag->get_token_property(_d_))
+                {
+                    if(tokens->size() == 1 && (*tokens)[0].type == CV_FUNCTION && lowcase((*tokens)[0].name()) == "path")
+                    {
+                        for(const auto& arg : (*tokens)[0].value)
+                        {
+                            if(arg.type == STRING)
+                                return arg.str();
+                        }
+                    }
+                    if(tokens->size() == 1 && (*tokens)[0].ident() == "none")
+                        return {};
+                }
+            }
+            return el->get_attr("d", "");
+        }
+
         bool svg_paint(const element::ptr& el, string_id name, web_color def, bool def_on, web_color& out,
                        document_container* container, bool* gradient = nullptr)
         {
@@ -956,13 +1002,39 @@ namespace litehtml
                 std::string join  = svg_ident(el, _stroke_linejoin_);
                 path.line_join    = join == "round" ? 1 : join == "bevel" ? 2 : 0;
                 path.miter_limit  = svg_number(el, _stroke_miterlimit_, 4);
-                path.dash_offset  = svg_number(el, _stroke_dashoffset_, 0);
+                // Dash lengths: user units, px, or percentages of the viewport's normalised diagonal; with a
+                // pathLength they are in its units, scaled to the path's own length (SVG 2 §13.5.4, §9.2.3.6).
+                const float diag  = std::sqrt((m_view[2] * m_view[2] + m_view[3] * m_view[3]) / 2);
+                auto        dash  = [&](const css_token& tok, float& out) {
+                    if(tok.type == NUMBER || tok.type == DIMENSION)
+                        out = tok.n.number;
+                    else if(tok.type == PERCENTAGE)
+                        out = tok.n.number * diag / 100;
+                    else
+                        return false;
+                    return true;
+                };
+                float scale = 1;
+                if(const char* length = el->get_attr("pathlength"); length && *length)
+                {
+                    const char* p = length;
+                    float       declared = 0;
+                    if(next_number(p, declared) && declared > 0)
+                    {
+                        float actual = svg_path_length(path, -1, nullptr, nullptr);
+                        if(actual > 0)
+                            scale = actual / declared;
+                    }
+                }
+                css_token_vector offset = svg_property(el, _stroke_dashoffset_, true);
+                if(float v = 0; !offset.empty() && dash(offset[0], v))
+                    path.dash_offset = v * scale;
                 css_token_vector dashes = svg_property(el, _stroke_dasharray_, true);
                 for(const auto& tok : dashes)
                 {
-                    if(tok.type == NUMBER || tok.type == DIMENSION)
+                    if(float v = 0; dash(tok, v))
                     {
-                        path.dashes.push_back(std::max(0.f, tok.n.number));
+                        path.dashes.push_back(std::max(0.f, v * scale));
                     }
                 }
                 if(path.dashes.size() % 2 == 1)
@@ -1130,6 +1202,27 @@ namespace litehtml
                     {
                         return;
                     }
+                    // Compositor layers: a child that is a layer of its own is left out of the drawing, and a
+                    // layer's content is that child alone.
+                    const document* doc = child->doc_ptr();
+                    bool own_omitted = false;
+                    if(doc && !m_hit_mode)
+                    {
+                        if(doc->svg_only)
+                        {
+                            bool related = child.get() == doc->svg_only;
+                            for(auto p = doc->svg_only->parent(); p && !related; p = p->parent())
+                                related = p.get() == child.get();
+                            for(auto p = child->parent(); p && !related; p = p->parent())
+                                related = p.get() == doc->svg_only;
+                            if(!related)
+                                return;
+                            own_omitted = child.get() == doc->svg_only;
+                        } else if(!doc->skip_paint.empty() && doc->skip_paint.count(child.get()))
+                        {
+                            return;
+                        }
+                    }
                     int visibility = attribute_visibility(child);
                     if(visibility < 0)
                     {
@@ -1153,6 +1246,11 @@ namespace litehtml
                         ? svg_css_transform(child, position(pixel_t(m_view[0]), pixel_t(m_view[1]), pixel_t(m_view[2]), pixel_t(m_view[3])))
                         : parse_svg_transform(child->get_attr("transform"));
                     group.opacity = opacity;
+                    if(own_omitted)
+                    {
+                        group.matrix  = transform_matrix();
+                        group.opacity = 1;
+                    }
                     group.bounds  = position(-100000, -100000, 200000, 200000);
                     bool grouped  = opacity < 1 || !group.matrix.is_identity();
                     const transform_matrix saved = m_matrix;
@@ -1171,7 +1269,7 @@ namespace litehtml
                     {
                         bool cached = false;
                         uint64_t key = 0;
-                        if(m_cache_groups && depth == 0 && name == "g" && !grouped && svg_group_key(child, key))
+                        if(m_cache_groups && depth == 0 && name == "g" && !grouped && (!doc || !doc->svg_only) && svg_group_key(child, key))
                         {
                             for(float value : {m_view[0], m_view[1], m_view[2], m_view[3], m_cache_bounds.x.value(), m_cache_bounds.y.value(), m_cache_bounds.width.value(), m_cache_bounds.height.value()})
                             {
@@ -1246,7 +1344,7 @@ namespace litehtml
                         paint(child, path);
                     } else if(name == "path")
                     {
-                        builder.parse(child->get_attr("d", ""));
+                        builder.parse(svg_path_data(child).c_str());
                         paint(child, path);
                     } else if(name == "text")
                     {
@@ -1335,7 +1433,7 @@ namespace litehtml
                 builder.close();
         } else if(name == "path")
         {
-            builder.parse(el->get_attr("d", ""));
+            builder.parse(svg_path_data(el).c_str());
         } else
         {
             return false;
@@ -1477,6 +1575,54 @@ namespace litehtml
         return true;
     }
 
+    bool svg_own_frame(const element::ptr& el, transform_matrix& outer, position& box, float& ox, float& oy)
+    {
+        std::vector<element::ptr> chain;
+        const el_svg*             svg = nullptr;
+        for(element::ptr p = el->parent(); p && !svg; p = p->parent())
+        {
+            svg = dynamic_cast<const el_svg*>(p.get());
+            if(!svg)
+                chain.push_back(p);
+        }
+        if(!svg)
+            return false;
+        paint_group group;
+        float       view[4];
+        svg->view_group(svg->get_placement(), view, group);
+        const position   view_box = position(pixel_t(view[0]), pixel_t(view[1]), pixel_t(view[2]), pixel_t(view[3]));
+        transform_matrix m;
+        for(const auto& p : chain)
+        {
+            const auto tag = std::dynamic_pointer_cast<html_tag>(p);
+            m = m.then(tag && tag->has_own_property(_transform_) ? svg_css_transform(p, view_box) : parse_svg_transform(p->get_attr("transform")));
+        }
+        outer = m.then(group.matrix);
+        // svg_css_transform's reference box and origin.
+        const auto& el_css = el->css();
+        const auto tag = std::dynamic_pointer_cast<html_tag>(el);
+        box = view_box;
+        bool fill_box = false;
+        vector_path geometry;
+        if(el_css.get_transform_fill_box() && svg_geometry(el, geometry) && geometry.points.size() >= 2)
+        {
+            float x0 = geometry.points[0], y0 = geometry.points[1], x1 = x0, y1 = y0;
+            for(size_t i = 0; i + 1 < geometry.points.size(); i += 2)
+            {
+                x0 = std::min(x0, geometry.points[i]);
+                x1 = std::max(x1, geometry.points[i]);
+                y0 = std::min(y0, geometry.points[i + 1]);
+                y1 = std::max(y1, geometry.points[i + 1]);
+            }
+            box      = position(pixel_t(x0), pixel_t(y0), pixel_t(x1 - x0), pixel_t(y1 - y0));
+            fill_box = true;
+        }
+        const bool has_origin = tag && tag->has_own_property(_transform_origin_);
+        ox = (has_origin ? box.x + el_css.get_transform_origin_x().calc_percent(box.width) : fill_box ? box.x : 0_px).value();
+        oy = (has_origin ? box.y + el_css.get_transform_origin_y().calc_percent(box.height) : fill_box ? box.y : 0_px).value();
+        return true;
+    }
+
     float svg_path_length(const vector_path& path, float at, float* outx, float* outy)
     {
         float  total = 0, cx = 0, cy = 0, sx = 0, sy = 0;
@@ -1568,7 +1714,7 @@ namespace litehtml
     {
         if(doc)
             doc->note_svg();
-        m_css.set_display(display_inline_block);
+        css_w().set_display(display_inline_block);
     }
 
     bool el_svg::is_replaced() const
@@ -1715,14 +1861,19 @@ namespace litehtml
         container->set_clip(pos, no_radius);
         const position cache_bounds(pixel_t((pos.x.value() - group.matrix.tx) / sx), pixel_t((pos.y.value() - group.matrix.ty) / sy),
                                     pixel_t(pos.width.value() / sx), pixel_t(pos.height.value() / sy));
+        // A child that is a compositor layer is left out: neither this drawing's cache nor its groups' hold it.
+        bool layered = false;
+        for(const element* skipped : doc_ptr()->skip_paint)
+            for(auto p = skipped->parent(); p && !layered; p = p->parent())
+                layered = p.get() == this;
         auto paint = [&](uint_ptr target) {
             container->begin_group(target, group);
-            svg_painter(container, target, view, m_group_cache_eligible ? &cache_bounds : nullptr).draw_children(shared_from_this());
+            svg_painter(container, target, view, m_group_cache_eligible && !layered ? &cache_bounds : nullptr).draw_children(shared_from_this());
             container->end_group(target);
         };
         uint64_t key    = 0;
         bool     cached = false;
-        if(cached_paint_key(key))
+        if(!layered && cached_paint_key(key))
         {
             for(float v : {pos.width.value(), pos.height.value(), view[0], view[1], view[2], view[3], sx, sy, tx - std::floor(tx), ty - std::floor(ty)})
             {

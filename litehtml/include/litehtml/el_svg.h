@@ -21,6 +21,10 @@ namespace litehtml
     /// An SVG element's user space to document coordinates: its transforms, its parents', and the view box.
     bool  svg_ctm(const element::ptr& el, transform_matrix& ctm);
     bool  svg_paint_color(const element::ptr& el, bool fill, web_color& out, document_container* container);
+    /// What an SVG element's own CSS transform works in: `outer`, its parents' user space to document coordinates
+    /// (their transforms and the view box), and the reference box and origin percentages and transform-origin
+    /// resolve against (svg_css_transform). False outside an SVG drawing.
+    bool  svg_own_frame(const element::ptr& el, transform_matrix& outer, position& box, float& ox, float& oy);
     void svg_set_group_cache_enabled(bool enabled);
 
     class el_svg : public html_tag

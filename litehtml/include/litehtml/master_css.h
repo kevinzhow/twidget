@@ -401,6 +401,25 @@ figcaption {
 	display: block;
 }
 
+/* Ruby (render_item_ruby): each base and annotation pair is an inline-block, the annotation over the base. */
+ruby {
+	display: inline-block;
+	text-indent: 0;
+}
+
+rt {
+	display: block;
+	font-size: 50%;
+	line-height: normal;
+	text-align: center;
+	text-indent: 0;
+	white-space: nowrap;
+}
+
+rp {
+	display: none;
+}
+
 )##";
 }
 #endif // LITEHTML_MASTER_CSS_H

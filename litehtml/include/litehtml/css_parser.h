@@ -12,6 +12,10 @@ namespace litehtml
     {
         css_token_vector m_tokens;
         int              m_index = 0;
+        // How deep the blocks and functions being consumed are nested: past kMaxNesting their brackets are taken as
+        // plain tokens (a stylesheet of binary bytes, or a hostile one, would otherwise recurse past the stack).
+        int              m_depth = 0;
+        static constexpr int kMaxNesting = 256;
 
         css_token next_token();
         css_token peek_token();

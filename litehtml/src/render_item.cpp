@@ -164,19 +164,20 @@ bool litehtml::render_item::relayout_boundary() const
         return false;
     if(m_layout_dirty)
         return m_relayout_pending;
-    return m_last_layout.valid && m_layout_epoch == doc->layout_epoch();
+    return last_layout_valid() && m_layout_epoch == doc->layout_epoch();
 }
 
 void litehtml::render_item::relayout()
 {
     m_relayout_pending = false;
-    if(!m_layout_dirty || !m_last_layout.valid)
+    if(!m_layout_dirty || !last_layout_valid())
         return;
     const position placed  = m_pos;
     const margins  margin  = m_margins;
     const margins  padding = m_padding;
     const margins  border  = m_borders;
-    render(m_last_x, m_last_y, m_last_layout.cb, nullptr, m_last_layout.second_pass);
+    const layout_cache& c  = *m_cache;
+    render(c.last_x, c.last_y, layout_entry(c.last).cb, nullptr, c.last.second_pass);
     m_pos     = placed;
     m_margins = margin;
     m_padding = padding;
@@ -194,16 +195,13 @@ void litehtml::render_item::mark_layout_dirty()
                 doc->note_relayout_root(item);
             item->m_relayout_pending   = true;
             item->m_layout_dirty       = true;
-            item->m_measured[0].valid = false;
-            item->m_measured[1].valid = false;
+            item->forget_layouts(false);
             return;
         }
         if(!item->m_layout_dirty && doc)
             doc->note_layout_dirty(item);
         item->m_layout_dirty      = true;
-        item->m_last_layout.valid = false;
-        item->m_measured[0].valid = false;
-        item->m_measured[1].valid = false;
+        item->forget_layouts(true);
         auto parent = item->m_parent.lock();
         item        = parent.get();
     }
@@ -216,28 +214,26 @@ litehtml::rendered_width litehtml::render_item::render(pixel_t x, pixel_t y,
     const bool cacheable = layout_cacheable(fmt_ctx);
     document*  doc       = src_el()->doc_ptr();
     if(doc && m_layout_epoch != doc->layout_epoch())
+        forget_layouts(false);
+    if(cacheable && layout_reusable() && m_cache &&
+       (same_layout_input(m_cache->last, containing_block_size, second_pass) ||
+        same_resolved_layout_input(m_cache->last, containing_block_size, second_pass)))
     {
-        m_measured[0].valid = false;
-        m_measured[1].valid = false;
-    }
-    if(cacheable && layout_reusable() &&
-       (same_layout_input(m_last_layout, containing_block_size, second_pass) ||
-        same_resolved_layout_input(m_last_layout, containing_block_size, second_pass)))
-    {
-        m_pos     = m_last_pos;
-        m_margins = m_last_margins;
-        m_padding = m_last_padding;
-        m_borders = m_last_borders;
-        if(x != m_last_x || y != m_last_y)
+        const layout_cache& c = *m_cache;
+        m_pos     = c.last_pos;
+        m_margins = c.last_margins;
+        m_padding = c.last_padding;
+        m_borders = c.last_borders;
+        if(x != c.last_x || y != c.last_y)
         {
             m_pos.x = x + content_offset_left();
             m_pos.y = y + content_offset_top();
         }
         doc->note_layout_hit();
         if(!doc->layout_cache_check())
-            return m_last_layout.ret;
+            return c.last.ret;
         const position       cached_pos = m_pos;
-        const rendered_width cached     = m_last_layout.ret;
+        const rendered_width cached     = c.last.ret;
         m_layout_dirty                  = true;
         rendered_width fresh            = render(x, y, containing_block_size, fmt_ctx, second_pass);
         if(fresh.natural_width != cached.natural_width || fresh.min_width != cached.min_width || !(m_pos == cached_pos))
@@ -276,16 +272,17 @@ litehtml::rendered_width litehtml::render_item::render(pixel_t x, pixel_t y,
     m_layout_dirty = false;
     if(cacheable && doc)
     {
-        m_layout_epoch = doc->layout_epoch();
-        m_last_layout  = {containing_block_size, ret, second_pass, true, height()};
-        m_last_pos     = m_pos;
-        m_last_x       = x;
-        m_last_y       = y;
-        m_last_margins = m_margins;
-        m_last_padding = m_padding;
-        m_last_borders = m_borders;
-    } else
-        m_last_layout.valid = false;
+        m_layout_epoch   = doc->layout_epoch();
+        layout_cache& c  = cache();
+        c.last           = {containing_block_size, ret, second_pass, true, height()};
+        c.last_pos       = m_pos;
+        c.last_x         = x;
+        c.last_y         = y;
+        c.last_margins   = m_margins;
+        c.last_padding   = m_padding;
+        c.last_borders   = m_borders;
+    } else if(m_cache)
+        m_cache->last.valid = false;
     return ret;
 }
 
@@ -295,16 +292,16 @@ litehtml::rendered_width litehtml::render_item::measure(pixel_t x, pixel_t y,
 {
     const bool cacheable = layout_cacheable(fmt_ctx);
     document*  doc       = src_el()->doc_ptr();
-    if(cacheable && layout_reusable() && !doc->layout_cache_check())
+    if(cacheable && layout_reusable() && !doc->layout_cache_check() && m_cache)
     {
-        if(same_layout_input(m_last_layout, containing_block_size, second_pass))
+        if(same_layout_input(m_cache->last, containing_block_size, second_pass))
         {
             doc->note_layout_hit();
             if(measured_height)
-                *measured_height = m_last_layout.outer_height;
-            return m_last_layout.ret;
+                *measured_height = m_cache->last.outer_height;
+            return m_cache->last.ret;
         }
-        for(const auto& entry : m_measured)
+        for(const auto& entry : m_cache->measured)
         {
             if(same_layout_input(entry, containing_block_size, second_pass))
             {
@@ -320,8 +317,9 @@ litehtml::rendered_width litehtml::render_item::measure(pixel_t x, pixel_t y,
         *measured_height = height();
     if(cacheable)
     {
-        m_measured[m_measured_next] = {containing_block_size, ret, second_pass, true, height()};
-        m_measured_next ^= 1;
+        layout_cache& c             = cache();
+        c.measured[c.measured_next] = {containing_block_size, ret, second_pass, true, height()};
+        c.measured_next ^= 1;
     }
     return ret;
 }
@@ -449,7 +447,9 @@ litehtml::render_item::split_inlines()
             }
             break;
         }
-        if(!child->children().empty())
+        // A ruby is an atomic inline (render_item_ruby): its <rt> blocks stay inside it. (Any inline-block should;
+        // narrowed to ruby in this prototype so that nothing else moves.)
+        if(!child->children().empty() && child->src_el()->tag() != _ruby_)
         {
             auto child_split = child->split_inlines();
             if(std::get<0>(child_split))

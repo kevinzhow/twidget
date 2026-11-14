@@ -528,6 +528,40 @@ namespace litehtml
     };
 
     // `all` and `contain` are outside widget profile 1.
+    // writing-mode (CSS Writing Modes 3); the fork lays out vertical-rl only (document::vertical()).
+    inline constexpr auto writing_mode_strings =
+        split_css_values<5>("horizontal-tb;vertical-rl;vertical-lr;sideways-rl;sideways-lr");
+
+    enum writing_mode
+    {
+        writing_mode_horizontal_tb,
+        writing_mode_vertical_rl,
+        writing_mode_vertical_lr,
+        writing_mode_sideways_rl,
+        writing_mode_sideways_lr,
+    };
+
+    inline constexpr auto text_orientation_strings = split_css_values<4>("mixed;upright;sideways;sideways-right");
+
+    enum text_orientation
+    {
+        text_orientation_mixed,
+        text_orientation_upright,
+        text_orientation_sideways,
+        text_orientation_sideways_right,
+    };
+
+    // text-combine-upright (縦中横); -webkit-text-combine and -epub-text-combine say horizontal for all.
+    inline constexpr auto text_combine_strings = split_css_values<4>("none;all;digits;horizontal");
+
+    enum text_combine
+    {
+        text_combine_none,
+        text_combine_all,
+        text_combine_digits,
+        text_combine_horizontal,
+    };
+
     inline constexpr auto user_select_strings = split_css_values<3>("auto;text;none");
 
     enum user_select

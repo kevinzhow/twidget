@@ -64,6 +64,12 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     m_text_align =
         static_cast<text_align>(el->get_property<int>(_text_align_, true, text_align_start, offset(m_text_align)));
     m_direction = static_cast<direction>(el->get_property<int>(_direction_, true, direction_ltr, offset(m_direction)));
+    m_writing_mode = static_cast<writing_mode>(
+        el->get_property<int>(_writing_mode_, true, writing_mode_horizontal_tb, offset(m_writing_mode)));
+    m_text_orientation = static_cast<text_orientation>(
+        el->get_property<int>(_text_orientation_, true, text_orientation_mixed, offset(m_text_orientation)));
+    m_text_combine = static_cast<text_combine>(
+        el->get_property<int>(_text_combine_upright_, true, text_combine_none, offset(m_text_combine)));
     if(const char* dir = el->get_attr("dir"); dir && equal_i(dir, "auto"))
     {
         // dir=auto: the first strong character of the element's text decides.
@@ -349,10 +355,50 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
 
     m_order = el->get_property<int>(_order_, false, 0, offset(m_order));
 
+    if(is_vertical_rl())
+        to_vertical_rl();
+
     compute_background(el, doc);
     compute_flex(el, doc);
     compute_grid(el, doc);
     compute_effects(el, doc);
+}
+
+// The fork lays a vertical-rl document out as a horizontal one turned 90° clockwise (document::vertical()): the
+// laid-out ("logical") box's left side is the page's top, its top the right, its right the bottom, its bottom the
+// left, and its width the height. The physical box properties are turned into the logical ones here.
+void litehtml::css_properties::to_vertical_rl()
+{
+    auto turn = [](auto& box) {
+        auto left  = box.left;
+        box.left   = box.top;
+        box.top    = box.right;
+        box.right  = box.bottom;
+        box.bottom = left;
+    };
+    turn(m_css_margins);
+    turn(m_css_padding);
+    turn(m_css_offsets);
+    css_border left       = m_css_borders.left;
+    m_css_borders.left    = m_css_borders.top;
+    m_css_borders.top     = m_css_borders.right;
+    m_css_borders.right   = m_css_borders.bottom;
+    m_css_borders.bottom  = left;
+    // Corners: the logical top-left is the page's top-right, and so on round; each radius's x and y swap.
+    css_border_radius r   = m_css_borders.radius;
+    auto&             out = m_css_borders.radius;
+    out.top_left_x        = r.top_right_y;
+    out.top_left_y        = r.top_right_x;
+    out.top_right_x       = r.bottom_right_y;
+    out.top_right_y       = r.bottom_right_x;
+    out.bottom_right_x    = r.bottom_left_y;
+    out.bottom_right_y    = r.bottom_left_x;
+    out.bottom_left_x     = r.top_left_y;
+    out.bottom_left_y     = r.top_left_x;
+    std::swap(m_css_width, m_css_height);
+    std::swap(m_css_min_width, m_css_min_height);
+    std::swap(m_css_max_width, m_css_max_height);
+    m_cell_width = m_css_width;
 }
 
 // used for all color properties except `color` (color:currentcolor is converted to color:inherit during parsing)
@@ -654,6 +700,27 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
     descr.emphasis_position    = m_text_emphasis_position;
 
     m_font = doc->get_font(descr, &m_font_metrics);
+    m_font_upright = 0;
+    if(is_vertical_rl())
+    {
+        // Upright glyphs of vertical text take their vertical forms (、。「」ー…) from OpenType vert.
+        font_description upright = descr;
+        upright.features         = merge_font_features(descr.features, "vert=1");
+        font_metrics fm;
+        m_font_upright = doc->get_font(upright, &fm);
+    }
+    m_font_emphasis = 0;
+    if(!m_text_emphasis_style.empty() && m_text_emphasis_style != "none")
+    {
+        // The marks: half the text's size, their own font (with vert in vertical text: ﹅ and the dots upright).
+        font_description marks = descr;
+        marks.size             = descr.size / 2_px;
+        marks.decoration_line  = text_decoration_line_none;
+        marks.emphasis_style.clear();
+        if(is_vertical_rl())
+            marks.features = merge_font_features(descr.features, "vert=1");
+        m_font_emphasis = doc->get_font(marks, &m_emphasis_metrics);
+    }
 }
 
 void litehtml::css_properties::compute_background_color(const html_tag* el)
@@ -868,6 +935,38 @@ void litehtml::css_properties::compute_grid(const html_tag* el, const document::
             out.span = part.span ? part.span : out.span;
         }
     };
+    // grid-area: row-start / column-start / row-end / column-end (numbers and spans; the faces of a card stacked in
+    // one cell with `grid-area: 1 / 1`). The grid-row / grid-column properties below refine it.
+    if(const auto* tokens = el->get_token_property(_grid_area_))
+    {
+        std::vector<css_token_vector> parts(1);
+        for(const auto& tok : *tokens)
+        {
+            if(tok.ch == '/')
+                parts.emplace_back();
+            else
+                parts.back().push_back(tok);
+        }
+        if(parts.size() <= 4)
+        {
+            auto axis = [&](size_t a, size_t b, grid_placement& out) {
+                css_token_vector line = parts[a];
+                if(b < parts.size())
+                {
+                    css_token slash;
+                    slash.ch = '/';  // a delimiter's type is its character
+                    line.push_back(slash);
+                    line.insert(line.end(), parts[b].begin(), parts[b].end());
+                }
+                grid_placement p;
+                if(parse_grid_placement(line, p))
+                    out = p;
+            };
+            axis(0, 2, m_grid_row);
+            if(parts.size() > 1)
+                axis(1, 3, m_grid_column);
+        }
+    }
     placement(_grid_column_, _grid_column_start_, _grid_column_end_, m_grid_column);
     placement(_grid_row_, _grid_row_start_, _grid_row_end_, m_grid_row);
     if(m_display == display_inline || m_display == display_inline_block)
@@ -883,6 +982,24 @@ void litehtml::css_properties::compute_grid(const html_tag* el, const document::
     {
         m_display = display_grid;
     }
+}
+
+void litehtml::css_properties::compute_box_lengths(const html_tag* el, const std::shared_ptr<document>& doc)
+{
+    const css_length _auto = css_length::predef_value(0);
+    m_css_width  = el->get_property<css_length>(_width_, false, _auto, offset(m_css_width));
+    m_css_height = el->get_property<css_length>(_height_, false, _auto, offset(m_css_height));
+    doc->cvt_units(m_css_width, m_font_metrics, 0_px);
+    m_cell_width = m_css_width;
+    doc->cvt_units(m_css_height, m_font_metrics, 0_px);
+    m_css_offsets.left   = el->get_property<css_length>(_left_, false, _auto, offset(m_css_offsets.left));
+    m_css_offsets.right  = el->get_property<css_length>(_right_, false, _auto, offset(m_css_offsets.right));
+    m_css_offsets.top    = el->get_property<css_length>(_top_, false, _auto, offset(m_css_offsets.top));
+    m_css_offsets.bottom = el->get_property<css_length>(_bottom_, false, _auto, offset(m_css_offsets.bottom));
+    doc->cvt_units(m_css_offsets.left, m_font_metrics, 0_px);
+    doc->cvt_units(m_css_offsets.right, m_font_metrics, 0_px);
+    doc->cvt_units(m_css_offsets.top, m_font_metrics, 0_px);
+    doc->cvt_units(m_css_offsets.bottom, m_font_metrics, 0_px);
 }
 
 void litehtml::css_properties::compute_effects(const html_tag* el, const document::ptr& doc)
@@ -1024,12 +1141,16 @@ void litehtml::css_properties::snap_border_width(css_length& width, const std::s
 
     pixel_t px = doc->to_pixels(width, m_font_metrics, 0_px);
 
-    if(px > 0_px && px < 0.5_px)
+    // CSS Values 4 "snap as a border width", as Chromium does it: under one device pixel (but not 0) one device pixel,
+    // else down to whole device pixels (twidget: the font's device_pixel; litehtml had half CSS px, a DPR of 2's).
+    const float dp = float(m_font_metrics.device_pixel) > 0 ? float(m_font_metrics.device_pixel) : 1.0f;
+    const float n  = px.value() / dp;
+    if(n > 0 && n < 1)
     {
-        px = 0.5_px;
+        px = dp;
     } else
     {
-        px = std::floor(px.value() * 2) / 2;
+        px = std::floor(n + 0.001f) * dp;
     }
 
     width.set_value(px.value(), css_units_px);
