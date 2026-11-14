@@ -198,6 +198,10 @@ public:
     twidget::Json css_animations(const std::vector<int64_t>& ids, double now) const;
     /// Drops Web Animations whose target left the document.
     void prune(const std::function<bool(int64_t)>& alive);
+    /// Cancels every running CSS transition (CSSTransition.cancel()): each property shows its after-change value from the
+    /// next sample on. What widget-sandbox's renderer does to a widget it stops past the paint limit (renderer-bundle
+    /// 0.6.3, the stop's zn()), before its frozen frame; CSS animations and Web Animations stay where they are.
+    void cancel_transitions();
 
     /// Rule 5 of the heavy-box count (paint_policy.h): an animation that runs on element `id` and changes what makes a
     /// box heavy. `kind` 'a' is a CSS animation, from the end of its delay to its end, paused or not; 't' a transition

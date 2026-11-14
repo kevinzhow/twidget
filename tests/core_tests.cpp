@@ -2910,6 +2910,23 @@ int main() {
               "the stopped paint keeps sharp shadows only, opaque, the transparent box hidden (blurred " + std::to_string(blurred) + ", sharp " + std::to_string(sharp) +
                   ", effects " + std::to_string(effects) + ", translucent " + std::to_string(translucent) + ", hidden " + std::to_string(hidden) + ")");
         check(!s.wants_tick() && run(s, page(heavy)).empty(), "and takes no more ops or frames");
+
+        // widget-sandbox's renderer cancels the running transitions of a widget it stops (renderer-bundle 0.6.3, zn()):
+        // each property shows its end value. A box fading out is hidden in the frozen frame, not drawn opaque at the step
+        // it had reached (htmlbubbles-ported/07-shop/10-shop.html: the scratched foil blocks came back as grey squares).
+        StubBackend tb;
+        Renderer t(300, 1, false, tb);
+        auto fading = shadows;
+        fading.push_back("transition:opacity 1s linear;background:red");
+        check(run(t, page(fading)).empty(), "16 heavy boxes and one with a transition of opacity run");
+        stopped = run(t, parse(R"({"type":"ops","ops":[{"op":"style","id":46,"name":"opacity","value":"0"}]})"));
+        int faded = 0, drawn = 0;
+        for (const Command& cmd : t.paint()) {
+            if (cmd.kind == Cmd::GroupPush && cmd.hidden) faded++;
+            if (cmd.kind == Cmd::FillRect && cmd.color.r == 255 && cmd.color.g == 0) drawn++;
+        }
+        check(stopped == "paint-limit 17" && faded == 1, "the fade that passes the limit stops the widget, and the stopped frame shows the fade's end: hidden (got '" +
+                                                            stopped + "', hidden " + std::to_string(faded) + ", red rects " + std::to_string(drawn) + ")");
     }
 
     // ── a long flush in parts ──

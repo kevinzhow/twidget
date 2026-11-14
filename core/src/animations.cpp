@@ -2064,6 +2064,15 @@ std::vector<std::string> Animator::web_properties(int64_t id) const {
     return out;
 }
 
+void Animator::cancel_transitions() {
+    transitions_.clear();
+    // Script control of a transition (pause, seek, playbackRate) goes with it.
+    for (auto it = overrides_.begin(); it != overrides_.end();) {
+        for (auto o = it->second.begin(); o != it->second.end();) o = css::starts_with(o->first, "transition:") ? it->second.erase(o) : std::next(o);
+        it = it->second.empty() ? overrides_.erase(it) : std::next(it);
+    }
+}
+
 void Animator::prune(const std::function<bool(int64_t)>& alive) {
     for (auto it = web_.begin(); it != web_.end();) it = alive(it->second.target) ? std::next(it) : web_.erase(it);
 }
