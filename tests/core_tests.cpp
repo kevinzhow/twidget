@@ -888,6 +888,36 @@ int main() {
         check(same == 20, "a width or height patched in place paints as rebuilt (" + std::to_string(same) + " of 20)");
     }
 
+    // ── a box whose place and size are all given is laid out once, its absolute children too ──
+    {
+        // render_out_of_flow leaves it to render_positioned (no static pass). An absolutely positioned child with an
+        // auto height still gets its content height (htmlbubbles-ported/08-analytics/03-bot-bare.html: the gridline
+        // labels came out 0 px tall when the box was laid out as a second pass).
+        StubBackend gb;
+        Renderer g(300, 1, false, gb);
+        g.receive(parse(R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","position:relative;height:100px;margin-left:40px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","position:absolute;left:0;top:30px;width:200px;height:0"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"span","attrs":[["style","position:absolute;left:-34px;top:-7px;width:30px"]]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"text","id":13,"data":"40"},{"op":"ins","parent":12,"id":13,"before":null}]})"));
+        g.tick();
+        auto rect = [&](int id) {
+            auto r = g.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":)" + std::to_string(id) + "}}"));
+            return r.empty() ? Json() : r[0]["result"];
+        };
+        Json box = rect(11), label = rect(12);
+        check(box["top"].asNumber() == 30 && box["width"].asNumber() == 200 && label["height"].asNumber() > 0 && label["left"].asNumber() == 6 &&
+                  label["top"].asNumber() == 23,
+              "a fully placed box and the auto-height label inside it (box " + box.dump() + ", label " + label.dump() + ")");
+        // Moved and resized by the script: laid out at its new place and size.
+        g.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":11,"name":"top","value":"50px"},{"op":"style","id":11,"name":"width","value":"120px"}]})"));
+        g.tick();
+        box = rect(11), label = rect(12);
+        check(box["top"].asNumber() == 50 && box["width"].asNumber() == 120 && label["top"].asNumber() == 43 && label["height"].asNumber() > 0,
+              "and again where the script moves it (box " + box.dump() + ", label " + label.dump() + ")");
+    }
+
     // ── in-place patches of a row and what is inside it in one batch ──
     {
         // The leaderboard (htmlbubbles-ported/08-analytics/10-bot-bare.html) each frame: the rows' top and height, and

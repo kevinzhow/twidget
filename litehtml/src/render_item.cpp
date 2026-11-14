@@ -515,9 +515,27 @@ bool litehtml::render_item::fetch_positioned()
     return ret;
 }
 
+bool litehtml::render_item::fully_placed() const
+{
+    const css_properties& c = css();
+    if(c.get_position() != element_position_absolute || src_el()->is_replaced() || c.get_display() == display_table)
+        return false;
+    const auto& o = c.get_offsets();
+    return (!o.top.is_predefined() || !o.bottom.is_predefined()) && (!o.left.is_predefined() || !o.right.is_predefined()) &&
+           !c.get_width().is_predefined() && !c.get_height().is_predefined();
+}
+
 void litehtml::render_item::render_out_of_flow(pixel_t y, const containing_block_context& self_size,
                                                formatting_context* fmt_ctx)
 {
+    // A box whose place and size are all given is laid out once, by render_positioned, at its size in its containing
+    // block. Laid out here first at the static position (with another containing block), everything in it saw two
+    // inputs a frame, and the one-entry layout cache of each box inside missed every time (a re-sorting list of
+    // absolutely positioned rows: each row laid out twice a frame, its flex items about three times).
+    static const bool one_pass = !getenv("LH_NO_ABS_ONE_PASS");
+    m_static_skipped = one_pass && fully_placed();
+    if(m_static_skipped)
+        return;
     rendered_width rw = render(0_px, y, self_size, fmt_ctx);
     if(!src_el()->css().get_width().is_predefined())
     {
@@ -573,6 +591,12 @@ void litehtml::render_item::render_positioned(render_type rt)
                 containing_block_size.height = m_pos.height + m_padding.height();
                 containing_block_size.width  = m_pos.width + m_padding.width();
             }
+
+            // Not laid out at its static position this time (render_out_of_flow): its margins, borders and paddings
+            // against this containing block first; it is laid out below in any case.
+            const bool static_skipped = el->m_static_skipped;
+            if(static_skipped)
+                el->calc_outlines(containing_block_size.width);
 
             css_length css_left   = el->src_el()->css().get_offsets().left;
             css_length css_right  = el->src_el()->css().get_offsets().right;
@@ -1074,7 +1098,7 @@ void litehtml::render_item::render_positioned(render_type rt)
                 el->m_pos.y -= el_static_offset_y;
             }
 
-            if(need_render)
+            if(need_render || static_skipped)
             {
                 position pos = el->m_pos;
                 if(el->css().get_display() == display_table || el->src_el()->is_replaced())
@@ -1082,12 +1106,14 @@ void litehtml::render_item::render_positioned(render_type rt)
                     el->render(el->left(), el->top(), containing_block_size.new_width(el->width()), nullptr, true);
                 } else
                 {
+                    // A box not laid out at its static position gets its first pass here: as a second pass its own
+                    // absolutely positioned children would get no static pass either (an auto height of 0).
                     el->render(el->left(), el->top(),
                                containing_block_size.new_width_height(
                                    pos.width + el->box_sizing_width(), pos.height + el->box_sizing_height(),
                                    containing_block_context::size_mode_exact_width |
                                        containing_block_context::size_mode_exact_height),
-                               nullptr, true);
+                               nullptr, !static_skipped);
                 }
                 el->m_pos = pos;
             }

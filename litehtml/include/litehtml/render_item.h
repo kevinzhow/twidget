@@ -116,6 +116,9 @@ namespace litehtml
         };
         bool                          m_layout_dirty   = true;
         bool                          m_relayout_pending = false;
+        /// render_out_of_flow left the box to render_positioned: it is absolutely positioned with its offsets and its size
+        /// given (fully_placed), so the static position pass would compute nothing that is used.
+        bool                          m_static_skipped = false;
         bool                          m_out_of_flow    = true;
         int8_t                        m_resolved_layout_safe = -1;
         uint64_t                      m_layout_epoch   = 0;
@@ -580,6 +583,9 @@ namespace litehtml
         pixel_t measure_height(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
                                formatting_context* fmt_ctx, bool second_pass = false);
         void           mark_layout_dirty();
+        /// Absolutely positioned (not fixed), not replaced, no table, with top or bottom, left or right, width and height
+        /// all given: its place and size come from its own style and its containing block, not from a static position.
+        bool           fully_placed() const;
         bool           relayout_boundary() const;
         void           relayout();
         bool           layout_dirty() const { return m_layout_dirty; }
