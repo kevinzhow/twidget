@@ -862,7 +862,13 @@ public:
             for (const auto& child : el->children()) pending.push_back(child.get());
         }
         doc_->set_layout_budget(kLayoutBudgetBase + kLayoutBudgetPerElement * elements);
+        double t0 = now_ms();
+        uint64_t hits = litehtml::document::s_layout_hits, misses = litehtml::document::s_layout_misses;
         doc_->render(litehtml::pixel_t(width));
+        r_.stats_.layout_ms += now_ms() - t0;
+        r_.stats_.layout_hits += litehtml::document::s_layout_hits - hits;
+        r_.stats_.layout_misses += litehtml::document::s_layout_misses - misses;
+        r_.stats_.positioned_ms += doc_->last_positioned_ms();
         if (doc_->layout_exhausted()) r_.stop_layout(doc_->layout_spent());
     }
 
@@ -1190,7 +1196,10 @@ public:
     /// only when a value can move boxes. False, leaving the document as it was, when a change has no hole.
     bool patch(const std::vector<litehtml::document::hole_change>& changes) {
         bool changed = false;
-        if (!doc_->update_holes(changes, &changed)) return false;
+        double t0 = now_ms();
+        bool ok = doc_->update_holes(changes, &changed);
+        r_.stats_.restyle_ms += now_ms() - t0;
+        if (!ok) return false;
         patched_ = true;
         if (changed && !doc_->last_patch_paint_only()) {
             layout(rendered_width_);
@@ -1203,7 +1212,10 @@ public:
     bool restyle(const std::vector<std::pair<litehtml::element::ptr, std::string>>& patches) {
         if (!doc_) return false;
         bool changed = false;
-        if (!doc_->update_styles(patches, &changed)) return false;
+        double t0 = now_ms();
+        bool ok = doc_->update_styles(patches, &changed);
+        r_.stats_.restyle_ms += now_ms() - t0;
+        if (!ok) return false;
         patched_ = true;
         if (changed && !doc_->last_patch_paint_only()) {
             rendered_width_ = float(r_.width_);

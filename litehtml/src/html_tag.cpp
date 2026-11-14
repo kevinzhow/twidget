@@ -792,7 +792,11 @@ namespace litehtml
                 box = true;
         }
         if(box)
+        {
             css_w().compute_box_lengths(this, doc);
+            // A size or an offset moves boxes: this box is laid out again, and so is every cached box around it.
+            mark_layout_dirty();
+        }
         if(m_css->is_paint_group() != group || m_css->get_transform().empty() != transform)
         {
             restore_base_style();

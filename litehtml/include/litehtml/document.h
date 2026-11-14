@@ -77,6 +77,7 @@ namespace litehtml
         uint64_t m_layout_epoch       = 1;
         uint64_t m_layout_budget      = 0;
         uint64_t m_layout_spent       = 0;
+        double   m_positioned_ms      = 0;
         bool     m_layout_exhausted   = false;
         static std::atomic<uint64_t> s_layout_hits;
         static std::atomic<uint64_t> s_layout_misses;
@@ -114,6 +115,8 @@ namespace litehtml
         void     set_layout_budget(uint64_t boxes) { m_layout_budget = boxes; }
         bool     layout_exhausted() const { return m_layout_exhausted; }
         uint64_t layout_spent() const { return m_layout_spent; }
+        /// Of the last render(), the ms its positioned boxes took (render_positioned).
+        double   last_positioned_ms() const { return m_positioned_ms; }
         bool     spend_layout()
         {
             if(m_layout_exhausted)

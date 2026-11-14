@@ -1,6 +1,7 @@
 #include "html.h"
 #include "document.h"
 #include "vertical.h"
+#include <chrono>
 #include <cstdio>
 #include <string_view>
 #include <unordered_set>
@@ -1528,13 +1529,22 @@ namespace litehtml
                 patched.erase(el.get());
                 shallow_width.erase(el.get());
             }
-        for(const auto* list : {&restyle, &new_text, &retext})
-            for(const auto& el : *list)
-                for(auto parent = el->parent(); parent; parent = parent->parent())
-                {
-                    background_only.erase(parent.get());
-                    patched.erase(parent.get());
-                }
+        // An ancestor restyled in full recomputes what is under it; one patched fast does not (restyle_after_patch's
+        // `covered`), so a change under it is restyled on its own. A fast patch or a background-only one changes
+        // properties that are not inherited (transform, opacity, background-color, sizes, offsets): nothing under the
+        // element computes from them, except a child that declares `inherit` for one, and then patch_inline_properties
+        // refuses and the element is restyled in full. So a change inside no longer costs its ancestors their fast
+        // patch: a re-sorting list whose rows move (top, height) while their bars and numbers change restyled every
+        // row's whole subtree each frame.
+        static const bool keep_fast_ancestors = !getenv("LH_NO_FAST_ANCESTORS");
+        if(!keep_fast_ancestors)
+            for(const auto* list : {&restyle, &new_text, &retext})
+                for(const auto& el : *list)
+                    for(auto parent = el->parent(); parent; parent = parent->parent())
+                    {
+                        background_only.erase(parent.get());
+                        patched.erase(parent.get());
+                    }
         if(!allow_shallow_width || !keep_tree || !new_text.empty())
             shallow_width.clear();
         restyle_after_patch(restyle, new_text, keep_tree, retext, background_only, patched, shallow_width);
@@ -1690,10 +1700,12 @@ namespace litehtml
             pending.insert(el.get());
         for(const auto& el : retext)
             pending.insert(el.get());
-        auto covered = [&pending, &shallow_width](const element::ptr& el) {
+        // Under an ancestor restyled in full (its compute_styles recomputes the subtree). One patched fast or for its
+        // background only computes nothing under it.
+        auto covered = [&pending, &shallow_width, &patched, &background_only](const element::ptr& el) {
             for(auto p = el->parent(); p; p = p->parent())
             {
-                if(pending.count(p.get()) && !shallow_width.count(p.get()))
+                if(pending.count(p.get()) && !shallow_width.count(p.get()) && !patched.count(p.get()) && !background_only.count(p.get()))
                     return true;
             }
             return false;
@@ -3391,10 +3403,13 @@ namespace litehtml
                     item->relayout();
                 m_relayout_roots.clear();
                 m_layout_after_render = true;
+                m_positioned_ms = 0;
                 if(m_has_positioned)
                 {
+                    const auto t0 = std::chrono::steady_clock::now();
                     m_fixed_boxes.clear();
                     m_root_render->render_positioned(rt);
+                    m_positioned_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
                 }
                 m_size.width  = 0;
                 m_size.height = 0;

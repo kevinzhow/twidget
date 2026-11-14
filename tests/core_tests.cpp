@@ -861,6 +861,91 @@ int main() {
         check(patched > rounds / 2, "most batches go into the document in place (" + std::to_string(patched) + " of " + std::to_string(rounds) + ")");
     }
 
+    // ── a size patched in place lays out again ──
+    {
+        // A width or height patched fast (patch_inline_properties) must mark the box's layout dirty: an in-flow block
+        // around it can come from litehtml's layout cache, and then the old width stayed on screen.
+        StubBackend pa, pb;
+        Renderer patching(300, 1, false, pa), building(300, 1, false, pb);
+        building.set_patching(false);
+        std::string setup = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","display:flex;height:20px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"div","attrs":[["style","width:80px;height:6px;background:gray"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"el","id":12,"tag":"div","attrs":[["style","width:50%;height:6px;background:green"]]},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":20,"tag":"div","attrs":[["style","height:20px"]]},{"op":"ins","parent":4,"id":20,"before":null},
+            {"op":"el","id":21,"tag":"div","attrs":[["style","width:50%;height:6px;background:blue"]]},{"op":"ins","parent":20,"id":21,"before":null}]})";
+        patching.receive(parse(setup));
+        building.receive(parse(setup));
+        int same = 0;
+        for (int i = 0; i < 20; i++) {
+            std::string batch = R"({"type":"ops","ops":[{"op":"style","id":12,"name":"width","value":")" + std::to_string(i * 5) + R"(%"},{"op":"style","id":21,"name":"height","value":")" +
+                                std::to_string(2 + i) + R"(px"}]})";
+            patching.receive(parse(batch));
+            building.receive(parse(batch));
+            if (to_json(patching.paint()) == to_json(building.paint())) same++;
+        }
+        check(same == 20, "a width or height patched in place paints as rebuilt (" + std::to_string(same) + " of 20)");
+    }
+
+    // ── in-place patches of a row and what is inside it in one batch ──
+    {
+        // The leaderboard (htmlbubbles-ported/08-analytics/10-bot-bare.html) each frame: the rows' top and height, and
+        // in the same batch their bars' widths, numbers and classes. A row keeps its fast patch while things inside it
+        // change; one child declares `height: inherit`, where the row's patch must give way to a full restyle.
+        StubBackend pa, pb;
+        Renderer patching(300, 1, false, pa), building(300, 1, false, pb);
+        building.set_patching(false);
+        std::string setup = R"({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},{"op":"el","id":5,"tag":"style"},
+            {"op":"css","id":5,"text":".l{position:relative;height:300px}.r{position:absolute;left:0;right:0;overflow:hidden;color:#123}.t{height:6px;background:#eee}.b{height:6px;background:green}.m{padding:2px}.m.on{padding:6px;color:red}.i{height:inherit;width:20px;background:blue}"},
+            {"op":"ins","parent":3,"id":5,"before":null},{"op":"el","id":6,"tag":"div","attrs":[["class","l"],["style","height:300px"]]},{"op":"ins","parent":4,"id":6,"before":null})";
+        auto ins = [](int id, const char* tag, const std::string& attrs, int parent) {
+            return R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":")" + tag + R"(","attrs":[)" + attrs + R"(]},{"op":"ins","parent":)" +
+                   std::to_string(parent) + R"(,"id":)" + std::to_string(id) + R"(,"before":null})";
+        };
+        for (int i = 0; i < 8; i++) {
+            int row = 100 + i * 10;
+            setup += ins(row, "div", R"(["class","r"],["style","top:)" + std::to_string(i * 30) + R"(px;height:28px"])", 6);
+            setup += ins(row + 1, "span", "", row) + R"(,{"op":"text","id":)" + std::to_string(row + 2) + R"(,"data":"name"},{"op":"ins","parent":)" +
+                     std::to_string(row + 1) + R"(,"id":)" + std::to_string(row + 2) + R"(,"before":null})";
+            setup += ins(row + 3, "div", R"(["class","t"])", row) + ins(row + 4, "div", R"(["class","b"],["style","width:50%"])", row + 3);
+            setup += ins(row + 5, "div", R"(["class","m"])", row) + R"(,{"op":"text","id":)" + std::to_string(row + 6) + R"(,"data":"12"},{"op":"ins","parent":)" +
+                     std::to_string(row + 5) + R"(,"id":)" + std::to_string(row + 6) + R"(,"before":null})";
+            if (i == 3) setup += ins(row + 7, "div", R"(["class","i"])", row);
+        }
+        setup += "]}";
+        patching.receive(parse(setup));
+        building.receive(parse(setup));
+        uint32_t seed = 11;
+        auto next = [&] { return seed = seed * 1664525u + 1013904223u, seed >> 8; };
+        int same = 0, rounds = 200;
+        int patched_before = patching.stats().in_place;
+        for (int round = 0; round < rounds; round++) {
+            std::string ops;
+            for (int k = 0; k < 6; k++) {
+                std::string row = std::to_string(100 + (next() % 8) * 10);
+                int r = std::stoi(row);
+                if (!ops.empty()) ops += ",";
+                unsigned pick = next() % 12;
+                if (pick < 3) ops += "{\"op\":\"style\",\"id\":" + row + ",\"name\":\"top\",\"value\":\"" + std::to_string(next() % 270) + ".5px\"}";
+                else if (pick < 5) ops += "{\"op\":\"style\",\"id\":" + row + ",\"name\":\"height\",\"value\":\"" + std::to_string(20 + next() % 40) + "px\"}";
+                else if (pick < 7) ops += "{\"op\":\"style\",\"id\":" + std::to_string(r + 4) + ",\"name\":\"width\",\"value\":\"" + std::to_string(next() % 100) + "%\"}";
+                else if (pick < 9) ops += "{\"op\":\"data\",\"id\":" + std::to_string(r + 6) + ",\"data\":\"" + std::to_string(next() % 1000) + "\"}";
+                else if (pick < 10) ops += "{\"op\":\"attr\",\"id\":" + std::to_string(r + 5) + ",\"name\":\"class\",\"value\":\"" + (next() % 2 ? "m" : "m on") + "\"}";
+                else if (pick < 11) ops += "{\"op\":\"style\",\"id\":" + row + ",\"name\":\"background-color\",\"value\":\"rgb(" + std::to_string(next() % 255) + ",0,0)\"}";
+                else ops += "{\"op\":\"style\",\"id\":" + std::to_string(r + 4) + ",\"name\":\"background-color\",\"value\":\"rgb(0," + std::to_string(next() % 255) + ",0)\"}";
+            }
+            std::string batch = R"({"type":"ops","ops":[)" + ops + "]}";
+            patching.receive(parse(batch));
+            building.receive(parse(batch));
+            if (to_json(patching.paint()) == to_json(building.paint()) && patching.last_html() == building.last_html()) same++;
+        }
+        int patched = patching.stats().in_place - patched_before;
+        check(same == rounds, "rows patched with what is inside them paint as rebuilt ones (" + std::to_string(same) + " of " + std::to_string(rounds) + ")");
+        check(patched > rounds / 2, "and go into the document in place (" + std::to_string(patched) + " of " + std::to_string(rounds) + ")");
+    }
+
     // ── pointer capture ──
     {
         StubBackend cb;

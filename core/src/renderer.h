@@ -51,6 +51,11 @@ struct BuildStats {
     int scripted = 0;
     /// Paints that handed out the last list again, only layers having moved.
     int reused = 0;
+    /// Time spent so far (ms) restyling a document in place (Container::patch and restyle: update_holes, update_styles), laying it out
+    /// (Container::layout), and of that laying out its positioned boxes (litehtml render_positioned).
+    double restyle_ms = 0, layout_ms = 0, positioned_ms = 0;
+    /// Boxes those layouts took from litehtml's layout cache, and cacheable boxes laid out again.
+    uint64_t layout_hits = 0, layout_misses = 0;
 };
 
 class Renderer : private CanvasHost {
