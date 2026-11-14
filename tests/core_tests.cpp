@@ -403,6 +403,23 @@ int main() {
             auto ids = layer_ids(c);
             check(ids.count(40) == 1 && ids.count(41) == 1 && ids.count(50) == 0, "the mover and the clock (with its 12 digits) are layers (" + c.composition_debug() + ")");
         }
+        {
+            // A card that pops in (opacity and scale) while an avatar inside it grows (width, height: no layer property):
+            // the card is a layer drawn from one picture, the avatar a still layer nested in it, repainted as it grows.
+            Renderer c(300, 1, false, fb);
+            make(c, "#card{width:200px;height:120px;background:#fff;animation:pop 2s linear} @keyframes pop{from{opacity:0;transform:scale(.96)}} "
+                    "#face{display:inline-block;width:22px;height:22px;background:#07f;animation:grow 2s linear} @keyframes grow{from{width:2px;height:2px}}",
+                 R"({"op":"el","id":40,"tag":"div","attrs":[["id","card"]]},{"op":"ins","parent":4,"id":40,"before":null},
+                    {"op":"el","id":41,"tag":"span","attrs":[["id","face"]]},{"op":"ins","parent":40,"id":41,"before":null})");
+            const Layer* card = nullptr;
+            const Layer* face = nullptr;
+            for (const Layer& l : c.composition().layers) {
+                if (l.id == 40) card = &l;
+                if (l.id == 41) face = &l;
+            }
+            check(card && face && face->parent == 40 && card->track.keys.size() >= 2,
+                  "a popping card with a growing avatar inside is a layer, the avatar a still one in it (" + c.composition_debug() + ")");
+        }
     }
 
     // ── compositor layers ──

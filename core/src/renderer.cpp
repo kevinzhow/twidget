@@ -4329,6 +4329,22 @@ void Renderer::update_composition(double now) {
         }
         return !it->second;
     };
+    // The topmost animated elements inside `mover` that are no movers (each a still layer of its own, repainted as it
+    // animates); nullopt when one cannot be (inside an SVG drawing, a ::before / ::after) or there are too many.
+    std::map<int64_t, std::vector<int64_t>> lifted;
+    auto painted_inside = [&](int64_t mover) -> std::optional<std::vector<int64_t>> {
+        std::vector<int64_t> out;
+        for (int64_t x : ids) {
+            if (x == mover || movers.count(x) || !is_ancestor(mover, x)) continue;
+            bool topmost = true;
+            for (const Node* a = parent_node(x); a && a->id != mover && topmost; a = a->parent) topmost = !(a->id && animated.count(a->id));
+            if (!topmost) continue;
+            const Node* n = node(x);
+            if (x < 0 || !n || n->svg || out.size() == MAX_OBSCURERS) return std::nullopt;
+            out.push_back(x);
+        }
+        return out;
+    };
     std::vector<const Planned*> shimmers;
     std::vector<const Planned*> rings;
     std::vector<const Planned*> svg_children;
@@ -4353,7 +4369,15 @@ void Renderer::update_composition(double now) {
             svg_children.push_back(&p);
             continue;
         }
-        if (holds_animated.count(id)) { why(id, "something animated inside"); continue; }
+        // Something animated inside that is no layer of its own (an avatar growing in a card that pops in): the
+        // topmost such elements become still layers nested in this one (painted_inside below), so this one's content
+        // stays one picture that its track scales and fades. Painted into it instead, every frame of the track would
+        // paint the whole subtree again under a new transform (text rasterised at a new scale each frame).
+        if (holds_animated.count(id)) {
+            auto inner = painted_inside(id);
+            if (!inner) { why(id, "something animated inside"); continue; }
+            lifted.emplace(id, std::move(*inner));
+        }
         bool blocked = false;
         int64_t blocker = 0;
         for (const Node* a = parent_node(id); a && !blocked; a = a->parent) {
@@ -4494,6 +4518,46 @@ void Renderer::update_composition(double now) {
         }
         elements[id] = want.el;
         next.emplace(id, std::move(p));
+    }
+    for (const auto& [id, inner] : lifted) {
+        if (!next.count(id)) continue;
+        std::vector<std::pair<int64_t, Promotion>> still;
+        bool ok = true;
+        for (int64_t other : inner) {
+            auto el = container_->element(other);
+            Promotion s;
+            if (!el) {
+                ok = false;
+                break;
+            }
+            if (!container_->layer_candidate(el, s.box, &mover_elements)) {
+                // No box yet (an avatar growing from 0 x 0): nothing of it shows, and the next layout decides again.
+                auto ri = el->get_render_item();
+                Rect b = ri ? border_box_of(el) : Rect{};
+                ok = ri && (b.w <= 0 || b.h <= 0);
+                if (!ok) break;
+                continue;
+            }
+            if (!container_->clip_of(el, s.has_clip, s.clip, s.clip_radii)) {
+                ok = false;
+                break;
+            }
+            s.found_clip = s.has_clip;
+            s.found_clip_rect = s.clip;
+            s.signature = 0x11F7EDull ^ uint64_t(other);
+            if (!still_track(other, s, now)) {
+                ok = false;
+                break;
+            }
+            elements[other] = el;
+            still.emplace_back(other, std::move(s));
+        }
+        if (!ok) {
+            next.erase(id);
+            why(id, "something animated inside");
+            continue;
+        }
+        for (auto& [other, s] : still) next.emplace(other, std::move(s));
     }
 
     // Elements of an SVG drawing moving on their own (a spinning sun, drifting clouds): their own transform
