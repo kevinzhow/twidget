@@ -12,6 +12,7 @@
 #include <hb-ot.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -35,6 +36,88 @@ struct Face {
     float typoAscent = 0, typoDescent = 0;
     bool hasTypo = false;
 };
+
+namespace {
+std::string xml_attribute(const std::string& tag, const char* name) {
+    std::string key = std::string(" ") + name + "=\"";
+    size_t at = tag.find(key);
+    if (at == std::string::npos) return "";
+    size_t end = tag.find('"', at + key.size());
+    return end == std::string::npos ? "" : tag.substr(at + key.size(), end - at - key.size());
+}
+std::string xml_trim(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
+    return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+}
+std::string base_name(const std::string& path) {
+    size_t slash = path.rfind('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+} // namespace
+
+std::vector<FallbackFamily> parse_fallback_families(const std::string& xml) {
+    std::vector<FallbackFamily> out;
+    FallbackFamily* family = nullptr;  // the fallback family being read (none inside a named one)
+    for (size_t at = xml.find('<'); at != std::string::npos; at = xml.find('<', at + 1)) {
+        if (xml.compare(at, 4, "<!--") == 0) {
+            at = xml.find("-->", at);
+            if (at == std::string::npos) break;
+            continue;
+        }
+        size_t close = xml.find('>', at);
+        if (close == std::string::npos) break;
+        std::string tag = xml.substr(at, close - at);
+        for (char& c : tag)
+            if (c == '\n' || c == '\t' || c == '\r') c = ' ';
+        if (tag.rfind("<family ", 0) == 0 || tag == "<family") {  // (not <familyset>)
+            family = xml_attribute(tag, "name").empty() ? &out.emplace_back() : nullptr;
+        } else if (tag.rfind("</family", 0) == 0 && tag.rfind("</familyset", 0) != 0) {
+            family = nullptr;
+        } else if (tag.rfind("<font ", 0) == 0 || tag == "<font") {
+            size_t end = xml.find("</font>", close);
+            if (!family || end == std::string::npos) continue;
+            const std::string body = xml.substr(close + 1, end - close - 1);
+            FallbackFor f;
+            f.file = xml_trim(body.substr(0, body.find('<')));
+            f.index = std::atoi(xml_attribute(tag, "index").c_str());
+            f.weight = std::atoi(xml_attribute(tag, "weight").c_str());
+            if (f.weight <= 0) f.weight = 400;
+            f.italic = xml_attribute(tag, "style") == "italic";
+            for (size_t a = body.find("<axis"); a != std::string::npos; a = body.find("<axis", a + 1)) {
+                const std::string axis = body.substr(a, body.find('>', a) - a);
+                const std::string t = xml_attribute(axis, "tag");
+                if (t.size() == 4) f.axes.emplace_back(t, float(std::atof(xml_attribute(axis, "stylevalue").c_str())));
+            }
+            if (f.file.empty()) continue;
+            std::string target = xml_attribute(tag, "fallbackFor");
+            for (char& c : target) c = char(std::tolower((unsigned char)c));
+            if (target.empty()) family->fonts.emplace_back(f.file, f.index);
+            else family->fallbackFor[target].push_back(std::move(f));
+        }
+    }
+    return out;
+}
+
+bool fallback_for(const std::vector<FallbackFamily>& families, const std::string& file, int index, const std::string& family,
+                  int weight, bool italic, FallbackFor& out) {
+    std::string key = family;
+    for (char& c : key) c = char(std::tolower((unsigned char)c));
+    const std::string name = base_name(file);
+    for (const FallbackFamily& f : families) {
+        if (std::find(f.fonts.begin(), f.fonts.end(), std::make_pair(name, index)) == f.fonts.end()) continue;
+        auto it = f.fallbackFor.find(key);
+        if (it == f.fallbackFor.end() || it->second.empty()) return false;
+        const FallbackFor* best = nullptr;
+        int bestScore = 0;
+        for (const FallbackFor& c : it->second) {
+            const int score = std::abs(c.weight - weight) + (c.italic != italic ? 10000 : 0);
+            if (!best || score < bestScore) best = &c, bestScore = score;
+        }
+        out = *best;
+        return true;
+    }
+    return false;
+}
 
 namespace {
 
@@ -254,6 +337,26 @@ bool system_fallback(uint32_t codepoint, bool emoji, int weight, bool italic, co
     out.axes.clear();
     for (size_t i = 0, n = api.axes(font); i < n; i++) out.axes.push_back({hb_tag_t(api.tag(font, uint32_t(i))), api.value(font, uint32_t(i))});
     api.close(font);
+    // fonts.xml's fallbackFor, which AFontMatcher ignores (observed, API 36: Japanese text in serif matched NotoSansCJK,
+    // not the NotoSerifCJK of its family that fonts.xml gives for serif): the stand-in, as Skia (Flutter, the WebView)
+    // takes it, when it has the character.
+    static const std::vector<FallbackFamily> fallbacks = [] {
+        std::ifstream in("/system/etc/fonts.xml");
+        std::stringstream ss;
+        ss << in.rdbuf();
+        return parse_fallback_families(ss.str());
+    }();
+    FallbackFor sub;
+    if (generic != "sans-serif" && fallback_for(fallbacks, out.file, out.index, generic, weight, italic, sub)) {
+        Match m;
+        m.file = "/system/fonts/" + sub.file;
+        m.index = sub.index;
+        m.family = family;
+        for (const auto& [t, v] : sub.axes) m.axes.push_back({hb_tag_from_string(t.c_str(), 4), v});
+        hb_codepoint_t g;
+        Face* face = face_for(m, weight, italic);
+        if (face && hb_font_get_nominal_glyph(face->font, hb_codepoint_t(codepoint), &g)) out = std::move(m);
+    }
     return true;
 }
 
@@ -274,7 +377,14 @@ bool match(const std::vector<std::string>& names, int weight, bool italic, const
         }
     }
     // Else the system's fallback chain (the unnamed families, by script and language).
-    return system_fallback(uint32_t(codepoint), false, weight, italic, names.empty() ? "sans-serif" : names.front(), o, out);
+    // Through the list's generic family (the first generic name in it, as fonts.xml names them), else sans-serif.
+    std::string generic = "sans-serif";
+    for (const std::string& n : names)
+        if (n == "serif" || n == "sans-serif" || n == "monospace") {
+            generic = n;
+            break;
+        }
+    return system_fallback(uint32_t(codepoint), false, weight, italic, generic, o, out);
 }
 #else
 // Linux: fontconfig (the files Flutter's Skia also gets from fontconfig).
