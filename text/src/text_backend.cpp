@@ -360,6 +360,14 @@ bool system_fallback(uint32_t codepoint, bool emoji, int weight, bool italic, co
     return true;
 }
 
+/// The list's generic family: its first generic name (as fonts.xml names them), else sans-serif. Characters its fonts
+/// lack fall back through it.
+std::string generic_family(const std::vector<std::string>& names) {
+    for (const std::string& n : names)
+        if (n == "serif" || n == "sans-serif" || n == "monospace") return n;
+    return "sans-serif";
+}
+
 bool match(const std::vector<std::string>& names, int weight, bool italic, const TextOptions& o, Match& out, int32_t codepoint = -1) {
     if (codepoint < 0) {
         for (const std::string& n : names)
@@ -377,14 +385,7 @@ bool match(const std::vector<std::string>& names, int weight, bool italic, const
         }
     }
     // Else the system's fallback chain (the unnamed families, by script and language).
-    // Through the list's generic family (the first generic name in it, as fonts.xml names them), else sans-serif.
-    std::string generic = "sans-serif";
-    for (const std::string& n : names)
-        if (n == "serif" || n == "sans-serif" || n == "monospace") {
-            generic = n;
-            break;
-        }
-    return system_fallback(uint32_t(codepoint), false, weight, italic, generic, o, out);
+    return system_fallback(uint32_t(codepoint), false, weight, italic, generic_family(names), o, out);
 }
 #else
 // Linux: fontconfig (the files Flutter's Skia also gets from fontconfig).
@@ -484,11 +485,15 @@ std::vector<std::string> resolve_families(const std::string& families) {
     return out;
 }
 
-/// A colour emoji font that has `codepoint`, for a cluster in emoji presentation.
-bool match_emoji(uint32_t codepoint, int weight, bool italic, const TextOptions& o, Match& out) {
+/// A colour emoji font that has `codepoint`, for a cluster in emoji presentation. Android: the system's font for it
+/// followed by U+FE0F, through the list's generic family (`names`). Every character the list's fonts lack is asked for
+/// this way first (as Skia does), so the generic family's fallbackFor fonts must apply here too (observed: Japanese in
+/// serif asked through sans-serif came out in NotoSansCJK whatever the list).
+bool match_emoji(uint32_t codepoint, int weight, bool italic, const TextOptions& o, Match& out, const std::vector<std::string>& names) {
 #ifdef __ANDROID__
-    return system_fallback(codepoint, true, weight, italic, "sans-serif", o, out);
+    return system_fallback(codepoint, true, weight, italic, generic_family(names), o, out);
 #else
+    (void)names;
     return match(resolve_families("emoji"), weight, italic, o, out, int32_t(codepoint));
 #endif
 }
@@ -875,7 +880,7 @@ std::vector<Face*> faces_of(const TextBackend::Font& f, const std::vector<uint32
                 if (fb == g_glyphFallback.end()) {
                     Match m;
                     Face* found = nullptr;
-                    if (wantEmoji && match_emoji(base, f.weight, f.italic, o, m)) {
+                    if (wantEmoji && match_emoji(base, f.weight, f.italic, o, m, f.fallbacks)) {
                         found = face_for(m, f.weight, f.italic);
                         if (!hb_font_get_nominal_glyph(found->font, base, &g)) found = nullptr;
                     }
