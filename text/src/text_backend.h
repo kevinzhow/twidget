@@ -47,6 +47,29 @@ float face_upem(const Face* face);
 /// A CSS family name resolves to a system font of its own: a generic name, or a family or alias the system knows.
 bool font_family_available(const std::string& family);
 
+/// Android's fonts.xml: a font of a fallback family (one with no name) that stands in for the family's others when
+/// the text's family is `fallbackFor` (e.g. NotoSerifCJK, fallbackFor="serif", in the family of NotoSansCJK). Skia's
+/// font manager (Flutter, Chromium's WebView) honours it; the NDK's AFontMatcher does not (observed on API 36: serif
+/// Japanese text matched NotoSansCJK), so the fallback below substitutes it itself.
+struct FallbackFor {
+    std::string file;  // as fonts.xml writes it (a file name in /system/fonts)
+    int index = 0;
+    int weight = 400;
+    bool italic = false;
+    std::vector<std::pair<std::string, float>> axes;  // its axis tags and style values
+};
+/// A fonts.xml fallback family: its fonts (file, collection index) and those standing in for named families.
+struct FallbackFamily {
+    std::vector<std::pair<std::string, int>> fonts;
+    std::map<std::string, std::vector<FallbackFor>> fallbackFor;  // by lower-case family
+};
+/// The fallback families of a fonts.xml text, in its order.
+std::vector<FallbackFamily> parse_fallback_families(const std::string& xml);
+/// The font that stands in for `file` (a path or a file name; collection `index`) when the text's family is `family`:
+/// the fallbackFor font of the fallback family holding `file`, closest in style, then weight. False when none does.
+bool fallback_for(const std::vector<FallbackFamily>& families, const std::string& file, int index, const std::string& family,
+                  int weight, bool italic, FallbackFor& out);
+
 /// What a backend matches fonts for. Faces, matches and fallbacks are cached process-wide per these options, so
 /// backends with different options can share a process.
 struct TextOptions {
