@@ -1056,6 +1056,22 @@ bool encode_glyph_outline(int faceId, uint32_t glyph, GlyphOutline& out) {
     };
     thread_local Draw d;
     bool ok = d.draw != nullptr;
+    // A colour glyph (COLR layers or paint, a PNG / CBDT / sbix bitmap, an SVG document) is drawn from more than its
+    // outline, if it has one at all (an emoji font's glyphs are often empty outlines): none, so that a painter draws
+    // its run as before instead of leaving it out.
+    hb_face_t* hbFace = hb_font_get_face(font);
+    if (ok && (hb_ot_color_glyph_has_paint(hbFace, glyph) || hb_ot_color_glyph_get_layers(hbFace, glyph, 0, nullptr, nullptr) > 0))
+        ok = false;
+    if (ok && hb_ot_color_has_png(hbFace)) {
+        hb_blob_t* png = hb_ot_color_glyph_reference_png(font, glyph);
+        if (hb_blob_get_length(png) > 0) ok = false;
+        hb_blob_destroy(png);
+    }
+    if (ok && hb_ot_color_has_svg(hbFace)) {
+        hb_blob_t* svg = hb_ot_color_glyph_reference_svg(hbFace, glyph);
+        if (hb_blob_get_length(svg) > 0) ok = false;
+        hb_blob_destroy(svg);
+    }
     if (ok) {
         hb_gpu_draw_reset(d.draw);
         if (hb_gpu_draw_glyph_or_fail(d.draw, font, glyph)) {
