@@ -7,6 +7,10 @@
 # TWIDGET_TEXT_HARFBUZZ (a CMake or environment variable) or the pinned release fetched; elsewhere the system's
 # (pkg-config). No FreeType: metrics come from the font tables.
 #
+# Glyph outlines for GPU text (encode_glyph_outline): HarfBuzz's hb-gpu (14.2 and later), built with the bundled
+# HarfBuzz; with the system's, when its harfbuzz-gpu library is installed. Without it the outlines are unavailable and
+# a painter draws text as before.
+#
 # Added by twidget's top-level CMakeLists.txt; a host project adds it the same way (add_subdirectory(<this> text)).
 # Needs the core's headers (core/src: backend.h, canvas_ops.h, display_list.h), nothing compiled.
 cmake_minimum_required(VERSION 3.22)
@@ -15,7 +19,8 @@ if(TARGET twidget_text)
 endif()
 
 set(TWT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
-set(TWIDGET_TEXT_HARFBUZZ_SHA256 "6f6db164359a2da5a84ef826615b448b33e6306067ad829d85d5b0bf936f1bb8" CACHE STRING "SHA-256 of the HarfBuzz release tarball fetched when no checkout is given")
+set(TWIDGET_TEXT_HARFBUZZ_VERSION 15.1.0)
+set(TWIDGET_TEXT_HARFBUZZ_SHA256 "0fc7c565443a5f4be7da65ac5ee5bd737d9b158dc908708b7689a0a5796b0c8d" CACHE STRING "SHA-256 of the HarfBuzz release tarball fetched when no checkout is given")
 option(TWIDGET_TEXT_BUNDLED_HARFBUZZ "Build HarfBuzz from source on desktop too" OFF)
 
 if(ANDROID OR TWIDGET_TEXT_BUNDLED_HARFBUZZ)
@@ -25,7 +30,7 @@ if(ANDROID OR TWIDGET_TEXT_BUNDLED_HARFBUZZ)
     if(NOT TWIDGET_TEXT_HARFBUZZ)
         include(FetchContent)
         FetchContent_Declare(twt_harfbuzz_src
-            URL https://github.com/harfbuzz/harfbuzz/releases/download/12.3.2/harfbuzz-12.3.2.tar.xz
+            URL https://github.com/harfbuzz/harfbuzz/releases/download/${TWIDGET_TEXT_HARFBUZZ_VERSION}/harfbuzz-${TWIDGET_TEXT_HARFBUZZ_VERSION}.tar.xz
             URL_HASH SHA256=${TWIDGET_TEXT_HARFBUZZ_SHA256})
         FetchContent_Populate(twt_harfbuzz_src)
         set(TWIDGET_TEXT_HARFBUZZ "${twt_harfbuzz_src_SOURCE_DIR}")
@@ -33,19 +38,32 @@ if(ANDROID OR TWIDGET_TEXT_BUNDLED_HARFBUZZ)
     if(NOT TARGET tw_harfbuzz)
         # Compiled through a one-line file in the build tree: a source outside it gets an object path that repeats
         # the source's absolute path, too long for the NDK's ninja on deep checkouts.
-        set(_twt_hb_unit "${CMAKE_CURRENT_BINARY_DIR}/tw_harfbuzz.cc")
-        set(_twt_hb_line "#include \"harfbuzz.cc\"\n")
-        if(EXISTS "${_twt_hb_unit}")
-            file(READ "${_twt_hb_unit}" _twt_hb_old)
+        # hb-gpu is not in the harfbuzz.cc amalgamation: its two sources (outlines; no COLR paint) are units of their own.
+        set(_twt_hb_units)
+        set(_twt_hb_sources harfbuzz.cc)
+        if(EXISTS "${TWIDGET_TEXT_HARFBUZZ}/src/hb-gpu.h")
+            list(APPEND _twt_hb_sources hb-gpu.cc hb-gpu-draw.cc)
         endif()
-        if(NOT "${_twt_hb_old}" STREQUAL "${_twt_hb_line}")
-            file(WRITE "${_twt_hb_unit}" "${_twt_hb_line}")
-        endif()
-        add_library(tw_harfbuzz STATIC "${_twt_hb_unit}")
+        foreach(_twt_src IN LISTS _twt_hb_sources)
+            set(_twt_hb_unit "${CMAKE_CURRENT_BINARY_DIR}/tw_${_twt_src}")
+            set(_twt_hb_line "#include \"${_twt_src}\"\n")
+            set(_twt_hb_old "")
+            if(EXISTS "${_twt_hb_unit}")
+                file(READ "${_twt_hb_unit}" _twt_hb_old)
+            endif()
+            if(NOT "${_twt_hb_old}" STREQUAL "${_twt_hb_line}")
+                file(WRITE "${_twt_hb_unit}" "${_twt_hb_line}")
+            endif()
+            list(APPEND _twt_hb_units "${_twt_hb_unit}")
+        endforeach()
+        add_library(tw_harfbuzz STATIC ${_twt_hb_units})
         target_include_directories(tw_harfbuzz PUBLIC "${TWIDGET_TEXT_HARFBUZZ}/src")
         target_compile_definitions(tw_harfbuzz PRIVATE HAVE_MMAP HAVE_SYS_MMAN_H HAVE_UNISTD_H HAVE_PTHREAD)
         target_compile_options(tw_harfbuzz PRIVATE -O2 -w -fno-exceptions -fno-rtti -fvisibility=hidden)
         set_target_properties(tw_harfbuzz PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        if(EXISTS "${TWIDGET_TEXT_HARFBUZZ}/src/hb-gpu.h")
+            target_compile_definitions(tw_harfbuzz INTERFACE TWT_HB_GPU=1)
+        endif()
     endif()
     add_library(twt_system INTERFACE)
     if(ANDROID)
@@ -58,8 +76,13 @@ if(ANDROID OR TWIDGET_TEXT_BUNDLED_HARFBUZZ)
 else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(TWT_TEXT REQUIRED IMPORTED_TARGET harfbuzz fontconfig zlib)
+    pkg_check_modules(TWT_HB_GPU QUIET IMPORTED_TARGET harfbuzz-gpu)
     add_library(twt_system INTERFACE)
     target_link_libraries(twt_system INTERFACE PkgConfig::TWT_TEXT)
+    if(TWT_HB_GPU_FOUND)
+        target_link_libraries(twt_system INTERFACE PkgConfig::TWT_HB_GPU)
+        target_compile_definitions(twt_system INTERFACE TWT_HB_GPU=1)
+    endif()
 endif()
 
 add_library(twidget_text STATIC "${CMAKE_CURRENT_SOURCE_DIR}/src/text_backend.cpp")

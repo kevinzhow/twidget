@@ -14,7 +14,7 @@ twidget::text (`text/`) is built with HarfBuzz, on Android fetched at build time
 
 | Project | Used for | License |
 |---|---|---|
-| [HarfBuzz](https://github.com/harfbuzz/harfbuzz) 12.3.2 | text shaping | MIT ("Old MIT"), see its `COPYING` |
+| [HarfBuzz](https://github.com/harfbuzz/harfbuzz) 15.1.0 | text shaping; glyph outlines for GPU text (hb-gpu) | MIT ("Old MIT"), see its `COPYING` |
 
 QuickJS is not included: it comes with [widget-sandbox](https://github.com/TelegramMessenger/widget-sandbox), which the
 build takes as a dependency, under its own notices.

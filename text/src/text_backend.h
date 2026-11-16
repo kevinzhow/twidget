@@ -44,6 +44,20 @@ std::vector<uint8_t> face_bytes(int faceId);
 hb_font_t* face_hb_font(const Face* face);
 float face_upem(const Face* face);
 
+/// A glyph's outline encoded for HarfBuzz's GPU rasterizer (hb-gpu): the blob its fragment shader reads (hb_gpu_draw's
+/// encoding: 8-byte texels of four int16), and the glyph's ink box in font units (y up). An empty blob: no ink.
+struct GlyphOutline {
+    std::vector<uint8_t> blob;
+    int32_t minX = 0, minY = 0, maxX = 0, maxY = 0;
+};
+/// Whether this build encodes outlines (HarfBuzz with hb-gpu: 14.2 or later).
+bool glyph_outlines_available();
+/// Glyph `glyph` of face `faceId` (FaceInfo::id) as encode_glyph_outline sees it: at the face's variation coordinates,
+/// in its units per em (face_upem_of). False when the face is unknown (or gone), or without hb-gpu. Thread-safe.
+bool encode_glyph_outline(int faceId, uint32_t glyph, GlyphOutline& out);
+/// A face's units per em by id; 0 when unknown.
+float face_upem_of(int faceId);
+
 /// A CSS family name resolves to a system font of its own: a generic name, or a family or alias the system knows.
 bool font_family_available(const std::string& family);
 

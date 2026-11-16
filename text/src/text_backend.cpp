@@ -10,6 +10,9 @@
 #endif
 #include <hb.h>
 #include <hb-ot.h>
+#if defined(TWT_HB_GPU)
+#include <hb-gpu.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -1023,6 +1026,62 @@ bool font_family_available(const std::string& family) {
 const FaceInfo& face_info(const Face* face) { return face->info; }
 hb_font_t* face_hb_font(const Face* face) { return face->font; }
 float face_upem(const Face* face) { return face->upem; }
+
+float face_upem_of(int faceId) {
+    std::lock_guard l(g_mutex);
+    if (faceId < 1 || size_t(faceId) > g_faceById.size()) return 0;
+    const Face* face = g_faceById[size_t(faceId - 1)];
+    return face ? face->upem : 0;
+}
+
+#if defined(TWT_HB_GPU)
+bool glyph_outlines_available() { return true; }
+
+bool encode_glyph_outline(int faceId, uint32_t glyph, GlyphOutline& out) {
+    out = {};
+    hb_font_t* font = nullptr;
+    {
+        // A reference of its own: a book's face may go (its backend destroyed) while this one encodes.
+        std::lock_guard l(g_mutex);
+        if (faceId < 1 || size_t(faceId) > g_faceById.size()) return false;
+        const Face* face = g_faceById[size_t(faceId - 1)];
+        if (!face || !face->font) return false;
+        font = hb_font_reference(face->font);
+    }
+    // One encoder per thread (it keeps its buffers between glyphs); the face's font is at its units per em, with its
+    // variation coordinates, so blobs and extents are in font units.
+    struct Draw {
+        hb_gpu_draw_t* draw = hb_gpu_draw_create_or_fail();
+        ~Draw() { hb_gpu_draw_destroy(draw); }
+    };
+    thread_local Draw d;
+    bool ok = d.draw != nullptr;
+    if (ok) {
+        hb_gpu_draw_reset(d.draw);
+        if (hb_gpu_draw_glyph_or_fail(d.draw, font, glyph)) {
+            hb_glyph_extents_t e{};
+            if (hb_blob_t* blob = hb_gpu_draw_encode(d.draw, &e)) {
+                unsigned len = 0;
+                const char* data = hb_blob_get_data(blob, &len);
+                out.blob.assign(data, data + len);
+                out.minX = e.x_bearing;
+                out.maxX = e.x_bearing + e.width;
+                out.maxY = e.y_bearing;
+                out.minY = e.y_bearing + e.height;
+                hb_gpu_draw_recycle_blob(d.draw, blob);
+            }
+        }
+    }
+    hb_font_destroy(font);
+    return ok;
+}
+#else
+bool glyph_outlines_available() { return false; }
+bool encode_glyph_outline(int, uint32_t, GlyphOutline& out) {
+    out = {};
+    return false;
+}
+#endif
 
 std::vector<uint8_t> face_bytes(int faceId) {
     std::string file;
