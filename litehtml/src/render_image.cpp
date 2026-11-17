@@ -85,6 +85,20 @@ litehtml::rendered_width litehtml::render_item_image::_render(pixel_t x, pixel_t
         {
             m_pos.width = sz.width;
         }
+
+        // check for max-width, keeping the ratio
+        if(!src_el()->css().get_max_width().is_predefined())
+        {
+            pixel_t max_width = doc->to_pixels(css().get_max_width(), css().get_font_metrics(), parent_width);
+            if(m_pos.width > max_width)
+            {
+                m_pos.width = max_width;
+                if(sz.width != 0_px)
+                {
+                    m_pos.height = m_pos.width * sz.height / sz.width;
+                }
+            }
+        }
     } else if(src_el()->css().get_height().is_predefined() && !src_el()->css().get_width().is_predefined())
     {
         m_pos.width = src_el()->css().get_width().calc_percent(parent_width);
