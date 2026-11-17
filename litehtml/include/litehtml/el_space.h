@@ -10,6 +10,8 @@ namespace litehtml
       public:
         el_space(const char* text, const std::shared_ptr<document>& doc);
 
+        void compute_styles(bool recursive) override;
+
         bool is_white_space() const override;
         bool is_break() const override;
         bool is_space() const override;
