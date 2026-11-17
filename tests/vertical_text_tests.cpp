@@ -3,6 +3,7 @@
 // drawing a character has a vertical form for it (document_container::has_vertical_form).
 #include <litehtml.h>
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ struct Stub : document_container {
     bool latin_ellipsis = false;  // … and ‥ come from a font without vertical forms (a Latin font first in the list)
     std::vector<transform_matrix> groups;
     std::string drawn;  // each text drawn: "up:" (in a group turning it back upright) or "side:", and the text
+    std::string placed;  // each text drawn, "text@x" (x along the column)
     uint_ptr create_font(const font_description& d, const document*, font_metrics* fm) override {
         if (fm) {
             fm->font_size = d.size;
@@ -38,15 +40,20 @@ struct Stub : document_container {
         return 1;
     }
     void delete_font(uint_ptr) override {}
-    pixel_t text_width(const char* text, uint_ptr) override { return pixel_t(8.0f * float(std::string(text).size() / 3)); }
+    // 8 px a (3-byte) character; あっ is kerned to 14 px, as a horizontal shaping kerns a pair (Noto Sans CJK's まっ).
+    pixel_t text_width(const char* text, uint_ptr) override {
+        if (std::string(text) == "\xE3\x81\x82\xE3\x81\xA3") return 14;
+        return pixel_t(8.0f * float(std::string(text).size() / 3));
+    }
     bool has_vertical_form(const char* text, uint_ptr) override {
         return !latin_ellipsis || (text != ellipsis && text != leader);
     }
     void begin_group(uint_ptr, const paint_group& group) override { groups.push_back(group.matrix); }
     void end_group(uint_ptr) override { groups.pop_back(); }
-    void draw_text(uint_ptr, const char* text, uint_ptr, web_color, const position&) override {
+    void draw_text(uint_ptr, const char* text, uint_ptr, web_color, const position& pos) override {
         const bool up = !groups.empty() && groups.back().a == 0 && groups.back().b == -1;  // upright_matrix
         drawn += (drawn.empty() ? "" : " ") + std::string(up ? "up:" : "side:") + text;
+        placed += (placed.empty() ? "" : " ") + std::string(text) + "@" + std::to_string(int(std::lround(float(pos.x))));
     }
     pixel_t pt_to_px(float pt) const override { return pt * 96 / 72; }
     pixel_t get_default_font_size() const override { return 16; }
@@ -80,7 +87,7 @@ struct Stub : document_container {
     void get_language(std::string& lang, std::string& culture) const override { lang = "ja"; culture.clear(); }
 };
 
-std::string draw(const std::string& text, bool latin_ellipsis) {
+std::string draw(const std::string& text, bool latin_ellipsis, bool placed = false) {
     Stub c;
     c.latin_ellipsis = latin_ellipsis;
     auto doc = document::createFromString("<html style=\"writing-mode:vertical-rl\"><body style=\"margin:0;font-size:16px\"><p style=\"margin:0\">" +
@@ -88,7 +95,7 @@ std::string draw(const std::string& text, bool latin_ellipsis) {
                                           &c);
     doc->render(300);
     doc->draw(0, 0, 0, nullptr);
-    return c.drawn;
+    return placed ? c.placed : c.drawn;
 }
 
 } // namespace
@@ -103,6 +110,12 @@ int main() {
     got = draw(a + ellipsis + ellipsis + a + leader + a, true);
     check(got == "up:" + a + " side:" + ellipsis + ellipsis + " up:" + a + " side:" + leader + " up:" + a,
           "without, sideways (…… one run): " + got);
+
+    // Upright characters are not kerned (Blink shapes vertical text top to bottom: no pair adjustments), within a piece
+    // either: あっ (one piece, っ does not start a line) takes 16 px, and い follows at 16, not on っ at 14.
+    const std::string tsu = "\xE3\x81\xA3", i = "\xE3\x81\x84";
+    got = draw(a + tsu + i, false, true);
+    check(got == a + "@0 " + tsu + "@8 " + i + "@16", "upright characters are not kerned: " + got);
 
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
