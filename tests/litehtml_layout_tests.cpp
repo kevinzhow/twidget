@@ -2,8 +2,13 @@
 // whose text is 8 px a byte, whose viewport is 300 x 200 and whose every image is 598 x 800.
 #include <litehtml.h>
 
+#include <gumbo.h>
+
 #include <cstdio>
 #include <string>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 using namespace litehtml;
 
@@ -216,6 +221,26 @@ int main() {
         auto without = layout(c, bare + "</div>");
         check(doc->height() == without->height(), "the paragraphs are laid out as without the indentation: " + num(doc->height()) +
                                                       " (" + num(without->height()) + " without)");
+    }
+    {
+        // 1 MB of bytes that are not HTML (a disk image a book names as its chapter): gumbo records no parse errors,
+        // which nothing reads, so the parse takes about as much memory as the text it keeps.
+        std::string bytes(1 << 20, '\0');
+        uint32_t seed = 1;
+        for (auto& b : bytes) {
+            seed = seed * 1664525u + 1013904223u;
+            b = char(seed >> 24);
+        }
+#if defined(__GLIBC__)
+        const size_t before = mallinfo2().uordblks;
+#endif
+        GumboOutput* out = gumbo_parse_with_options(&kGumboDefaultOptions, bytes.data(), bytes.size());
+#if defined(__GLIBC__)
+        const size_t heap = mallinfo2().uordblks - before;
+        check(heap < size_t(8) << 20, "the parse of 1 MB of binary holds " + std::to_string(heap >> 20) + " MB (under 8)");
+#endif
+        check(out->errors.length == 0, "the parse of 1 MB of binary records " + std::to_string(out->errors.length) + " errors (0)");
+        gumbo_destroy_output(&kGumboDefaultOptions, out);
     }
     std::printf("%s\n", failures ? "FAILED" : "OK");
     return failures ? 1 : 0;
