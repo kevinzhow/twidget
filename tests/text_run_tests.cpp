@@ -162,6 +162,18 @@ int main() {
     got = layout("", "af" + shy + "fr gh");
     check(got == "af" + shy + "@0,2 fr@16,2 gh@40,2", "a ligature across a soft hyphen: " + got);
 
+    // A soft hyphen is invisible unless the line breaks there; then a hyphen is drawn at the line's end, and the break is
+    // taken only when the hyphen fits (as Blink).
+    got = layout("width:48px", "ab cd" + shy + "ef");
+    check(got == "ab@0,2 cd-@24,2 ef@0,22", "a line broken at a soft hyphen ends with a hyphen: " + got);
+    got = layout("width:44px", "ab cd" + shy + "ef");
+    check(got == "ab@0,2 cd" + shy + "@0,22 ef@16,22", "a soft hyphen whose hyphen does not fit is no break: " + got);
+    got = layout("width:50px;text-align:justify", "ab cd" + shy + "ef");
+    check(got == "ab@0,2 cd-@26,2 ef@0,22", "justified, the hyphen ends at the line's end: " + got);
+    // Justified, a soft hyphen inside a line takes no space: the word stays whole, the spaces take it all.
+    got = layout("width:64px;text-align:justify", "ab" + shy + "cd ef gh");
+    check(got == "ab" + shy + "@0,2 cd@16,2 ef@48,2 gh@0,22", "justified, no space at a soft hyphen: " + got);
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
