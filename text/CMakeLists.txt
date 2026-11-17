@@ -1,9 +1,9 @@
 # twidget::text (twidget_text, namespace twtext): fonts and text measurement behind TwidgetCore's Backend, shared by
 # twidget_flutter's cards and hosts that lay out documents of their own (an EPUB reader). HarfBuzz for shaping and the
 # font tables; the system's font matcher: fontconfig on Linux, on Android the NDK's (AFontMatcher, looked up at run
-# time) and /system/etc/fonts.xml.
+# time) and /system/etc/fonts.xml, on Windows DirectWrite's system font collection and font fallback.
 #
-# HarfBuzz: on Android (or with TWIDGET_TEXT_BUNDLED_HARFBUZZ) built from source, from a checkout given in
+# HarfBuzz: on Android and Windows (or with TWIDGET_TEXT_BUNDLED_HARFBUZZ) built from source, from a checkout given in
 # TWIDGET_TEXT_HARFBUZZ (a CMake or environment variable) or the pinned release fetched; elsewhere the system's
 # (pkg-config). No FreeType: metrics come from the font tables.
 #
@@ -23,7 +23,7 @@ set(TWIDGET_TEXT_HARFBUZZ_VERSION 15.1.0)
 set(TWIDGET_TEXT_HARFBUZZ_SHA256 "0fc7c565443a5f4be7da65ac5ee5bd737d9b158dc908708b7689a0a5796b0c8d" CACHE STRING "SHA-256 of the HarfBuzz release tarball fetched when no checkout is given")
 option(TWIDGET_TEXT_BUNDLED_HARFBUZZ "Build HarfBuzz from source on desktop too" OFF)
 
-if(ANDROID OR TWIDGET_TEXT_BUNDLED_HARFBUZZ)
+if(ANDROID OR WIN32 OR TWIDGET_TEXT_BUNDLED_HARFBUZZ)
     if(NOT TWIDGET_TEXT_HARFBUZZ AND DEFINED ENV{TWIDGET_TEXT_HARFBUZZ})
         set(TWIDGET_TEXT_HARFBUZZ "$ENV{TWIDGET_TEXT_HARFBUZZ}")
     endif()
@@ -58,8 +58,13 @@ if(ANDROID OR TWIDGET_TEXT_BUNDLED_HARFBUZZ)
         endforeach()
         add_library(tw_harfbuzz STATIC ${_twt_hb_units})
         target_include_directories(tw_harfbuzz PUBLIC "${TWIDGET_TEXT_HARFBUZZ}/src")
-        target_compile_definitions(tw_harfbuzz PRIVATE HAVE_MMAP HAVE_SYS_MMAN_H HAVE_UNISTD_H HAVE_PTHREAD)
-        target_compile_options(tw_harfbuzz PRIVATE -O2 -w -fno-exceptions -fno-rtti -fvisibility=hidden)
+        if(MSVC)
+            # HarfBuzz maps font files and locks with Win32 on its own; the optimisation comes from the build type.
+            target_compile_options(tw_harfbuzz PRIVATE /w /utf-8)
+        else()
+            target_compile_definitions(tw_harfbuzz PRIVATE HAVE_MMAP HAVE_SYS_MMAN_H HAVE_UNISTD_H HAVE_PTHREAD)
+            target_compile_options(tw_harfbuzz PRIVATE -O2 -w -fno-exceptions -fno-rtti -fvisibility=hidden)
+        endif()
         set_target_properties(tw_harfbuzz PROPERTIES POSITION_INDEPENDENT_CODE ON)
         if(EXISTS "${TWIDGET_TEXT_HARFBUZZ}/src/hb-gpu.h")
             target_compile_definitions(tw_harfbuzz INTERFACE TWT_HB_GPU=1)
@@ -68,6 +73,31 @@ if(ANDROID OR TWIDGET_TEXT_BUNDLED_HARFBUZZ)
     add_library(twt_system INTERFACE)
     if(ANDROID)
         target_link_libraries(twt_system INTERFACE tw_harfbuzz android log z dl)
+    elseif(WIN32)
+        # DirectWrite, and zlib for OTS (WOFF): Windows has no zlib to link, so its inflate side is built from the
+        # pinned release (SHA-256 checked), or a checkout given in TWIDGET_TEXT_ZLIB (a CMake or environment variable).
+        set(TWIDGET_TEXT_ZLIB_VERSION 1.3.1)
+        set(TWIDGET_TEXT_ZLIB_SHA256 "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23" CACHE STRING "SHA-256 of the zlib release tarball")
+        if(NOT TWIDGET_TEXT_ZLIB AND DEFINED ENV{TWIDGET_TEXT_ZLIB})
+            set(TWIDGET_TEXT_ZLIB "$ENV{TWIDGET_TEXT_ZLIB}")
+        endif()
+        if(NOT TWIDGET_TEXT_ZLIB)
+            include(FetchContent)
+            FetchContent_Declare(twt_zlib_src
+                URL https://github.com/madler/zlib/releases/download/v${TWIDGET_TEXT_ZLIB_VERSION}/zlib-${TWIDGET_TEXT_ZLIB_VERSION}.tar.gz
+                URL_HASH SHA256=${TWIDGET_TEXT_ZLIB_SHA256})
+            FetchContent_Populate(twt_zlib_src)
+            set(TWIDGET_TEXT_ZLIB "${twt_zlib_src_SOURCE_DIR}")
+        endif()
+        if(NOT TARGET twt_zlib)
+            add_library(twt_zlib STATIC
+                "${TWIDGET_TEXT_ZLIB}/adler32.c" "${TWIDGET_TEXT_ZLIB}/crc32.c" "${TWIDGET_TEXT_ZLIB}/inffast.c"
+                "${TWIDGET_TEXT_ZLIB}/inflate.c" "${TWIDGET_TEXT_ZLIB}/inftrees.c" "${TWIDGET_TEXT_ZLIB}/uncompr.c"
+                "${TWIDGET_TEXT_ZLIB}/zutil.c")
+            target_include_directories(twt_zlib PUBLIC "${TWIDGET_TEXT_ZLIB}")
+            target_compile_options(twt_zlib PRIVATE /w)
+        endif()
+        target_link_libraries(twt_system INTERFACE tw_harfbuzz twt_zlib dwrite)
     else()
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(TWT_FC REQUIRED IMPORTED_TARGET fontconfig zlib)
@@ -161,7 +191,13 @@ if(NOT TARGET twt_ots)
         PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/twt_ots_config" "${TWIDGET_TEXT_OTS}/src" "${TWIDGET_TEXT_WOFF2}/include"
                 "${TWIDGET_TEXT_WOFF2}/src" "${TWIDGET_TEXT_BROTLI}/c/include")
     target_compile_definitions(twt_ots PRIVATE HAVE_CONFIG_H)
-    target_compile_options(twt_ots PRIVATE -O2 -w -fvisibility=hidden)
+    if(MSVC)
+        target_compile_options(twt_ots PRIVATE /w /utf-8)
+        target_compile_definitions(twt_ots PRIVATE NOMINMAX)
+        target_link_libraries(twt_ots PRIVATE ws2_32)  # OTS reads big-endian fields with ntohl and ntohs
+    else()
+        target_compile_options(twt_ots PRIVATE -O2 -w -fvisibility=hidden)
+    endif()
     target_link_libraries(twt_ots PRIVATE twt_system)
     set_target_properties(twt_ots PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
@@ -172,4 +208,9 @@ target_include_directories(twidget_text PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
 target_link_libraries(twidget_text PUBLIC twt_system PRIVATE twt_ots)
 set_target_properties(twidget_text PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(twidget_text PUBLIC cxx_std_20)
-target_compile_options(twidget_text PRIVATE -Wall -Wextra -Wno-unused-parameter)
+if(MSVC)
+    target_compile_options(twidget_text PRIVATE /W3 /utf-8)
+    target_compile_definitions(twidget_text PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+else()
+    target_compile_options(twidget_text PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()

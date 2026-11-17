@@ -5,6 +5,10 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <dwrite_2.h>
+#include <wrl/client.h>
 #else
 #include <fontconfig/fontconfig.h>
 #endif
@@ -392,6 +396,225 @@ bool match(const std::vector<std::string>& names, int weight, bool italic, const
     }
     // Else the system's fallback chain (the unnamed families, by script and language).
     return system_fallback(uint32_t(codepoint), false, weight, italic, generic_family(names), o, out);
+}
+#elif defined(_WIN32)
+// Windows: DirectWrite's system font collection (the fonts Flutter's Skia also gets from DirectWrite), the generic
+// families as Chromium's defaults on Windows name them, and DirectWrite's font fallback for a character the list's
+// fonts lack.
+
+using Microsoft::WRL::ComPtr;
+
+std::wstring widen(const std::string& s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), nullptr, 0);
+    std::wstring w(size_t(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), int(s.size()), w.data(), n);
+    return w;
+}
+
+std::string narrow(const wchar_t* w, size_t len) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, int(len), nullptr, 0, nullptr, nullptr);
+    std::string s(size_t(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, int(len), s.data(), n, nullptr, nullptr);
+    return s;
+}
+
+struct DirectWrite {
+    ComPtr<IDWriteFactory2> factory;
+    ComPtr<IDWriteFontCollection> fonts;
+    ComPtr<IDWriteFontFallback> fallback;
+};
+
+DirectWrite& dwrite() {
+    static DirectWrite d = [] {
+        DirectWrite d;
+        if (SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory2), reinterpret_cast<IUnknown**>(d.factory.GetAddressOf())))) {
+            d.factory->GetSystemFontCollection(&d.fonts);
+            d.factory->GetSystemFontFallback(&d.fallback);
+        }
+        return d;
+    }();
+    return d;
+}
+
+ComPtr<IDWriteFontFamily> find_family(const std::string& name) {
+    ComPtr<IDWriteFontFamily> family;
+    UINT32 index = 0;
+    BOOL exists = FALSE;
+    if (dwrite().fonts && SUCCEEDED(dwrite().fonts->FindFamilyName(widen(name).c_str(), &index, &exists)) && exists)
+        dwrite().fonts->GetFontFamily(index, &family);
+    return family;
+}
+
+/// The family's English name (the one Flutter's font manager matches), else its first.
+std::string family_name(IDWriteFontFamily* family) {
+    ComPtr<IDWriteLocalizedStrings> names;
+    if (FAILED(family->GetFamilyNames(&names)) || names->GetCount() == 0) return "";
+    UINT32 index = 0;
+    BOOL exists = FALSE;
+    if (FAILED(names->FindLocaleName(L"en-us", &index, &exists)) || !exists) index = 0;
+    UINT32 len = 0;
+    names->GetStringLength(index, &len);
+    std::wstring w(size_t(len) + 1, L'\0');
+    names->GetString(index, w.data(), len + 1);
+    return narrow(w.data(), len);
+}
+
+/// The font's file and index in it: false for a font that is not a local file.
+bool from_font(IDWriteFont* font, Match& out) {
+    ComPtr<IDWriteFontFace> face;
+    ComPtr<IDWriteFontFile> file;
+    ComPtr<IDWriteFontFileLoader> loader;
+    ComPtr<IDWriteLocalFontFileLoader> local;
+    ComPtr<IDWriteFontFamily> family;
+    UINT32 files = 1;
+    const void* key = nullptr;
+    UINT32 keySize = 0;
+    UINT32 len = 0;
+    if (FAILED(font->CreateFontFace(&face)) || FAILED(face->GetFiles(&files, &file)) || !file ||
+        FAILED(file->GetLoader(&loader)) || FAILED(loader.As(&local)) || FAILED(file->GetReferenceKey(&key, &keySize)) ||
+        FAILED(local->GetFilePathLengthFromKey(key, keySize, &len)))
+        return false;
+    std::wstring path(size_t(len) + 1, L'\0');
+    if (FAILED(local->GetFilePathFromKey(key, keySize, path.data(), len + 1))) return false;
+    out.file = narrow(path.data(), len);
+    out.index = int(face->GetIndex());
+    out.family = SUCCEEDED(font->GetFontFamily(&family)) ? family_name(family.Get()) : "";
+    out.axes.clear();
+    return true;
+}
+
+/// The families a CSS generic family stands for: Chromium's defaults on Windows, those of the language's script
+/// first (Chinese, Japanese, Korean), then the Latin ones.
+std::vector<std::string> generic_families(const std::string& generic, const std::string& language) {
+    struct Defaults {
+        const char* serif;
+        const char* sans;
+        const char* mono;
+    };
+    std::string l = lower(language);
+    auto is = [&](const char* prefix) { return l.rfind(prefix, 0) == 0; };
+    const Defaults latin{"Times New Roman", "Arial", "Consolas"};
+    const Defaults* script = nullptr;
+    static const Defaults hans{"SimSun", "Microsoft YaHei", "NSimSun"};
+    static const Defaults hant{"PMingLiU", "Microsoft JhengHei", "MingLiU"};
+    static const Defaults ja{"Yu Mincho", "Yu Gothic", "MS Gothic"};
+    static const Defaults ko{"Batang", "Malgun Gothic", "GulimChe"};
+    if (is("ja")) script = &ja;
+    else if (is("ko")) script = &ko;
+    else if (is("zh")) script = l.find("hant") != std::string::npos || is("zh-tw") || is("zh-hk") || is("zh-mo") ? &hant : &hans;
+    auto pick = [&](const Defaults& d) -> const char* {
+        if (generic == "serif") return d.serif;
+        if (generic == "sans-serif") return d.sans;
+        if (generic == "monospace") return d.mono;
+        return nullptr;
+    };
+    std::vector<std::string> out;
+    if (script) out.push_back(pick(*script));
+    if (generic == "cursive") out.push_back("Comic Sans MS");
+    else if (generic == "fantasy") out.push_back("Impact");
+    else out.push_back(pick(latin));
+    return out;
+}
+
+std::map<std::string, std::string> g_knownFamily;
+
+/// `name` if DirectWrite has a family by that name, else "".
+std::string known_family(const std::string& name) {
+    auto it = g_knownFamily.find(name);
+    if (it != g_knownFamily.end()) return it->second;
+    return g_knownFamily[name] = find_family(name) ? name : std::string();
+}
+
+/// One character with its locale, what DirectWrite's font fallback reads.
+class FallbackText final : public IDWriteTextAnalysisSource {
+public:
+    FallbackText(uint32_t codepoint, std::wstring locale) : locale_(std::move(locale)) {
+        if (codepoint >= 0x10000) {
+            text_[0] = wchar_t(0xD800 + ((codepoint - 0x10000) >> 10));
+            text_[1] = wchar_t(0xDC00 + ((codepoint - 0x10000) & 0x3FF));
+            len_ = 2;
+        } else {
+            text_[0] = wchar_t(codepoint);
+        }
+    }
+    UINT32 length() const { return len_; }
+    // On the stack for one call: no reference counting.
+    IFACEMETHODIMP QueryInterface(REFIID id, void** out) override {
+        if (id == __uuidof(IUnknown) || id == __uuidof(IDWriteTextAnalysisSource)) {
+            *out = this;
+            return S_OK;
+        }
+        *out = nullptr;
+        return E_NOINTERFACE;
+    }
+    IFACEMETHODIMP_(ULONG) AddRef() override { return 1; }
+    IFACEMETHODIMP_(ULONG) Release() override { return 1; }
+    IFACEMETHODIMP GetTextAtPosition(UINT32 pos, const WCHAR** text, UINT32* len) override {
+        *text = pos < len_ ? text_ + pos : nullptr;
+        *len = pos < len_ ? len_ - pos : 0;
+        return S_OK;
+    }
+    IFACEMETHODIMP GetTextBeforePosition(UINT32 pos, const WCHAR** text, UINT32* len) override {
+        *text = pos > 0 && pos <= len_ ? text_ : nullptr;
+        *len = pos > 0 && pos <= len_ ? pos : 0;
+        return S_OK;
+    }
+    IFACEMETHODIMP_(DWRITE_READING_DIRECTION) GetParagraphReadingDirection() override { return DWRITE_READING_DIRECTION_LEFT_TO_RIGHT; }
+    IFACEMETHODIMP GetLocaleName(UINT32 pos, UINT32* len, const WCHAR** locale) override {
+        *len = pos < len_ ? len_ - pos : 0;
+        *locale = locale_.c_str();
+        return S_OK;
+    }
+    IFACEMETHODIMP GetNumberSubstitution(UINT32 pos, UINT32* len, IDWriteNumberSubstitution** sub) override {
+        *len = pos < len_ ? len_ - pos : 0;
+        *sub = nullptr;
+        return S_OK;
+    }
+
+private:
+    wchar_t text_[2] = {};
+    UINT32 len_ = 1;
+    std::wstring locale_;
+};
+
+bool match(const std::vector<std::string>& names, int weight, bool italic, const TextOptions& o, Match& out, int32_t codepoint = -1) {
+    if (!dwrite().fonts) return false;
+    const auto w = DWRITE_FONT_WEIGHT(std::clamp(weight, 1, 999));
+    const auto style = italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+    std::vector<std::string> families;
+    for (const std::string& n : names) {
+        if (n == "serif" || n == "sans-serif" || n == "monospace" || n == "cursive" || n == "fantasy") {
+            for (std::string& g : generic_families(n, o.language)) families.push_back(std::move(g));
+        } else {
+            families.push_back(n);
+        }
+    }
+    // The list's first family that has a font (with the character, when one is asked for).
+    for (const std::string& name : families) {
+        ComPtr<IDWriteFontFamily> family = find_family(name);
+        ComPtr<IDWriteFont> font;
+        if (!family || FAILED(family->GetFirstMatchingFont(w, DWRITE_FONT_STRETCH_NORMAL, style, &font))) continue;
+        BOOL has = TRUE;
+        if (codepoint >= 0 && FAILED(font->HasCharacter(UINT32(codepoint), &has))) has = FALSE;
+        if (has && from_font(font.Get(), out)) return true;
+    }
+    if (codepoint < 0 || !dwrite().fallback) return false;
+    // Else the system's font for the character, by the language (as Chromium on Windows asks DirectWrite).
+    std::wstring locale = widen(o.language);
+    if (locale.empty()) {
+        wchar_t user[LOCALE_NAME_MAX_LENGTH] = {};
+        if (GetUserDefaultLocaleName(user, LOCALE_NAME_MAX_LENGTH) > 0) locale = user;
+    }
+    FallbackText text(uint32_t(codepoint), locale);
+    std::wstring base = families.empty() ? std::wstring() : widen(families.front());
+    UINT32 mapped = 0;
+    ComPtr<IDWriteFont> font;
+    FLOAT scale = 1;
+    if (FAILED(dwrite().fallback->MapCharacters(&text, 0, text.length(), dwrite().fonts.Get(), base.empty() ? nullptr : base.c_str(), w, style,
+                                                DWRITE_FONT_STRETCH_NORMAL, &mapped, &font, &scale)) ||
+        !font)
+        return false;
+    return from_font(font.Get(), out);
 }
 #else
 // Linux: fontconfig (the files Flutter's Skia also gets from fontconfig).
