@@ -154,8 +154,8 @@ public:
     std::vector<GlyphRun> shape(int font, const std::string& text);
 
     /// A book's font (@font-face): `family` at `weight` (100..900) and style, from the font file's bytes (TrueType,
-    /// OpenType or a collection's first font; WOFF/WOFF2 are refused). Fonts made after it see it. False when the
-    /// bytes are no font.
+    /// OpenType, a collection's first font, WOFF or WOFF2), as the OpenType Sanitizer writes them out. Fonts made after
+    /// it see it. False when the bytes are no font, or one OTS rejects (as a browser would).
     bool add_book_font(const std::string& family, int weight, bool italic, std::vector<uint8_t> bytes);
 
     const std::map<int, Font>& fonts() const { return fonts_; }

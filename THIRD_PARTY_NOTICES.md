@@ -15,6 +15,12 @@ twidget::text (`text/`) is built with HarfBuzz, on Android fetched at build time
 | Project | Used for | License |
 |---|---|---|
 | [HarfBuzz](https://github.com/harfbuzz/harfbuzz) 15.1.0 | text shaping; glyph outlines for GPU text (hb-gpu) | MIT ("Old MIT"), see its `COPYING` |
+| [OpenType Sanitizer](https://github.com/khaledhosny/ots) 9.3.0, fetched everywhere | book fonts checked; WOFF/WOFF2 unpacked | BSD 3-Clause, see its `LICENSE` |
+| [woff2](https://github.com/google/woff2) 1.0.2 (the decoder), fetched everywhere | WOFF2 for OTS | MIT, see its `LICENSE` |
+| [Brotli](https://github.com/google/brotli) 1.1.0 (the decoder), fetched everywhere | WOFF2 for OTS | MIT, see its `LICENSE` |
+
+The tests' fonts (`tests/fixtures/fonts`): Pacifico (WOFF) and Macondo (WOFF2), unmodified, SIL Open Font License
+1.1, the license texts beside them.
 
 QuickJS is not included: it comes with [widget-sandbox](https://github.com/TelegramMessenger/widget-sandbox), which the
 build takes as a dependency, under its own notices.

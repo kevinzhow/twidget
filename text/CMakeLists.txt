@@ -85,10 +85,91 @@ else()
     endif()
 endif()
 
+# Book fonts (add_book_font: an EPUB's @font-face): every file goes through the OpenType Sanitizer, as browsers do with
+# web fonts (Chromium, Firefox), which also turns WOFF (zlib) and WOFF2 (google/woff2, Brotli) into plain OpenType.
+# Fetched at pinned releases, SHA-256 checked (the hashes OTS's own meson wraps give), or checkouts given in
+# TWIDGET_TEXT_OTS / TWIDGET_TEXT_WOFF2 / TWIDGET_TEXT_BROTLI (CMake or environment variables). Only the decoders are
+# built: Brotli's decoder, woff2's decoder, OTS without Graphite (HarfBuzz here shapes no Graphite; OTS drops those
+# tables).
+set(TWIDGET_TEXT_OTS_VERSION 9.3.0)
+set(TWIDGET_TEXT_OTS_SHA256 "23814f8e90ee77379f54e86a012c09bba2d133940e5257546b29cf087a73beec" CACHE STRING "SHA-256 of the OTS release tarball")
+set(TWIDGET_TEXT_WOFF2_VERSION 1.0.2)
+set(TWIDGET_TEXT_WOFF2_SHA256 "add272bb09e6384a4833ffca4896350fdb16e0ca22df68c0384773c67a175594" CACHE STRING "SHA-256 of the woff2 source tarball")
+set(TWIDGET_TEXT_BROTLI_VERSION 1.1.0)
+set(TWIDGET_TEXT_BROTLI_SHA256 "e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff" CACHE STRING "SHA-256 of the Brotli source tarball")
+foreach(_twt_dep OTS WOFF2 BROTLI)
+    if(NOT TWIDGET_TEXT_${_twt_dep} AND DEFINED ENV{TWIDGET_TEXT_${_twt_dep}})
+        set(TWIDGET_TEXT_${_twt_dep} "$ENV{TWIDGET_TEXT_${_twt_dep}}")
+    endif()
+endforeach()
+include(FetchContent)
+if(NOT TWIDGET_TEXT_OTS)
+    FetchContent_Declare(twt_ots_src
+        URL https://github.com/khaledhosny/ots/releases/download/v${TWIDGET_TEXT_OTS_VERSION}/ots-${TWIDGET_TEXT_OTS_VERSION}.tar.xz
+        URL_HASH SHA256=${TWIDGET_TEXT_OTS_SHA256})
+    FetchContent_Populate(twt_ots_src)
+    set(TWIDGET_TEXT_OTS "${twt_ots_src_SOURCE_DIR}")
+endif()
+if(NOT TWIDGET_TEXT_WOFF2)
+    FetchContent_Declare(twt_woff2_src
+        URL https://github.com/google/woff2/archive/v${TWIDGET_TEXT_WOFF2_VERSION}.tar.gz
+        URL_HASH SHA256=${TWIDGET_TEXT_WOFF2_SHA256})
+    FetchContent_Populate(twt_woff2_src)
+    set(TWIDGET_TEXT_WOFF2 "${twt_woff2_src_SOURCE_DIR}")
+endif()
+if(NOT TWIDGET_TEXT_BROTLI)
+    FetchContent_Declare(twt_brotli_src
+        URL https://github.com/google/brotli/archive/v${TWIDGET_TEXT_BROTLI_VERSION}.tar.gz
+        URL_HASH SHA256=${TWIDGET_TEXT_BROTLI_SHA256})
+    FetchContent_Populate(twt_brotli_src)
+    set(TWIDGET_TEXT_BROTLI "${twt_brotli_src_SOURCE_DIR}")
+endif()
+
+# Each source compiled through a one-line file in the build tree (as tw_harfbuzz: short object paths).
+function(twt_units out prefix dir)
+    set(_units)
+    foreach(_src IN LISTS ARGN)
+        string(MAKE_C_IDENTIFIER "${_src}" _id)
+        get_filename_component(_ext "${_src}" LAST_EXT)
+        set(_unit "${CMAKE_CURRENT_BINARY_DIR}/${prefix}_${_id}${_ext}")
+        set(_line "#include \"${dir}/${_src}\"\n")
+        set(_old "")
+        if(EXISTS "${_unit}")
+            file(READ "${_unit}" _old)
+        endif()
+        if(NOT "${_old}" STREQUAL "${_line}")
+            file(WRITE "${_unit}" "${_line}")
+        endif()
+        list(APPEND _units "${_unit}")
+    endforeach()
+    set(${out} ${_units} PARENT_SCOPE)
+endfunction()
+
+if(NOT TARGET twt_ots)
+    twt_units(_twt_brotli twt_brotli "${TWIDGET_TEXT_BROTLI}/c"
+        common/constants.c common/context.c common/dictionary.c common/platform.c common/shared_dictionary.c
+        common/transform.c dec/bit_reader.c dec/decode.c dec/huffman.c dec/state.c)
+    twt_units(_twt_woff2 twt_woff2 "${TWIDGET_TEXT_WOFF2}/src"
+        table_tags.cc variable_length.cc woff2_common.cc woff2_dec.cc woff2_out.cc)
+    file(GLOB _twt_ots_all RELATIVE "${TWIDGET_TEXT_OTS}/src" "${TWIDGET_TEXT_OTS}/src/*.cc")
+    list(REMOVE_ITEM _twt_ots_all feat.cc glat.cc gloc.cc sile.cc silf.cc sill.cc)  # Graphite
+    twt_units(_twt_ots twt_ots "${TWIDGET_TEXT_OTS}/src" ${_twt_ots_all})
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/twt_ots_config/config.h" "#define OTS_COLR_CYCLE_CHECK 1\n#define OTS_SYNTHESIZE_MISSING_GVAR 1\n")
+    add_library(twt_ots STATIC ${_twt_brotli} ${_twt_woff2} ${_twt_ots})
+    target_include_directories(twt_ots
+        PUBLIC "${TWIDGET_TEXT_OTS}/include"
+        PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/twt_ots_config" "${TWIDGET_TEXT_OTS}/src" "${TWIDGET_TEXT_WOFF2}/include"
+                "${TWIDGET_TEXT_WOFF2}/src" "${TWIDGET_TEXT_BROTLI}/c/include")
+    target_compile_definitions(twt_ots PRIVATE HAVE_CONFIG_H)
+    target_compile_options(twt_ots PRIVATE -O2 -w -fvisibility=hidden)
+    target_link_libraries(twt_ots PRIVATE twt_system)
+    set_target_properties(twt_ots PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 add_library(twidget_text STATIC "${CMAKE_CURRENT_SOURCE_DIR}/src/text_backend.cpp")
 add_library(twidget::text ALIAS twidget_text)
 target_include_directories(twidget_text PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src" "${TWT_ROOT}/core/src")
-target_link_libraries(twidget_text PUBLIC twt_system)
+target_link_libraries(twidget_text PUBLIC twt_system PRIVATE twt_ots)
 set_target_properties(twidget_text PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(twidget_text PUBLIC cxx_std_20)
 target_compile_options(twidget_text PRIVATE -Wall -Wextra -Wno-unused-parameter)
