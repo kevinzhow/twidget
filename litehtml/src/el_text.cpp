@@ -120,6 +120,54 @@ namespace
         }
     }
 
+    // Whether a character of vertical text is drawn upright: text-orientation upright, or mixed and upright by UAX #50
+    // (a Tr character only when its font has a vertical form).
+    bool drawn_upright(litehtml::document_container* container, litehtml::text_orientation orientation, char32_t cp,
+                       const std::string& glyph, litehtml::uint_ptr font)
+    {
+        using namespace litehtml;
+        return orientation == text_orientation_upright ||
+               (orientation == text_orientation_mixed && upright_in_vertical(cp) &&
+                (!turned_in_vertical(cp) || container->has_vertical_form(glyph.c_str(), font)));
+    }
+
+    // The code point at text[i], and its length in bytes.
+    char32_t code_point_at(const std::string& text, size_t i, size_t& n)
+    {
+        const unsigned char c0 = text[i];
+        n = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+        n = std::min(n, text.size() - i);
+        char32_t cp = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
+        for(size_t k = 1; k < n; k++)
+            cp = (cp << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
+        return cp;
+    }
+
+    // The advance of text[0, end) along a vertical line (text-orientation mixed or sideways): each upright character
+    // measured alone, as Blink shapes vertical text top to bottom with no pair kerning between them; each run of
+    // sideways characters as one horizontal run.
+    litehtml::pixel_t vertical_advance(litehtml::document_container* container, const std::string& text, size_t end,
+                                       litehtml::text_orientation orientation, litehtml::uint_ptr font)
+    {
+        using namespace litehtml;
+        pixel_t advance = 0_px;
+        size_t  run     = 0;  // start of the sideways run not measured yet
+        for(size_t i = 0, n = 0; i < end; i += n)
+        {
+            const char32_t    cp    = code_point_at(text, i, n);
+            const std::string glyph = text.substr(i, n);
+            if(!drawn_upright(container, orientation, cp, glyph, font))
+                continue;
+            if(i > run)
+                advance += container->text_width(text.substr(run, i - run).c_str(), font);
+            advance += container->text_width(glyph.c_str(), font);
+            run = i + n;
+        }
+        if(end > run)
+            advance += container->text_width(text.substr(run, end - run).c_str(), font);
+        return advance;
+    }
+
     // Vertical text (document::vertical()): the page's turn already makes a run sideways, so runs of sideways
     // characters are drawn as horizontal text is; each upright character is turned back about its em box's centre
     // and drawn with the font's vertical forms. The em box's centre is the line's central baseline.
@@ -170,7 +218,7 @@ namespace
         auto advance = [&](size_t end) {
             if(all_upright)
                 return fm.font_size * pixel_t(float(utf8_length(text.substr(0, end))));
-            return end ? container->text_width(text.substr(0, end).c_str(), font) : 0_px;
+            return vertical_advance(container, text, end, orientation, font);
         };
         auto flush   = [&](size_t end) {
             if(end <= run)
@@ -180,19 +228,11 @@ namespace
             at.width     = container->text_width(text.substr(run, end - run).c_str(), font);
             container->draw_text(hdc, text.substr(run, end - run).c_str(), font, color, at);
         };
-        for(size_t i = 0; i < text.size();)
+        for(size_t i = 0, n = 0; i < text.size();)
         {
-            const unsigned char c0 = text[i];
-            size_t n = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
-            n        = std::min(n, text.size() - i);
-            char32_t cp = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
-            for(size_t k = 1; k < n; k++)
-                cp = (cp << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
+            const char32_t    cp    = code_point_at(text, i, n);
             const std::string glyph = text.substr(i, n);
-            const bool up = orientation == text_orientation_upright ||
-                            (orientation == text_orientation_mixed && upright_in_vertical(cp) &&
-                             (!turned_in_vertical(cp) || container->has_vertical_form(glyph.c_str(), font)));
-            if(up)
+            if(drawn_upright(container, orientation, cp, glyph, font))
             {
                 flush(i);
                 const pixel_t     w     = container->text_width(glyph.c_str(), font);
@@ -388,8 +428,14 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
                 }
             }
             if(m_size.width < 0_px)
-                m_size.width = get_document()->container()->text_width(
-                    m_use_transformed ? m_transformed_text.c_str() : m_text.c_str(), font);
+            {
+                // Vertical text as draw_vertical places it: its upright characters not kerned.
+                const std::string& measured = m_use_transformed ? m_transformed_text : m_text;
+                m_size.width = el_parent->css().is_vertical_rl()
+                                   ? vertical_advance(get_document()->container(), measured, measured.size(),
+                                                      el_parent->css().get_text_orientation(), font)
+                                   : get_document()->container()->text_width(measured.c_str(), font);
+            }
             if(ends_with_soft_hyphen() && !el_parent->css().is_vertical_rl())
                 m_end_extra = get_document()->container()->text_width(hyphenated().c_str(), font) - m_size.width;
             if(el_parent->css().is_vertical_rl() && el_parent->css().combines_upright() && !is_white_space())
