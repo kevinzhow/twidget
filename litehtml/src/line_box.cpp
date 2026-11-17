@@ -201,6 +201,14 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
         add = true;
         break;
     }
+    if(add && item->get_type() == line_box_item::type_text_part)
+    {
+        // Punctuation compression: the line's first character is at a line's start (an opening bracket gives up its
+        // first half), after the text indent too.
+        auto part = std::dynamic_pointer_cast<render_text>(item->get_el());
+        if(part && !part->is_fragment && first_text_part(m_items.end()))
+            part->compress(cjk::line_start, cjk::line_middle);
+    }
     if(add)
     {
         item->place_to(m_left + m_width, m_top);
@@ -323,6 +331,28 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         m_height   = m_default_line_height.computed_value;
         m_baseline = m_font_metrics.base_line();
         return ret_items;
+    }
+
+    // Punctuation compression: a line that wraps (not before <br>, not the paragraph's last) ends at a line's end, where
+    // a closing bracket or 、。 gives up its second half; what follows it (inline ends) moves back with it.
+    if(!last_box && !finished_with_break)
+    {
+        for(auto it = m_items.rbegin(); it != m_items.rend(); ++it)
+        {
+            if((*it)->get_type() != line_box_item::type_text_part)
+                continue;
+            auto part = std::dynamic_pointer_cast<render_text>((*it)->get_el());
+            if(part && !part->is_fragment)
+            {
+                const pixel_t was = part->pos().width;
+                part->compress(first_text_part(std::next(it).base()) ? cjk::line_start : cjk::line_middle, cjk::line_end);
+                const pixel_t less = was - part->pos().width;
+                m_width -= less;
+                for(auto after = m_items.rbegin(); after != it; ++after)
+                    (*after)->pos().x -= less;
+            }
+            break;
+        }
     }
 
     // A line broken at a soft hyphen ends with a hyphen, which can_hold made room for (el_text::line_end_extra).
@@ -1009,6 +1039,14 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
         }
     }
 
+    return true;
+}
+
+bool litehtml::line_box::first_text_part(std::list<std::unique_ptr<line_box_item>>::const_iterator at) const
+{
+    for(auto it = m_items.begin(); it != at; ++it)
+        if((*it)->get_type() == line_box_item::type_text_part)
+            return false;
     return true;
 }
 

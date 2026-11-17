@@ -60,6 +60,11 @@ namespace litehtml
         /// vrt2). Without one, a character UAX #50 turns in vertical text (Tr: … ‥, brackets) is drawn sideways, as
         /// Blink draws it: a Latin font's … upright is three dots across the column.
         virtual bool has_vertical_form(const char* /*text*/, uint_ptr /*hFont*/) { return true; }
+        /// Whether the font `text` (one punctuation mark) is drawn with in `hFont` has a half-width form for it: OpenType
+        /// halt, or vhal for its upright vertical form when `vertical`. With one, a mark that punctuation compression
+        /// halves is drawn with that feature (css_properties::get_font_half); without, its full-width glyph is moved back
+        /// by the half it gives up.
+        virtual bool has_half_width_form(const char* /*text*/, uint_ptr /*hFont*/, bool /*vertical*/) { return false; }
         virtual bool text_used_extents(const char* /*text*/, uint_ptr /*hFont*/, pixel_t& /*ascent*/, pixel_t& /*descent*/) { return false; }
         virtual void               draw_text(litehtml::uint_ptr hdc, const char* text, litehtml::uint_ptr hFont,
                                              litehtml::web_color color, const litehtml::position& pos)              = 0;

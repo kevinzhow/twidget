@@ -709,6 +709,13 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
         font_metrics fm;
         m_font_upright = doc->get_font(upright, &fm);
     }
+    {
+        // Half-width punctuation marks (punctuation compression) take the font's own forms: halt across, vhal upright.
+        font_description half = descr;
+        half.features          = merge_font_features(descr.features, is_vertical_rl() ? "vert=1,vhal=1" : "halt=1");
+        font_metrics fm;
+        m_font_half = doc->get_font(half, &fm);
+    }
     m_font_emphasis = 0;
     if(!m_text_emphasis_style.empty() && m_text_emphasis_style != "none")
     {

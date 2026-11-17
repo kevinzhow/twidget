@@ -1010,6 +1010,31 @@ bool TextBackend::has_vertical_form(int font, const std::string& text) {
     return substituted;
 }
 
+bool TextBackend::has_half_width_form(int font, const std::string& text, bool vertical) {
+    const std::vector<Segment> faces = segments(font, text);
+    const std::vector<uint32_t> cps = utf8(text);
+    if (faces.empty() || !faces.front().face || cps.empty()) return false;
+    auto advance = [&](bool half) {
+        hb_buffer_t* buf = hb_buffer_create();
+        hb_buffer_add_codepoints(buf, cps.data(), int(cps.size()), 0, int(cps.size()));
+        hb_buffer_guess_segment_properties(buf);
+        if (vertical) hb_buffer_set_direction(buf, HB_DIRECTION_TTB);
+        const hb_feature_t features[] = {
+            {vertical ? HB_TAG('v', 'h', 'a', 'l') : HB_TAG('h', 'a', 'l', 't'), half ? 1u : 0u, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END},
+            {HB_TAG('v', 'e', 'r', 't'), 1, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END},
+        };
+        hb_shape(faces.front().face->font, buf, features, vertical ? 2 : 1);
+        unsigned n = 0;
+        const hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, &n);
+        int sum = 0;
+        for (unsigned i = 0; i < n; i++) sum += vertical ? -pos[i].y_advance : pos[i].x_advance;
+        hb_buffer_destroy(buf);
+        return sum;
+    };
+    const int half = advance(true);
+    return half > 0 && half < advance(false);
+}
+
 std::vector<TextBackend::Segment> TextBackend::segments(int font, const std::string& text) {
     std::vector<Segment> out;
     auto it = fonts_.find(font);

@@ -6,9 +6,8 @@
 #include <string>
 #include <vector>
 
-// The CJK line-composition rule set: what each character is to line breaking, to justification (and, for the steps to
-// come, to punctuation compression). Its tables are generated from stone_engine's (tools/cjk_rules); callers ask here
-// and never name stone.
+// The CJK line-composition rule set: what each character is to line breaking, to justification and to punctuation
+// compression. Its tables are generated from stone_engine's (tools/cjk_rules); callers ask here and never name stone.
 namespace litehtml::cjk
 {
     // A character's classes, one bit each; a character may have several, most have none.
@@ -50,6 +49,29 @@ namespace litehtml::cjk
     // The gaps between the characters of UTF-8 text that justify may widen: the byte offset of the character after
     // each, in order.
     std::vector<size_t> justifiable_gaps(const std::string& text);
+
+    // Where a character is on its line, for compression: a line's first character, the last character of a line that
+    // wraps (not one before a forced break, nor on a paragraph's last line), both, or neither.
+    enum line_position : uint8_t
+    {
+        line_middle = 0,
+        line_start  = 1 << 0,
+        line_end    = 1 << 1,
+    };
+
+    // What punctuation compression takes from a character: the part of its advance (of its em) before its glyph and
+    // after it, along the line.
+    struct trim
+    {
+        float start = 0;
+        float end   = 0;
+    };
+
+    // Punctuation compression of c between prev and next (0: none, as at a paragraph's start) at `at` (line_position
+    // bits): an opening bracket at a line's start or after another punctuation mark gives up its first half; a closing
+    // bracket or 、。 before a closing bracket, 、。 or a middle dot gives up its second half, and so does one ending a
+    // line that wraps. Nothing else is trimmed (・：； keep their ems).
+    trim compression(char32_t prev, char32_t c, char32_t next, uint8_t at);
 } // namespace litehtml::cjk
 
 #endif // LH_CJK_RULES_H

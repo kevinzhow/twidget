@@ -3,6 +3,7 @@
 
 #include "element.h"
 #include "document.h"
+#include "cjk_rules.h"
 
 namespace litehtml
 {
@@ -22,6 +23,18 @@ namespace litehtml
     /// its justifiable gaps (cjk::justifiable_gaps, render_text::justify_gap). A boundary at a gap is two places: the end
     /// of the character before it, and the start of the one after it (`after_gap`).
     pixel_t justify_shift(const std::string& text, size_t at, pixel_t gap, bool after_gap = true);
+
+    /// Punctuation compression of one character of a piece (cjk::compression): its byte in the piece's text, and the
+    /// pixels of its advance it gives up before its glyph and after it.
+    struct char_trim
+    {
+        size_t  at;
+        pixel_t start, end;
+    };
+
+    /// How much the characters of a piece before byte `at` give up (render_text::trims): the boundary at `at` is that
+    /// much nearer the piece's start.
+    pixel_t trim_shift(const std::vector<char_trim>& trims, size_t at);
 
     class el_text : public element
     {
@@ -80,6 +93,11 @@ namespace litehtml
         /// share of the shaped run, as its width is (with the kerning inside it, as the piece is drawn whole); otherwise
         /// (a fragment, the hyphenated end) measured alone.
         pixel_t advance_to(const std::string& shown, size_t bytes) const;
+        /// Punctuation compression of `shown` (its text) between `before` and `after`, the characters next to it in its
+        /// line's flow (0: none), its first and last characters at `first` and `last` (cjk::line_position): each trimmed
+        /// character, with its share of its advance (an em, upright in vertical text).
+        std::vector<char_trim> compression(const std::string& shown, char32_t before, char32_t after, uint8_t first,
+                                           uint8_t last) const;
         uint32_t source_pos() const { return m_src_pos; }
         uint32_t source_utf16() const { return m_src_utf16; }
         void compute_styles(bool recursive) override;

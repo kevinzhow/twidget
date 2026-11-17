@@ -269,6 +269,8 @@ namespace litehtml
         /// Visual order: a right to left line mirrored, and runs of the other direction turned back.
         void           reorder_bidi();
         bool           have_last_space() const;
+        /// Whether no text (nor inline box) comes before `at` on the line: only inline starts and ends.
+        bool           first_text_part(std::list<std::unique_ptr<line_box_item>>::const_iterator at) const;
         bool           is_break_only() const;
         static pixel_t calc_va_baseline(const va_context& current, vertical_align va, const font_metrics& new_font,
                                         pixel_t top, pixel_t bottom);

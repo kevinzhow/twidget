@@ -61,6 +61,7 @@ namespace litehtml
         writing_mode          m_writing_mode   = writing_mode_horizontal_tb;
         text_orientation      m_text_orientation = text_orientation_mixed;
         uint_ptr              m_font_upright   = 0;  // vertical text: the font with the vert feature, for upright glyphs
+        uint_ptr              m_font_half      = 0;  // the font with halt (vert and vhal in vertical text): half-width marks
         text_combine          m_text_combine   = text_combine_none;
         uint_ptr              m_font_emphasis  = 0;  // text-emphasis: the marks' font, half the size (vert in vertical text)
         font_metrics          m_emphasis_metrics;
@@ -213,6 +214,10 @@ namespace litehtml
         const font_metrics& get_emphasis_metrics() const { return m_emphasis_metrics; }
         /// The font upright glyphs of vertical text are drawn with: get_font() with OpenType vert (vertical forms).
         uint_ptr get_font_upright() const { return m_font_upright ? m_font_upright : get_font(); }
+        /// The font a mark that punctuation compression halves is drawn with when it has a half-width form
+        /// (document_container::has_half_width_form): get_font() with OpenType halt, or in vertical text the upright font
+        /// with vhal.
+        uint_ptr get_font_half() const { return m_font_half ? m_font_half : get_font(); }
         void set_overflow_wrap(overflow_wrap value) { m_overflow_wrap = value; }
         word_break get_word_break() const { return m_word_break; }
         void set_word_break(word_break value) { m_word_break = value; }

@@ -75,6 +75,21 @@ namespace litehtml::cjk
         return script_of(before) != script::latin || script_of(after) != script::latin;
     }
 
+    // stone_engine_js layout.ts punctuationTrim in its "stone" mode, halvesOpeningAfterPunctuation,
+    // halvesClosingBeforePunctuation and the line-end trim of goNextLineLrTb / goNextLineTbRl (manifest.json "mirrored").
+    // stone's "firstHalf" marks are closing | full_stop_comma, "secondHalf" opening, "quarter" middle_dot.
+    trim compression(char32_t prev, char32_t c, char32_t next, uint8_t at)
+    {
+        constexpr classes first_half  = closing | full_stop_comma;
+        constexpr classes punctuation = opening | first_half | middle_dot;
+        const classes     is          = classify(c);
+        if((is & opening) && ((at & line_start) || (classify(prev) & punctuation)))
+            return {0.5f, 0};
+        if((is & first_half) && ((classify(next) & (first_half | middle_dot)) || (at & line_end)))
+            return {0, 0.5f};
+        return {};
+    }
+
     std::vector<size_t> justifiable_gaps(const std::string& text)
     {
         std::vector<size_t> gaps;

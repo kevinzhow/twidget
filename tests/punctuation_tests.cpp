@@ -77,7 +77,7 @@ struct Stub : document_container {
     }
     void delete_font(uint_ptr) override {}
     pixel_t text_width(const char* text, uint_ptr) override { return pixel_t(16.0f * float(code_points(text).size())); }
-    bool has_half_width_form(const char*, uint_ptr, bool) { return half_forms; }
+    bool has_half_width_form(const char*, uint_ptr, bool) override { return half_forms; }
     void split_text(const char* text, const std::function<void(const char*)>& on_word,
                     const std::function<void(const char*)>& on_space) override {
         const std::string s = text;

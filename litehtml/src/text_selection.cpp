@@ -54,10 +54,10 @@ namespace litehtml
                     return;
                 position placed = ri->get_placement();
                 auto     item   = std::dynamic_pointer_cast<render_text>(ri);
-                auto add = [&](const std::string& shown, const position& box, pixel_t gap) {
+                auto add = [&](const std::string& shown, const position& box, pixel_t gap, const std::vector<char_trim>& trims) {
                     if(shown.empty())
                         return;
-                    m_runs.push_back({text, offset, shown, box, block, annotation, gap});
+                    m_runs.push_back({text, offset, shown, box, block, annotation, gap, trims});
                     offset += shown.size();
                 };
                 if(item && !item->fragments.empty())
@@ -67,11 +67,11 @@ namespace litehtml
                         position box  = fragment->pos();
                         box.x        += placed.x - ri->pos().x;
                         box.y        += placed.y - ri->pos().y;
-                        add(fragment->fragment_text, box, fragment->justify_gap);
+                        add(fragment->fragment_text, box, fragment->justify_gap, {});
                     }
                 } else
                 {
-                    add(text->display_text(), placed, item ? item->justify_gap : 0_px);
+                    add(text->display_text(), placed, item ? item->justify_gap : 0_px, item ? item->trims : std::vector<char_trim>());
                 }
             });
         };
@@ -110,7 +110,7 @@ namespace litehtml
         if(bytes >= run.shown.size())
             return run.box.width;
         const auto&   css    = run.text->parent()->css();
-        const pixel_t spread = justify_shift(run.shown, bytes, run.justify_gap, after_gap);
+        const pixel_t spread = justify_shift(run.shown, bytes, run.justify_gap, after_gap) - trim_shift(run.trims, bytes);
         if(css.is_vertical_rl() && css.get_text_orientation() == text_orientation_upright)
             return css.get_font_metrics().font_size * pixel_t(float(chars(run.shown, bytes))) + spread;
         return run.text->advance_to(run.shown, bytes) + spread;

@@ -59,6 +59,72 @@
           "name": "fontIdForChar",
           "in": "tools/cjk_rules/generate.py scripts() (no script: Latin)",
           "sha256": "e88f3b0b3fe365e88ec5bdfdd2b5b00b38277dc62191a73b75379e6837a764f8"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "punctuationTrim",
+          "in": "litehtml/src/cjk_rules.cpp cjk::compression (\"stone\" mode only; whole and half are not used)",
+          "sha256": "91c88f80fdfbd0add978ae4737af1243924df051935c3adb42c41ae18ca66e74"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "halvesOpeningAfterPunctuation",
+          "in": "litehtml/src/cjk_rules.cpp cjk::compression",
+          "sha256": "de8e76888ba02fa467bb2848e946019e911ab6c46e08f9824ced2d3daa3e7ee4"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "halvesClosingBeforePunctuation",
+          "in": "litehtml/src/cjk_rules.cpp cjk::compression",
+          "sha256": "40c3ca114082d8d7b57183e1fc306dbc03dcaed49b21ed5e5c300217ee7d0898"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "TRIM_FIRST_HALF",
+          "in": "litehtml/src/cjk_rules.cpp cjk::compression (trim::end 0.5)",
+          "sha256": "301b8ba3e8b141c0423e0bbb8de9b289b6356ff927fa2516e8d77e81d568ba30"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "TRIM_SECOND_HALF",
+          "in": "litehtml/src/cjk_rules.cpp cjk::compression (trim::start 0.5); el_text.cpp draw_justified / draw_vertical draw the glyph moved back by it, or with halt/vhal",
+          "sha256": "efb33bdc355bc4fa113d1befc8b8324853d63e7835762624a19dcac8870a8673"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "inlineExtentOfRun",
+          "in": "litehtml/src/render_inline_context.cpp place_inline (a piece's width with its mid-line trims, which line_box::can_hold fits)",
+          "sha256": "4bbd138fd5cb5ae14f107752af6f8c21aa6a118aaad3175e5b9f790fe10eee65"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "columnExtentOfRun",
+          "in": "litehtml/src/render_inline_context.cpp place_inline (as inlineExtentOfRun, in vertical text)",
+          "sha256": "c7e6a07fcc4ce5be4b1b421d4d149e18bf8586062c3ba576156f5a3cae4c7909"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "layoutRunLrTb",
+          "in": "litehtml/src/line_box.cpp line_box::add_item (a line's first character at line_start)",
+          "sha256": "3eb4868f15a77ea627af8fc06c5774641a8279d95a43fe74f91694f57cbb87e8"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "layoutRunTbRl",
+          "in": "litehtml/src/line_box.cpp line_box::add_item (as layoutRunLrTb, in vertical text)",
+          "sha256": "fea3bde241a3f52efe6aac20ed6b257b82553672b7499b723eaac7ef9e7f16ca"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "goNextLineLrTb",
+          "in": "litehtml/src/line_box.cpp line_box::finish (line_end, only on a line that wraps)",
+          "sha256": "8029d2023795602d34e8714dedc8a0a4a25e36bb88451704d14beedf4df6e9bd"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "goNextLineTbRl",
+          "in": "litehtml/src/line_box.cpp line_box::finish (as goNextLineLrTb, in vertical text)",
+          "sha256": "130ed8b2093fbec9cb4d29091041aae638485839d83fea271fe34af7520a368e"
         }
       ]
     },

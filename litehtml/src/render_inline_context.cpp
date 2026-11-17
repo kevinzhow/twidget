@@ -192,6 +192,57 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     inlines_iter.process(shared_from_this(), [&](const std::shared_ptr<render_item>& el, iterator_item_type item_type) {
         events.emplace_back(el, item_type);
     });
+    // Punctuation compression looks at the characters next to each text in the line's flow, across inline elements:
+    // a space is one; a run of white space with a segment break that the CJK rule removes is none (the texts meet); a
+    // <br>, an inline box (a ruby: its base text) or the block's edge ends the flow.
+    {
+        std::vector<size_t> kids;
+        for(size_t index = 0; index < events.size(); index++)
+            if(events[index].second == iterator_item_type_child)
+                kids.push_back(index);
+        std::vector<char32_t> first(kids.size()), last(kids.size());
+        std::vector<bool>     gone(kids.size(), false);
+        for(size_t k = 0; k < kids.size(); k++)
+        {
+            const auto& el = events[kids[k]].first->src_el();
+            first[k] = el->is_white_space() ? U' ' : edge_char(el, true);
+            last[k]  = el->is_white_space() ? U' ' : edge_char(el, false);
+        }
+        for(size_t k = 0; k < kids.size(); k++)
+        {
+            if(!cjk_breaks || !events[kids[k]].first->src_el()->is_white_space() || k == 0 || gone[k])
+                continue;
+            size_t end     = k;
+            bool   segment = false;
+            for(; end < kids.size() && events[kids[end]].first->src_el()->is_white_space(); end++)
+            {
+                std::string t;
+                events[kids[end]].first->src_el()->get_text(t);
+                segment = segment || t.find('\n') != std::string::npos;
+            }
+            if(segment && end < kids.size() && east_asian_wide(last[k - 1]) && east_asian_wide(first[end]))
+                for(size_t g = k; g < end; g++)
+                    gone[g] = true;
+        }
+        char32_t before = 0;
+        for(size_t k = 0; k < kids.size(); k++)
+        {
+            if(gone[k])
+                continue;
+            if(auto text = std::dynamic_pointer_cast<render_text>(events[kids[k]].first))
+            {
+                text->before = before;
+                text->after  = 0;
+                for(size_t n = k + 1; n < kids.size(); n++)
+                    if(!gone[n])
+                    {
+                        text->after = first[n];
+                        break;
+                    }
+            }
+            before = last[k];
+        }
+    }
     for(size_t index = 0; index < events.size(); index++)
     {
         const auto& el        = events[index].first;
@@ -692,9 +743,11 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
                 text_item->fragments.clear();
                 text_item->hyphen = false;
                 text_item->justify_gap = 0_px;
+                text_item->trims.clear();
                 litehtml::size sz;
                 item->get_el()->src_el()->get_content_size(sz, self_size.render_width);
                 item->get_el()->pos() = sz;
+                text_item->compress(cjk::line_middle, cjk::line_middle);
                 item->set_rendered_min_width(sz.width);
                 auto text = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el());
                 const auto wrapping = text_item->css().get_wrapping();
@@ -755,6 +808,8 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
                                 return;
                             }
                             text_item->pos() = sz;
+                            text_item->trims.clear();
+                            text_item->compress(cjk::line_middle, cjk::line_middle);
                         }
                     }
                 }

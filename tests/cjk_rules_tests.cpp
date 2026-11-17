@@ -149,7 +149,10 @@ int main() {
     };
     for (const auto& p : pairs) {
         const std::string a = p.a, b = p.b;
-        const std::string want = p.together ? together_tail + a + "@0,22 " + b + "@8,22" : together_tail + a + "@16,2 " + b + "@0,22";
+        // 「 starting the line gives up its first half (punctuation compression; the stub's font has no halt, so its
+        // full-width glyph is drawn half an em back).
+        const std::string line2 = a == "「" ? a + "@-4,22 " + b + "@4,22" : a + "@0,22 " + b + "@8,22";
+        const std::string want = p.together ? together_tail + line2 : together_tail + a + "@16,2 " + b + "@0,22";
         const std::string got = layout("24px", kan + kan + "<span>" + a + "</span>" + b);
         check(got == want, std::string(p.why) + " across </span>: " + got);
     }
@@ -157,7 +160,7 @@ int main() {
     std::string got = layout("24px", kan + kan + "サ<span>ー</span>");
     check(got == together_tail + "サ@0,22 ー@8,22", "ー does not start a line across <span>: " + got);
     got = layout("24px", kan + kan + "<b><i>「</i></b><span>あ</span>");
-    check(got == together_tail + "「@0,22 あ@8,22", "「 does not end a line across </i></b><span>: " + got);
+    check(got == together_tail + "「@-4,22 あ@4,22", "「 does not end a line across </i></b><span>: " + got);
     // A space after the element is no character the next line would start with: the line breaks there as before.
     got = layout("16px", "一<span>二</span> 三");
     check(got == "一@0,2 二@8,2 三@0,22", "a space after an element: " + got);
@@ -202,6 +205,31 @@ int main() {
         char what[96];
         std::snprintf(what, sizeof what, "justifiable_gap(U+%04X, U+%04X) == %s", unsigned(a), unsigned(b), widens ? "true" : "false");
         check(justifiable_gap(a, b) == widens, what);
+    }
+
+    // Punctuation compression (stone's "stone" mode): the part of the em before and after the glyph a mark gives up.
+    struct Trim {
+        char32_t prev, c, next;
+        uint8_t at;
+        float start, end;
+    };
+    const Trim trims[] = {
+        {0, U'「', U'あ', line_start, 0.5f, 0},       {U'あ', U'「', U'あ', line_middle, 0, 0},
+        {U'。', U'「', U'あ', line_middle, 0.5f, 0},  {U'」', U'（', U'あ', line_middle, 0.5f, 0},
+        {U'・', U'「', U'あ', line_middle, 0.5f, 0},  {U'「', U'「', U'あ', line_middle, 0.5f, 0},
+        {U'　', U'「', U'あ', line_middle, 0, 0},      {U'？', U'「', U'あ', line_middle, 0, 0},
+        {U'あ', U'」', U'。', line_middle, 0, 0.5f},  {U'あ', U'。', U'」', line_middle, 0, 0.5f},
+        {U'あ', U'」', U'・', line_middle, 0, 0.5f},  {U'あ', U'」', U'「', line_middle, 0, 0},
+        {U'あ', U'、', U'あ', line_middle, 0, 0},      {U'あ', U'。', 0, line_end, 0, 0.5f},
+        {U'あ', U'」', 0, line_end, 0, 0.5f},         {U'あ', U'・', U'あ', line_start | line_end, 0, 0},
+        {U'あ', U'？', U'　', line_end, 0, 0},         {U'あ', U'漢', U'。', line_start, 0, 0},
+    };
+    for (auto [prev, c, next, at, start, end] : trims) {
+        const cjk::trim t = compression(prev, c, next, at);
+        char what[128];
+        std::snprintf(what, sizeof what, "compression(U+%04X, U+%04X, U+%04X, %d) == {%g, %g}: {%g, %g}", unsigned(prev),
+                      unsigned(c), unsigned(next), int(at), start, end, t.start, t.end);
+        check(t.start == start && t.end == end, what);
     }
 
     std::printf("%d failure(s)\n", failures);

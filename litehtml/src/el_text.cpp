@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace
 {
@@ -20,29 +21,64 @@ namespace
         return n;
     }
 
-    // Horizontal text from pos, each run between two of its justifiable gaps drawn alone, gap further on than the one
-    // before it (render_text::justify_gap; all of it at once when there is none).
+    // Where text is drawn in parts: at each gap justify widens (render_text::justify_gap), and around each character
+    // punctuation compression trims (render_text::trims), so that it is drawn alone.
+    std::vector<size_t> cuts(const std::string& text, litehtml::pixel_t gap, const std::vector<litehtml::char_trim>& trims)
+    {
+        using namespace litehtml;
+        std::vector<size_t> out = gap != 0_px ? cjk::justifiable_gaps(text) : std::vector<size_t>();
+        for(const auto& t : trims)
+        {
+            const unsigned char c0 = text[t.at];
+            out.push_back(t.at);
+            out.push_back(t.at + (c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4));
+        }
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        out.erase(std::remove_if(out.begin(), out.end(), [&](size_t at) { return at == 0 || at >= text.size(); }), out.end());
+        return out;
+    }
+
+    // The trim of the character at byte `at` (render_text::trims), or none.
+    const litehtml::char_trim* trim_at(const std::vector<litehtml::char_trim>& trims, size_t at)
+    {
+        for(const auto& t : trims)
+            if(t.at == at)
+                return &t;
+        return nullptr;
+    }
+
+    // Horizontal text from pos, gap further on at each justifiable gap (render_text::justify_gap) and nearer by what
+    // punctuation compression trims (render_text::trims); a trimmed mark drawn alone, with the font's half-width form
+    // (`half`) when it has one, else full width moved back by the half it gives up.
     void draw_justified(const litehtml::el_text& el, litehtml::uint_ptr hdc, const std::string& text,
-                        litehtml::uint_ptr font, litehtml::web_color color, const litehtml::position& pos,
-                        litehtml::pixel_t gap)
+                        litehtml::uint_ptr font, litehtml::uint_ptr half, litehtml::web_color color,
+                        const litehtml::position& pos, litehtml::pixel_t gap, const std::vector<litehtml::char_trim>& trims)
     {
         using namespace litehtml;
         auto* container = el.get_document()->container();
-        const std::vector<size_t> gaps = gap != 0_px ? cjk::justifiable_gaps(text) : std::vector<size_t>();
-        if(gaps.empty())
+        const std::vector<size_t> parts = cuts(text, gap, trims);
+        if(parts.empty() && trims.empty())
         {
             container->draw_text(hdc, text.c_str(), font, color, pos);
             return;
         }
         for(size_t k = 0, from = 0; from < text.size(); k++)
         {
-            const size_t      to   = k < gaps.size() ? gaps[k] : text.size();
+            const size_t      to   = k < parts.size() ? parts[k] : text.size();
             const std::string part = text.substr(from, to - from);
             position          at   = pos;
-            if(from > 0)
-                at.x += el.advance_to(text, from) + gap * pixel_t(float(k));
-            at.width = container->text_width(part.c_str(), font);
-            container->draw_text(hdc, part.c_str(), font, color, at);
+            uint_ptr          f    = font;
+            at.x += el.advance_to(text, from) + justify_shift(text, from, gap) - trim_shift(trims, from);
+            if(const char_trim* t = trim_at(trims, from))
+            {
+                if(container->has_half_width_form(part.c_str(), font, false))
+                    f = half;
+                else
+                    at.x -= t->start;
+            }
+            at.width = container->text_width(part.c_str(), f);
+            container->draw_text(hdc, part.c_str(), f, color, at);
             from = to;
         }
     }
@@ -90,7 +126,7 @@ namespace
     // marks go on the right (over) and stand upright. Line boxes do not grow for them (they use the leading).
     void draw_emphasis(litehtml::document* doc, litehtml::uint_ptr hdc, const std::string& text,
                        const litehtml::css_properties& css, const litehtml::position& pos, bool vertical,
-                       litehtml::pixel_t gap)
+                       litehtml::pixel_t gap, const std::vector<litehtml::char_trim>& trims)
     {
         using namespace litehtml;
         const uint_ptr mark_font = css.get_font_emphasis();
@@ -131,7 +167,7 @@ namespace
                     x0 = i ? container->text_width(text.substr(0, i).c_str(), css.get_font()) : 0_px;
                     w  = container->text_width(text.substr(i, n).c_str(), css.get_font());
                 }
-                x0 += justify_shift(text, i, gap);
+                x0 += justify_shift(text, i, gap) - trim_shift(trims, i);
                 const pixel_t cx = pos.x + x0 + w / 2_px;
                 position      at(cx - mark_w / 2_px, mark_top, mark_w, mm.height);
                 if(vertical)
@@ -204,7 +240,7 @@ namespace
     // and drawn with the font's vertical forms. The em box's centre is the line's central baseline.
     void draw_vertical(litehtml::document* doc, litehtml::uint_ptr hdc, const std::string& text,
                        const litehtml::css_properties& css, litehtml::web_color color, const litehtml::position& pos,
-                       litehtml::pixel_t gap)
+                       litehtml::pixel_t gap, const std::vector<litehtml::char_trim>& trims)
     {
         using namespace litehtml;
         auto*               container   = doc->container();
@@ -247,22 +283,26 @@ namespace
         size_t              run         = 0;  // start of the sideways run not drawn yet
         // text-orientation: upright gives each character an em (el_text::compute_styles); mixed keeps the advances.
         const bool all_upright = orientation == text_orientation_upright;
-        // Justified, the characters are that much further apart at their gaps (render_text::justify_gap).
-        const std::vector<size_t> gaps = gap != 0_px ? cjk::justifiable_gaps(text) : std::vector<size_t>();
+        // Justified, the characters are that much further apart at their gaps (render_text::justify_gap); compressed,
+        // nearer by what the marks before them give up (render_text::trims).
+        const std::vector<size_t> parts = cuts(text, gap, trims);
         auto advance = [&](size_t end) {
-            const pixel_t spread = justify_shift(text, end, gap);
+            const pixel_t spread = justify_shift(text, end, gap) - trim_shift(trims, end);
             if(all_upright)
                 return fm.font_size * pixel_t(float(utf8_length(text.substr(0, end)))) + spread;
             return vertical_advance(container, text, end, orientation, font) + spread;
         };
-        // A sideways run is drawn a piece between two gaps at a time.
+        // A sideways run is drawn a piece between two gaps (or around a trimmed mark: full width, moved back by the
+        // half it gives up) at a time.
         auto flush = [&](size_t end) {
             for(size_t from = run; from < end;)
             {
-                auto          next = std::upper_bound(gaps.begin(), gaps.end(), from);
-                const size_t  to   = next != gaps.end() && *next < end ? *next : end;
+                auto          next = std::upper_bound(parts.begin(), parts.end(), from);
+                const size_t  to   = next != parts.end() && *next < end ? *next : end;
                 position      at   = pos;
                 at.x              += advance(from);
+                if(const char_trim* t = trim_at(trims, from))
+                    at.x -= t->start;
                 at.width           = container->text_width(text.substr(from, to - from).c_str(), font);
                 container->draw_text(hdc, text.substr(from, to - from).c_str(), font, color, at);
                 from = to;
@@ -275,13 +315,24 @@ namespace
             if(drawn_upright(container, orientation, cp, glyph, font))
             {
                 flush(i);
+                // A trimmed mark: the font's half-width form (vhal) where its em box starts, else its full-width
+                // form moved back by the half it gives up.
+                uint_ptr          f     = upright;
+                pixel_t           back  = 0_px;
+                if(const char_trim* t = trim_at(trims, i))
+                {
+                    if(container->has_half_width_form(glyph.c_str(), font, true))
+                        f = css.get_font_half();
+                    else
+                        back = t->start;
+                }
                 const pixel_t     w     = container->text_width(glyph.c_str(), font);
-                const pixel_t     cx    = pos.x + advance(i) + (all_upright ? fm.font_size : w) / 2_px;
+                const pixel_t     cx    = pos.x + advance(i) - back + (all_upright ? fm.font_size : w) / 2_px;
                 paint_group       group;
                 group.matrix = upright_matrix(float(cx), float(cy));
                 group.bounds = position(cx - w / 2_px, pos.y, w, pos.height);
                 container->begin_group(hdc, group);
-                container->draw_text(hdc, glyph.c_str(), upright, color, position(cx - w / 2_px, pos.y, w, pos.height));
+                container->draw_text(hdc, glyph.c_str(), f, color, position(cx - w / 2_px, pos.y, w, pos.height));
                 container->end_group(hdc);
                 run = i + n;
             }
@@ -557,6 +608,8 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
                 web_color color = el_parent->css().get_color();
                 const std::string& shown = text_item && text_item->is_fragment ? text_item->fragment_text : display_text();
                 const pixel_t      gap   = text_item ? text_item->justify_gap : 0_px;
+                static const std::vector<char_trim> none;
+                const auto&        trims = text_item && !text_item->is_fragment ? text_item->trims : none;
                 if(text_item && text_item->cut >= 0)
                 {
                     // text-overflow: ellipsis cut it (render_item_inline_context::apply_ellipsis).
@@ -564,15 +617,15 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
                         doc->container()->draw_text(hdc, shown.substr(0, text_item->cut).c_str(), font, color, pos);
                 } else if(doc->vertical() && el_parent->css().is_vertical_rl())
                 {
-                    draw_vertical(doc, hdc, shown, el_parent->css(), color, pos, gap);
-                    draw_emphasis(doc, hdc, shown, el_parent->css(), pos, true, gap);
+                    draw_vertical(doc, hdc, shown, el_parent->css(), color, pos, gap, trims);
+                    draw_emphasis(doc, hdc, shown, el_parent->css(), pos, true, gap, trims);
                 } else if(text_item && text_item->hyphen)
                 {
-                    draw_justified(*this, hdc, hyphenated(), font, color, pos, gap);
+                    draw_justified(*this, hdc, hyphenated(), font, el_parent->css().get_font_half(), color, pos, gap, trims);
                 } else
                 {
-                    draw_justified(*this, hdc, shown, font, color, pos, gap);
-                    draw_emphasis(doc, hdc, shown, el_parent->css(), pos, false, gap);
+                    draw_justified(*this, hdc, shown, font, el_parent->css().get_font_half(), color, pos, gap, trims);
+                    draw_emphasis(doc, hdc, shown, el_parent->css(), pos, false, gap, trims);
                 }
             }
         }
@@ -603,6 +656,55 @@ litehtml::pixel_t litehtml::justify_shift(const std::string& text, size_t at, pi
     const std::vector<size_t> gaps = cjk::justifiable_gaps(text);
     const auto end = after_gap ? std::upper_bound(gaps.begin(), gaps.end(), at) : std::lower_bound(gaps.begin(), gaps.end(), at);
     return gap * pixel_t(float(end - gaps.begin()));
+}
+
+litehtml::pixel_t litehtml::trim_shift(const std::vector<char_trim>& trims, size_t at)
+{
+    pixel_t shift = 0_px;
+    for(const auto& t : trims)
+        if(t.at < at)
+            shift += t.start + t.end;
+    return shift;
+}
+
+std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::string& shown, char32_t before, char32_t after,
+                                                                uint8_t first, uint8_t last) const
+{
+    std::vector<char_trim> out;
+    element::ptr           el_parent = parent();
+    if(!el_parent || shown.empty() || (el_parent->css().is_vertical_rl() && el_parent->css().combines_upright()))
+        return out;
+    const css_properties& css = el_parent->css();
+    std::vector<std::pair<size_t, char32_t>> chars;
+    for(size_t i = 0, n = 0; i < shown.size(); i += n)
+        chars.push_back({i, code_point_at(shown, i, n)});
+    for(size_t k = 0; k < chars.size(); k++)
+    {
+        const char32_t prev = k ? chars[k - 1].second : before;
+        const char32_t next = k + 1 < chars.size() ? chars[k + 1].second : after;
+        const uint8_t  at   = (k == 0 ? first : 0) | (k + 1 == chars.size() ? last : 0);
+        const cjk::trim t   = cjk::compression(prev, chars[k].second, next, at);
+        if(t.start == 0 && t.end == 0)
+            continue;
+        const size_t  from    = chars[k].first;
+        const size_t  to      = k + 1 < chars.size() ? chars[k + 1].first : shown.size();
+        const pixel_t advance = css.is_vertical_rl() && css.get_text_orientation() == text_orientation_upright
+                                    ? css.get_font_metrics().font_size
+                                    : get_document()->container()->text_width(shown.substr(from, to - from).c_str(), css.get_font());
+        out.push_back({from, advance * pixel_t(t.start), advance * pixel_t(t.end)});
+    }
+    return out;
+}
+
+void litehtml::render_text::compress(uint8_t first, uint8_t last)
+{
+    const pixel_t was  = trim_shift(trims, SIZE_MAX);
+    auto          text = std::dynamic_pointer_cast<el_text>(src_el());
+    if(text && !is_fragment && !text->is_white_space() && !text->is_break())
+        trims = text->compression(text->display_text(), before, after, first, last);
+    else
+        trims.clear();
+    pos().width += was - trim_shift(trims, SIZE_MAX);
 }
 
 std::string litehtml::el_text::dump_get_name()

@@ -3,6 +3,7 @@
 
 #include "render_item.h"
 #include "types.h"
+#include "el_text.h"
 
 namespace litehtml
 {
@@ -93,6 +94,15 @@ namespace litehtml
         // (cjk::justifiable_gaps; line_box::finish): its characters are drawn and selected that far apart, and its
         // width has them.
         pixel_t justify_gap = 0_px;
+        // Punctuation compression (cjk::compression): what its characters give up of their advances, in byte order; its
+        // width is less by their sum. The characters next to it in its line's flow decide it (before, after; 0: none, at a
+        // paragraph's edge, a <br> or an inline box), and where it is on its line: render_item_inline_context::place_inline
+        // sets it in the middle of a line, line_box trims it again as a line's first and as a wrapped line's last.
+        std::vector<char_trim> trims;
+        char32_t               before = 0, after = 0;
+
+        // Sets its trims for its first and last characters at `first` and `last` (cjk::line_position), its width with them.
+        void compress(uint8_t first, uint8_t last);
 
         explicit render_text(std::shared_ptr<element> src_el) :
             render_item_inline(std::move(src_el))

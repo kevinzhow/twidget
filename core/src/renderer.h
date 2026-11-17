@@ -566,6 +566,7 @@ private:
         bool selectable = false;
         bool line_break = false;
         float justify_gap = 0;  // text-align: justify's at each gap between its characters (render_text::justify_gap)
+        std::vector<std::pair<size_t, float>> trims;  // punctuation compression: each trimmed character's byte, what it gives up
         mutable std::unordered_map<size_t, float> advances;  // measured so far, by byte count
         // Where the last paint drew it: the groups' transform over the box, in the promoted layer `layer`
         // (0, the document). A run not drawn yet is taken where layout put it.
