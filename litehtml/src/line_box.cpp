@@ -4,6 +4,7 @@
 #include "render_item.h"
 #include "document.h"
 #include "el_text.h"
+#include "render_inline.h"
 #include "document_container.h"
 #include "types.h"
 #include <algorithm>
@@ -322,6 +323,28 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         return ret_items;
     }
 
+    // A line broken at a soft hyphen ends with a hyphen, which can_hold made room for (el_text::line_end_extra).
+    if(!last_box)
+    {
+        for(auto it = m_items.rbegin(); it != m_items.rend(); ++it)
+        {
+            if((*it)->get_type() != line_box_item::type_text_part)
+                continue;
+            auto part = std::dynamic_pointer_cast<render_text>((*it)->get_el());
+            auto text = part && !part->is_fragment ? dynamic_cast<const el_text*>(part->src_el().get()) : nullptr;
+            if(text && text->ends_with_soft_hyphen())
+            {
+                const pixel_t extra = text->line_end_extra();
+                part->hyphen = true;
+                part->pos().width += extra;
+                m_width += extra;
+                for(auto after = m_items.rbegin(); after != it; ++after)
+                    (*after)->pos().x += extra;
+            }
+            break;
+        }
+    }
+
     pixel_t spacing_x = 0_px; // Number of pixels to distribute between elements
     pixel_t shift_x   = 0_px; // Shift elements by X to apply the text-align
 
@@ -363,9 +386,22 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         shift_x = 0_px;
     }
 
+    // Justified, the space goes between the items, but not after a soft hyphen: the word goes on there.
+    const auto inside_word = [](const std::unique_ptr<line_box_item>& item) {
+        auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get());
+        return item->get_type() == line_box_item::type_text_part && text && text->ends_with_soft_hyphen();
+    };
+    int gaps = 0;
+    for(auto it = m_items.begin(); it != m_items.end() && std::next(it) != m_items.end(); ++it)
+        if(!inside_word(*it))
+            gaps++;
+    if(gaps == 0 && m_items.size() > 1)
+        spacing_x = 0_px;  // one word broken at soft hyphens: nowhere to put the space
+
     int   counter = 0;
-    float offj    = static_cast<float>(spacing_x) / std::max(1.f, static_cast<float>(m_items.size()) - 1.f);
+    float offj    = static_cast<float>(spacing_x) / std::max(1.f, static_cast<float>(gaps));
     float cixx    = 0.0f;
+    const std::unique_ptr<line_box_item>* previous = nullptr;
 
     std::optional<pixel_t> line_height;
 
@@ -423,13 +459,15 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         m_rendered_width.min_width      = std::max(m_rendered_width.min_width, lbi->get_rendered_min_width());
         if(spacing_x != 0_px && counter)
         {
-            cixx += offj;
+            if(!inside_word(*previous))
+                cixx += offj;
             if((counter + 1) == static_cast<int>(m_items.size()))
             {
                 cixx += 0.99f;
             }
             lbi->pos().x += pixel_t(cixx);
         }
+        previous = &lbi;
         counter++;
         if((align == text_align_right || spacing_x != 0_px) && counter == static_cast<int>(m_items.size()))
         {

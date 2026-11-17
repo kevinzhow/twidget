@@ -686,6 +686,7 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
             if(text_item && !text_item->is_fragment)
             {
                 text_item->fragments.clear();
+                text_item->hyphen = false;
                 litehtml::size sz;
                 item->get_el()->src_el()->get_content_size(sz, self_size.render_width);
                 item->get_el()->pos() = sz;

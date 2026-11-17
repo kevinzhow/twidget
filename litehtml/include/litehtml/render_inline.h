@@ -87,6 +87,8 @@ namespace litehtml
         bool is_fragment = false;
         // text-overflow: ellipsis: how many bytes of the text are drawn; -1 all of them.
         int cut = -1;
+        // The line breaks at its soft hyphen: it is drawn with a hyphen (line_box::finish).
+        bool hyphen = false;
 
         explicit render_text(std::shared_ptr<element> src_el) :
             render_item_inline(std::move(src_el))

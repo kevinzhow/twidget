@@ -389,6 +389,8 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
             if(m_size.width < 0_px)
                 m_size.width = get_document()->container()->text_width(
                     m_use_transformed ? m_transformed_text.c_str() : m_text.c_str(), font);
+            if(ends_with_soft_hyphen() && !el_parent->css().is_vertical_rl())
+                m_end_extra = get_document()->container()->text_width(hyphenated().c_str(), font) - m_size.width;
             if(el_parent->css().is_vertical_rl() && el_parent->css().combines_upright() && !is_white_space())
             {
                 // 縦中横: the run sits upright in one em of the column.
@@ -476,6 +478,9 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
                 {
                     draw_vertical(doc, hdc, shown, el_parent->css(), color, pos);
                     draw_emphasis(doc, hdc, shown, el_parent->css(), pos, true);
+                } else if(text_item && text_item->hyphen)
+                {
+                    doc->container()->draw_text(hdc, hyphenated().c_str(), font, color, pos);
                 } else
                 {
                     doc->container()->draw_text(hdc, shown.c_str(), font, color, pos);

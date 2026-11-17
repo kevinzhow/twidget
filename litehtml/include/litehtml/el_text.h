@@ -59,8 +59,18 @@ namespace litehtml
             m_run_end   = end;
             m_measured_font = 0;
         }
-        /// What this piece takes more than its width when it ends a line (0 when measured alone).
+        /// What this piece takes more than its width when it ends a line: its kerning with the next piece, and a hyphen
+        /// after a soft hyphen.
         pixel_t line_end_extra() const { return m_end_extra; }
+        /// Whether it ends with a soft hyphen (U+00AD): a break opportunity, drawn as a hyphen when the line breaks there.
+        bool ends_with_soft_hyphen() const
+        {
+            const std::string& shown = display_text();
+            return shown.size() >= 2 && shown.compare(shown.size() - 2, 2, "\xC2\xAD") == 0;
+        }
+        /// What a line broken at its soft hyphen draws: a hyphen-minus for it (a glyph every Latin font has, where
+        /// Blink takes U+2010 when the font has one).
+        std::string hyphenated() const { return display_text().substr(0, display_text().size() - 2) + "-"; }
         uint32_t source_pos() const { return m_src_pos; }
         uint32_t source_utf16() const { return m_src_utf16; }
         void compute_styles(bool recursive) override;
