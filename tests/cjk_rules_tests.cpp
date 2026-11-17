@@ -117,6 +117,19 @@ std::string layout(const std::string& width, const std::string& html) {
     return out;
 }
 
+// Where a piece with exactly this text was drawn ("x,y"), or "" when none was.
+std::string drawn_at(const std::string& draws, const std::string& text) {
+    for (size_t at = 0; at <= draws.size();) {
+        size_t end = draws.find(' ', at);
+        if (end == std::string::npos) end = draws.size();
+        const std::string piece = draws.substr(at, end - at);
+        const size_t sign = piece.rfind('@');
+        if (sign != std::string::npos && piece.substr(0, sign) == text) return piece.substr(sign + 1);
+        at = end + 1;
+    }
+    return "";
+}
+
 } // namespace
 
 int main() {
@@ -164,6 +177,34 @@ int main() {
     // A space after the element is no character the next line would start with: the line breaks there as before.
     got = layout("16px", "一<span>二</span> 三");
     check(got == "一@0,2 二@8,2 三@0,22", "a space after an element: " + got);
+    // A ruby's base text is the character on its side of the boundary (草枕: <ruby>仕切<rt>しき</rt></ruby>って must not
+    // start a line with っ). Each case: whether the two pieces are on one line, and whether the second starts it.
+    auto line_of = [](const std::string& xy) { return xy.substr(xy.find(',') + 1); };
+    auto x_of = [](const std::string& xy) { return xy.substr(0, xy.find(',')); };
+    struct Ruby {
+        const char* html;
+        const char* first;
+        const char* second;
+        const char* why;
+    };
+    const Ruby rubies[] = {
+        {"<ruby>仕切<rt>しき</rt></ruby>って", "仕", "っ", "small っ does not start a line after a ruby (仕切|って)"},
+        {"<ruby>仕切<rt>しき</rt></ruby>ー", "仕", "ー", "ー does not start a line after a ruby"},
+        {"<ruby>仕切<rt>しき</rt></ruby>。", "仕", "。", "。 does not start a line after a ruby"},
+        {"<ruby>仕切<rt>しき</rt></ruby><span>っ</span>", "仕", "っ", "small っ does not start a line after a ruby, across <span>"},
+        {"「<ruby>仕切<rt>しき</rt></ruby>", "「", "仕", "「 does not end a line before a ruby"},
+        {"<span>「</span><ruby>仕切<rt>しき</rt></ruby>", "「", "仕", "「 does not end a line before a ruby, across </span>"},
+    };
+    for (const auto& r : rubies) {
+        // 漢 then the pair in a line 3 characters wide: the pair does not fit after 漢.
+        got = layout("24px", kan + r.html);
+        const std::string a = drawn_at(got, r.first), b = drawn_at(got, r.second);
+        check(!a.empty() && !b.empty() && line_of(a) == line_of(b) && x_of(b) != "0", std::string(r.why) + ": " + got);
+    }
+    // A break stays allowed where the rule set allows one: after a ruby before a kanji.
+    got = layout("24px", kan + kan + "<ruby>仕<rt>し</rt></ruby>字");
+    check(line_of(drawn_at(got, "仕")) != line_of(drawn_at(got, "字")) && x_of(drawn_at(got, "字")) == "0",
+          "a line may break between a ruby and a kanji: " + got);
 
     // The classes the steps after line breaking (justify, punctuation compression) read.
     using namespace litehtml::cjk;
