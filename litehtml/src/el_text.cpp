@@ -458,6 +458,7 @@ void litehtml::el_text::set_text(const std::string& text)
     m_size            = size();
     m_measured_font   = 0;
     m_breaker.reset();
+    m_hyphenation.reset();
     mark_layout_dirty();
     m_css = unstyled_text_css();
 }
@@ -465,6 +466,7 @@ void litehtml::el_text::set_text(const std::string& text)
 void litehtml::el_text::compute_styles(bool /*recursive*/)
 {
     mark_layout_dirty();
+    m_hyphenation.reset();
     element::ptr el_parent = parent();
     // Every text child of an element has the same style: the parent's text_css(), one object for all of them.
     if(el_parent)
@@ -579,12 +581,59 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
                                    : get_document()->container()->text_width(measured.c_str(), font);
             }
             if(ends_with_soft_hyphen() && !el_parent->css().is_vertical_rl())
-                m_end_extra = get_document()->container()->text_width(hyphenated().c_str(), font) - m_size.width;
+                m_end_extra = get_document()->container()->text_width(hyphenated(display_text()).c_str(), font) - m_size.width;
             m_measured_font      = font;
             m_measured_transform = transform;
         }
     }
     m_draw_spaces = fm.draw_spaces;
+}
+
+const std::vector<size_t>& litehtml::el_text::hyphenation_points()
+{
+    if(m_hyphenation)
+        return *m_hyphenation;
+    m_hyphenation.emplace();
+    element::ptr el_parent = parent();
+    if(!el_parent || is_white_space() || is_break() || el_parent->css().is_vertical_rl())
+        return *m_hyphenation;
+    const css_properties& css   = el_parent->css();
+    document_container*   cont  = get_document()->container();
+    const bool            on    = css.get_hyphens() == hyphens_auto ||
+                                  (css.get_hyphens() == hyphens_initial && css.get_text_align() == text_align_justify &&
+                                   cont->hyphenate_justified());
+    const std::string&    shown = display_text();
+    if(!on || shown.find("\xC2\xAD") != std::string::npos)
+        return *m_hyphenation;
+    // A whole word only: after a space, an element's start or a dash; not the rest of a word after a soft hyphen, nor
+    // the part of a URL after its / (the piece before this one ends there).
+    const auto& siblings = el_parent->children();
+    auto        self     = std::find_if(siblings.begin(), siblings.end(), [this](const element::ptr& e) { return e.get() == this; });
+    if(self != siblings.begin() && self != siblings.end())
+        if(auto before = std::dynamic_pointer_cast<el_text>(*std::prev(self)); before && !before->is_white_space())
+        {
+            const std::string& prev = before->display_text();
+            const bool dash = (!prev.empty() && prev.back() == '-') ||
+                              (prev.size() >= 3 && prev.compare(prev.size() - 3, 2, "\xE2\x80") == 0 &&
+                               (prev.back() == '\x90' || prev.back() == '\x93' || prev.back() == '\x94'));
+            if(!dash)
+                return *m_hyphenation;
+        }
+    // The language: the nearest lang or xml:lang (an empty one says it is unknown).
+    std::string language;
+    for(element::ptr el = el_parent; el; el = el->parent())
+    {
+        const char* lang = el->get_attr("lang");
+        if(!lang)
+            lang = el->get_attr("xml:lang");
+        if(lang)
+        {
+            language = lang;
+            break;
+        }
+    }
+    cont->hyphenate(shown, language, *m_hyphenation);
+    return *m_hyphenation;
 }
 
 std::shared_ptr<litehtml::text_breaker> litehtml::el_text::breaker()
@@ -665,7 +714,7 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
                     draw_emphasis(doc, hdc, shown, el_parent->css(), pos, true, gap, trims, tcy);
                 } else if(text_item && text_item->hyphen)
                 {
-                    draw_justified(*this, hdc, hyphenated(), font, el_parent->css().get_font_half(), color, pos, gap, trims);
+                    draw_justified(*this, hdc, hyphenated(shown), font, el_parent->css().get_font_half(), color, pos, gap, trims);
                 } else
                 {
                     draw_justified(*this, hdc, shown, font, el_parent->css().get_font_half(), color, pos, gap, trims);

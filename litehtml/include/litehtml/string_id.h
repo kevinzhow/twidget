@@ -107,6 +107,7 @@ namespace litehtml
         _font_variant_numeric_, _font_feature_settings_,
         _writing_mode_, __webkit_writing_mode_, __epub_writing_mode_, _text_orientation_, __webkit_text_orientation_,
         __epub_text_orientation_, _text_combine_upright_, __webkit_text_combine_, __epub_text_combine_,
+        _hyphens_, __webkit_hyphens_, __epub_hyphens_,
         __webkit_text_emphasis_, __webkit_text_emphasis_style_, __webkit_text_emphasis_color_,
         __webkit_text_emphasis_position_, __epub_text_emphasis_style_, __epub_text_emphasis_color_,
         __epub_text_emphasis_position_,

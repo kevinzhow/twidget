@@ -133,11 +133,11 @@ struct Stub : document_container {
     }
     void get_language(std::string& lang, std::string& culture) const override { lang = "en"; culture.clear(); }
     // English hyphenation patterns that know one word: hy-phen-ation. No patterns for another language.
-    void hyphenate(const std::string& word, const std::string& language, std::vector<size_t>& points) {
+    void hyphenate(const std::string& word, const std::string& language, std::vector<size_t>& points) override {
         if ((language.empty() || language.compare(0, 2, "en") == 0) && word == "hyphenation") points = {2, 6};
     }
     bool justified_hyphens = true;
-    bool hyphenate_justified() const { return justified_hyphens; }
+    bool hyphenate_justified() const override { return justified_hyphens; }
 };
 
 // The pieces drawn for a paragraph, each as "text@x,y" (a line's text is at y 2 and 22 ...: 16 px in 20 px lines).
@@ -205,6 +205,10 @@ int main() {
     check(got == "ab@0,2 hyphenation@0,22", "hyphens: manual: soft hyphens only: " + got);
     got = layout("width:100px;hyphens:auto", "ab hyph" + shy + "enation");
     check(got == "ab@0,2 hyph-@24,2 enation@0,22", "hyphens: auto, a soft hyphen still breaks: " + got);
+    got = layout("width:100px;hyphens:auto", "ab" + shy + "hyphenation");
+    check(got == "ab-@0,2 hyphenation@0,22", "the rest of a word after a soft hyphen is not hyphenated: " + got);
+    got = layout("width:100px;hyphens:auto", "a\xE2\x80\x94hyphenation");
+    check(got == "a\xE2\x80\x94@0,2 hyphen-@16,2 ation@0,22", "a word after a dash is: " + got);
     // The reader's default (document_container::hyphenate_justified): justified text the book leaves at the initial
     // value is hyphenated; text that is not justified is not, nor justified text when the container says no.
     got = layout("width:100px;text-align:justify", "ab hyphenation");

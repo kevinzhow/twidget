@@ -5,6 +5,8 @@
 #include "document.h"
 #include "cjk_rules.h"
 
+#include <optional>
+
 namespace litehtml
 {
     class text_breaker;
@@ -62,6 +64,8 @@ namespace litehtml
         // (cjk::tate_chu_yoko; text-combine-upright: all, the whole text). Its width, drawing, justify, punctuation
         // compression and selection take each as one em.
         std::vector<cjk::span> m_tate_chu_yoko;
+        // hyphenation_points(), once asked since compute_styles.
+        std::optional<std::vector<size_t>> m_hyphenation;
 
       public:
         el_text(const char* text, const document::ptr& doc);
@@ -90,9 +94,18 @@ namespace litehtml
             const std::string& shown = display_text();
             return shown.size() >= 2 && shown.compare(shown.size() - 2, 2, "\xC2\xAD") == 0;
         }
-        /// What a line broken at its soft hyphen draws: a hyphen-minus for it (a glyph every Latin font has, where
+        /// What a line broken after `shown` (its text, or a fragment of it ending at a hyphenation point) draws: a
+        /// hyphen-minus after it, in place of its soft hyphen if it ends with one (a glyph every Latin font has, where
         /// Blink takes U+2010 when the font has one).
-        std::string hyphenated() const { return display_text().substr(0, display_text().size() - 2) + "-"; }
+        static std::string hyphenated(const std::string& shown)
+        {
+            const bool soft = shown.size() >= 2 && shown.compare(shown.size() - 2, 2, "\xC2\xAD") == 0;
+            return shown.substr(0, shown.size() - (soft ? 2 : 0)) + "-";
+        }
+        /// hyphens: auto (or the container's default for justified text): where a line may break inside it with a
+        /// hyphen, as byte offsets into display_text(), ascending (document_container::hyphenate). None in vertical
+        /// text, nor in a word with a soft hyphen (CSS Text 3 §6.1: its soft hyphens only). Found when first asked.
+        const std::vector<size_t>& hyphenation_points();
         /// How far the first `bytes` of `shown` reach along its line: when `shown` is its whole text, its share of the
         /// shaped run, as its width is (with the kerning inside it, as the piece is drawn whole); otherwise (a fragment,
         /// the hyphenated end) measured alone. In vertical text, as draw_vertical places it (its tate-chu-yoko tokens an

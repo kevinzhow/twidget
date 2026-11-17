@@ -1032,7 +1032,8 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
         // Shaped as one run, a piece ending the line is shaped again without its kerning with the next piece (as
         // Blink reshapes a line's end): it must fit with that width.
         pixel_t end_extra = 0_px;
-        if(trailing <= 0_px)
+        auto    part      = std::dynamic_pointer_cast<render_text>(item->get_el());
+        if(trailing <= 0_px && !(part && part->is_fragment))
             if(auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get()))
                 end_extra = text->line_end_extra();
         if(m_left + m_width + item->width() + end_extra - hang + trailing > m_right)

@@ -53,6 +53,7 @@ namespace litehtml
         {_writing_mode_,           writing_mode_strings                },
         {_text_orientation_,       text_orientation_strings            },
         {_text_combine_upright_,   text_combine_strings                },
+        {_hyphens_,                hyphens_strings                     },
 
         {_font_style_,             font_style_strings                  },
         {_font_variant_,           font_variant_strings                },
@@ -507,6 +508,8 @@ namespace litehtml
             name = _text_orientation_;
         if(name == __webkit_text_combine_ || name == __epub_text_combine_)
             name = _text_combine_upright_;
+        if(name == __webkit_hyphens_ || name == __epub_hyphens_)
+            name = _hyphens_;
         if(name == __webkit_text_emphasis_)
             name = _text_emphasis_;
         if(name == __webkit_text_emphasis_style_ || name == __epub_text_emphasis_style_)
@@ -580,6 +583,7 @@ namespace litehtml
         case _writing_mode_:
         case _text_orientation_:
         case _text_combine_upright_:
+        case _hyphens_:
 
         case _font_style_:
         case _font_variant_:

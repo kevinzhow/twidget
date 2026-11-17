@@ -88,7 +88,8 @@ namespace litehtml
         bool is_fragment = false;
         // text-overflow: ellipsis: how many bytes of the text are drawn; -1 all of them.
         int cut = -1;
-        // The line breaks at its soft hyphen: it is drawn with a hyphen (line_box::finish).
+        // The line breaks at its soft hyphen (line_box::finish), or after it, a fragment that ends at a hyphenation point
+        // (render_item_inline_context::place_hyphenated): it is drawn with a hyphen.
         bool hyphen = false;
         // text-align: justify's share of the line's free space at each gap between its characters that may take one
         // (cjk::justifiable_gaps; line_box::finish): its characters are drawn and selected that far apart, and its

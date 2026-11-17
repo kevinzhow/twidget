@@ -63,6 +63,7 @@ namespace litehtml
         uint_ptr              m_font_upright   = 0;  // vertical text: the font with the vert feature, for upright glyphs
         uint_ptr              m_font_half      = 0;  // the font with halt (vert and vhal in vertical text): half-width marks
         text_combine          m_text_combine   = text_combine_none;
+        hyphens               m_hyphens        = hyphens_initial;
         uint_ptr              m_font_emphasis  = 0;  // text-emphasis: the marks' font, half the size (vert in vertical text)
         font_metrics          m_emphasis_metrics;
         style_display         m_display        = display_inline;
@@ -211,6 +212,7 @@ namespace litehtml
         /// text-combine-upright: all (or the prefixed horizontal), 縦中横: the text sits upright in one em. none and
         /// digits (digits 2) leave it to the automatic rule (cjk::tate_chu_yoko: one or two digits, !? and the like).
         bool combines_upright() const { return m_text_combine == text_combine_all || m_text_combine == text_combine_horizontal; }
+        hyphens get_hyphens() const { return m_hyphens; }
         uint_ptr get_font_emphasis() const { return m_font_emphasis; }
         const font_metrics& get_emphasis_metrics() const { return m_emphasis_metrics; }
         /// The font upright glyphs of vertical text are drawn with: get_font() with OpenType vert (vertical forms).

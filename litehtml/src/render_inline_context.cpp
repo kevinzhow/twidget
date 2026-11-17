@@ -654,6 +654,77 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::render_item_inline
     return ret;
 }
 
+bool litehtml::render_item_inline_context::place_hyphenated(const std::unique_ptr<line_box_item>& item,
+                                                           const std::shared_ptr<render_text>& text_item, el_text& text,
+                                                           pixel_t minimum, const containing_block_context& self_size,
+                                                           formatting_context* fmt_ctx)
+{
+    const white_space ws = text_item->css().get_white_space();
+    if(!m_line_boxes.empty() && m_line_boxes.back()->can_hold(item, ws, m_trailing))
+        return false;
+    const std::vector<size_t>& points = text.hyphenation_points();
+    if(points.empty())
+        return false;
+    // As Blink: the line takes the word up to its last point where it fits with its hyphen, and the rest goes on to the
+    // next line (and so on, for a word longer than a line).
+    if(m_line_boxes.empty())
+        new_box(item, self_size, fmt_ctx);
+    const std::string& content  = text.display_text();
+    document_container* cont    = text.get_document()->container();
+    const uint_ptr     font     = text_item->css().get_font();
+    const pixel_t      trailing = m_trailing;
+    const pixel_t      height   = text_item->pos().height;
+    auto place = [&](size_t from, size_t to, bool hyphen) {
+        auto fragment = std::make_shared<render_text>(text_item->src_el());
+        fragment->parent(text_item->parent());
+        fragment->is_fragment   = true;
+        fragment->hyphen        = hyphen;
+        fragment->fragment_text = content.substr(from, to - from);
+        const std::string drawn = hyphen ? el_text::hyphenated(fragment->fragment_text) : fragment->fragment_text;
+        fragment->pos()         = size(cont->text_width(drawn.c_str(), font), height);
+        text_item->fragments.push_back(fragment);
+        m_trailing = hyphen ? 0_px : trailing;
+        place_inline(std::make_unique<wrapped_text_item>(fragment, minimum), self_size, fmt_ctx);
+    };
+    for(size_t start = 0;;)
+    {
+        const line_box& line = *m_line_boxes.back();
+        if(auto last = line.get_last_text_part(); last && last->src_el()->is_break() && last->css().get_clear() == clear_none)
+        {
+            new_box(item, self_size, fmt_ctx);  // after a <br>: a line of its own
+            continue;
+        }
+        const pixel_t room = line.line_right() - line.right();
+        const pixel_t rest = start == 0 ? text_item->pos().width : cont->text_width(content.c_str() + start, font);
+        size_t        cut  = 0;
+        if(rest + trailing > room)
+            for(size_t point : points)
+            {
+                if(point <= start || point >= content.size())
+                    continue;
+                if(cont->text_width(el_text::hyphenated(content.substr(start, point - start)).c_str(), font) > room)
+                    break;  // nor any longer part
+                cut = point;
+            }
+        if(cut)
+        {
+            place(start, cut, true);
+            new_box(item, self_size, fmt_ctx);
+            start = cut;
+        } else if(rest + trailing <= room || line.is_empty())
+        {
+            if(start == 0)
+                return false;  // whole: it fits, or not even its first part fits a line
+            place(start, content.size(), false);
+            break;
+        } else
+            new_box(item, self_size, fmt_ctx);
+    }
+    m_trailing = trailing;
+    m_fragmented_texts.push_back(text_item);
+    return true;
+}
+
 litehtml::pixel_t litehtml::render_item_inline_context::new_box(const std::unique_ptr<line_box_item>& el,
                                                                 const containing_block_context&       self_size,
                                                                 formatting_context*                   fmt_ctx)
@@ -752,6 +823,9 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
                 auto text = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el());
                 const auto wrapping = text_item->css().get_wrapping();
                 const auto whitespace = text_item->css().get_white_space();
+                if(text && !text->is_white_space() && !text->is_break() && whitespace != white_space_nowrap &&
+                   whitespace != white_space_pre && place_hyphenated(item, text_item, *text, sz.width, self_size, fmt_ctx))
+                    return;
                 if(text && !text->is_space() && !text->is_break() && wrapping != overflow_wrap_normal &&
                    whitespace != white_space_nowrap && whitespace != white_space_pre)
                 {

@@ -70,6 +70,7 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
         el->get_property<int>(_text_orientation_, true, text_orientation_mixed, offset(m_text_orientation)));
     m_text_combine = static_cast<text_combine>(
         el->get_property<int>(_text_combine_upright_, true, text_combine_none, offset(m_text_combine)));
+    m_hyphens = static_cast<hyphens>(el->get_property<int>(_hyphens_, true, hyphens_initial, offset(m_hyphens)));
     if(const char* dir = el->get_attr("dir"); dir && equal_i(dir, "auto"))
     {
         // dir=auto: the first strong character of the element's text decides.

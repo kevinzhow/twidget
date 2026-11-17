@@ -115,6 +115,13 @@ namespace litehtml
         }
         virtual void split_text(const char* text, const std::function<void(const char*)>& on_word,
                                 const std::function<void(const char*)>& on_space);
+        /// hyphens: auto: where a line may break inside `word` (a piece split_text cut, punctuation and all) with a
+        /// hyphen, as byte offsets into it, ascending. `language` is its element's (the nearest lang or xml:lang; empty
+        /// when none says). None by default: the container has the hyphenation patterns, and knows their languages.
+        virtual void hyphenate(const std::string& /*word*/, const std::string& /*language*/, std::vector<size_t>& /*points*/) {}
+        /// Whether justified text is hyphenated as with hyphens: auto where the book declares no hyphens (a reader's
+        /// default, as Apple Books has it).
+        virtual bool hyphenate_justified() const { return false; }
         virtual void draw_box_shadow(litehtml::uint_ptr /*hdc*/, const position& /*box*/,
                                      const border_radiuses& /*radius*/, const shadow_paint& /*shadow*/)
         {
