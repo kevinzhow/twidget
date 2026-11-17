@@ -3,6 +3,7 @@
 // run as HarfBuzz does with a book font: ―― is one ligature glyph, and so is f<soft hyphen>f (Noto Serif's ff), each a
 // cluster with no advance between its characters (document_container::text_advances).
 #include <litehtml.h>
+#include <text_selection.h>
 
 #include <cmath>
 #include <cstdio>
@@ -131,15 +132,29 @@ struct Stub : document_container {
         m.height = m.device_height = h;
     }
     void get_language(std::string& lang, std::string& culture) const override { lang = "en"; culture.clear(); }
+    // English hyphenation patterns that know one word: hy-phen-ation. No patterns for another language.
+    void hyphenate(const std::string& word, const std::string& language, std::vector<size_t>& points) {
+        if ((language.empty() || language.compare(0, 2, "en") == 0) && word == "hyphenation") points = {2, 6};
+    }
+    bool justified_hyphens = true;
+    bool hyphenate_justified() const { return justified_hyphens; }
 };
 
 // The pieces drawn for a paragraph, each as "text@x,y" (a line's text is at y 2 and 22 ...: 16 px in 20 px lines).
-std::string layout(const std::string& style, const std::string& text) {
+std::string layout(const std::string& style, const std::string& text, const std::string& html_attrs = "",
+                   const std::string& p_attrs = "", bool justified_hyphens = true, std::string* copied = nullptr) {
     Stub c;
-    auto doc = document::createFromString("<html><body style=\"margin:0;font-size:16px;line-height:20px\"><p style=\"margin:0;" + style +
-                                              "\">" + text + "</p></body></html>",
+    c.justified_hyphens = justified_hyphens;
+    auto doc = document::createFromString("<html" + html_attrs + "><body style=\"margin:0;font-size:16px;line-height:20px\"><p" +
+                                              p_attrs + " style=\"margin:0;" + style + "\">" + text + "</p></body></html>",
                                           &c);
     doc->render(300);
+    if (copied) {
+        text_selection selection(*doc);
+        text_position start, end;
+        const auto& runs = selection.runs();
+        if (!runs.empty() && selection.paragraph({runs.front().text, 0}, start, end)) *copied = selection.text(start, end);
+    }
     doc->draw(0, 0, 0, nullptr);
     std::string out;
     char buf[64];
@@ -173,6 +188,38 @@ int main() {
     // Justified, a soft hyphen inside a line takes no space: the word stays whole, the spaces take it all.
     got = layout("width:64px;text-align:justify", "ab" + shy + "cd ef gh");
     check(got == "ab" + shy + "@0,2 cd@16,2 ef@48,2 gh@0,22", "justified, no space at a soft hyphen: " + got);
+
+    // hyphens: auto (CSS Text 3 §6.1): a word that does not fit breaks at a hyphenation point the container gives, with
+    // a hyphen drawn at the line's end; its text is unchanged (the copied text has no hyphen).
+    std::string copied;
+    got = layout("width:100px;hyphens:auto", "ab hyphenation");
+    check(got == "ab@0,2 hyphen-@24,2 ation@0,22", "hyphens: auto breaks a word at its last point that fits: " + got);
+    got = layout("width:40px;-webkit-hyphens:auto", "hyphenation", "", "", true, &copied);
+    check(got == "hy-@0,2 phen-@0,22 ation@0,42", "a word longer than two lines breaks at each line's end: " + got);
+    check(copied == "hyphenation", "the hyphenated word's text is its source text: " + copied);
+    got = layout("width:100px;-epub-hyphens:auto;text-align:justify", "ab hyphenation");
+    check(got == "ab@0,2 hyphen-@44,2 ation@0,22", "justified, the hyphen ends at the line's end: " + got);
+    got = layout("width:100px;hyphens:none;text-align:justify", "ab hyphenation");
+    check(got == "ab@0,2 hyphenation@0,22", "hyphens: none: no hyphenation: " + got);
+    got = layout("width:100px;hyphens:manual;text-align:justify", "ab hyphenation");
+    check(got == "ab@0,2 hyphenation@0,22", "hyphens: manual: soft hyphens only: " + got);
+    got = layout("width:100px;hyphens:auto", "ab hyph" + shy + "enation");
+    check(got == "ab@0,2 hyph-@24,2 enation@0,22", "hyphens: auto, a soft hyphen still breaks: " + got);
+    // The reader's default (document_container::hyphenate_justified): justified text the book leaves at the initial
+    // value is hyphenated; text that is not justified is not, nor justified text when the container says no.
+    got = layout("width:100px;text-align:justify", "ab hyphenation");
+    check(got == "ab@0,2 hyphen-@44,2 ation@0,22", "justified text is hyphenated by default: " + got);
+    got = layout("width:100px", "ab hyphenation");
+    check(got == "ab@0,2 hyphenation@0,22", "text not justified is not hyphenated by default: " + got);
+    got = layout("width:100px;text-align:justify", "ab hyphenation", "", "", false);
+    check(got == "ab@0,2 hyphenation@0,22", "no default hyphenation when the container says no: " + got);
+    // The patterns are the language's: the container is given the element's lang (or xml:lang) and has English only.
+    got = layout("width:100px;hyphens:auto", "ab hyphenation", " lang=\"en-US\"");
+    check(got == "ab@0,2 hyphen-@24,2 ation@0,22", "English, from the document's lang: " + got);
+    got = layout("width:100px;hyphens:auto", "ab hyphenation", " lang=\"en\"", " lang=\"fr\"");
+    check(got == "ab@0,2 hyphenation@0,22", "another language: no hyphenation: " + got);
+    got = layout("width:100px;hyphens:auto", "ab hyphenation", "", " xml:lang=\"de\"");
+    check(got == "ab@0,2 hyphenation@0,22", "another language by xml:lang: no hyphenation: " + got);
 
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
