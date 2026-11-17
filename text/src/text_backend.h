@@ -139,7 +139,8 @@ public:
     void delete_font(int font) override;
     float text_width(int font, const std::string& text) override;
     /// `text` shaped as one run in `font`, split by face as text_width splits it: `prefix[b]` is the advance before
-    /// byte `b` (text.size() + 1 entries). A glyph's advance goes to the first character of its HarfBuzz cluster.
+    /// byte `b` (text.size() + 1 entries), where a HarfBuzz cluster starts; NaN inside one (between a ligature's
+    /// characters: no advance can be put there).
     void text_advances(int font, const std::string& text, std::vector<float>& prefix);
     /// No images here: a host loads its own (a card backend overrides this).
     bool load_image(int, const std::string&, float&, float&) override { return false; }

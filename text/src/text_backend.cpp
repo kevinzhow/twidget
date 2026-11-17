@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <tuple>
@@ -951,6 +952,7 @@ void TextBackend::text_advances(int font, const std::string& text, std::vector<f
     std::vector<uint32_t> cps = utf8(text);
     std::vector<Face*> faceOf = faces_of(f, cps, options_, optionsId_);
     std::vector<double> adv(cps.size(), 0.0);  // per character
+    std::vector<bool> starts(cps.size(), false);  // a character a cluster starts with
     for (size_t i = 0; i < cps.size();) {
         size_t j = i + 1;
         while (j < cps.size() && faceOf[j] == faceOf[i]) j++;
@@ -966,19 +968,23 @@ void TextBackend::text_advances(int font, const std::string& text, std::vector<f
         hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
         hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, &n);
         for (unsigned g = 0; g < n; g++)
-            if (info[g].cluster < cps.size()) adv[info[g].cluster] += pos[g].x_advance * k;
+            if (info[g].cluster < cps.size()) {
+                adv[info[g].cluster] += pos[g].x_advance * k;
+                starts[info[g].cluster] = true;
+            }
         hb_buffer_destroy(buf);
         i = j;
     }
-    // Characters to bytes: each character's advance is counted at its last byte, so prefix[b] at a character boundary
-    // is the advance of everything before it.
+    // Characters to bytes: prefix[b] at a cluster's first byte is the advance of everything before it; inside a
+    // cluster (a ligature's or a base's later characters, a character's later bytes) there is none.
     size_t c = 0;
     double sum = 0;
     for (size_t b = 0; b < text.size();) {
         const unsigned char lead = (unsigned char)text[b];
         size_t n = lead < 0x80 ? 1 : (lead >> 5) == 6 ? 2 : (lead >> 4) == 14 ? 3 : (lead >> 3) == 30 ? 4 : 1;
         if (b + n > text.size()) n = text.size() - b;
-        for (size_t x = 0; x < n; x++) prefix[b + x] = float(sum);
+        for (size_t x = 0; x < n; x++) prefix[b + x] = std::numeric_limits<float>::quiet_NaN();
+        if (c < adv.size() && starts[c]) prefix[b] = float(sum);
         if (c < adv.size()) sum += adv[c];
         c++;
         b += n;

@@ -49,8 +49,9 @@ namespace litehtml
         virtual std::shared_ptr<text_breaker> create_text_breaker(const std::string&, uint_ptr) { return nullptr; }
         /// `text` shaped as one run in `hFont`, as a browser shapes a text node before it breaks it into lines (font
         /// kerning between the pieces included): `prefix[b]` is the advance of the text before byte `b` (text.size() + 1
-        /// entries; meaningful at character boundaries). False when the container does not shape runs: each piece is
-        /// then measured alone (text_width).
+        /// entries; meaningful at character boundaries), NaN inside a cluster (between a ligature's characters): a piece
+        /// cut there is measured alone. False when the container does not shape runs: each piece is then measured
+        /// alone (text_width).
         virtual bool text_advances(const std::string& /*text*/, uint_ptr /*hFont*/, std::vector<pixel_t>& /*prefix*/) { return false; }
         /// The largest ascent and descent of the fonts `text` is drawn with in `hFont` when fallback fonts draw some of it
         /// and reach above or below `hFont`'s own; false when `hFont`'s metrics already cover it. A line of

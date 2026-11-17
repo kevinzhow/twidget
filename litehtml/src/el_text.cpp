@@ -5,6 +5,8 @@
 #include "document_container.h"
 #include "vertical.h"
 
+#include <cmath>
+
 namespace
 {
     size_t utf8_length(const std::string& s)
@@ -375,7 +377,10 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
                         m_run->advances.back().second.clear();
                     prefix = &m_run->advances.back().second;
                 }
-                if(prefix->size() == m_run->text.size() + 1)
+                // A piece cut inside a cluster (a ligature across a break opportunity: ―― in a CJK font, ff across
+                // a soft hyphen) has no share of the run: it is drawn alone, and measured so.
+                if(prefix->size() == m_run->text.size() + 1 && !std::isnan(float((*prefix)[m_run_begin])) &&
+                   !std::isnan(float((*prefix)[m_run_end])))
                 {
                     m_size.width = (*prefix)[m_run_end] - (*prefix)[m_run_begin];
                     m_end_extra  = get_document()->container()->text_width(m_text.c_str(), font) - m_size.width;
