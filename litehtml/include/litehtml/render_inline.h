@@ -89,6 +89,10 @@ namespace litehtml
         int cut = -1;
         // The line breaks at its soft hyphen: it is drawn with a hyphen (line_box::finish).
         bool hyphen = false;
+        // text-align: justify's share of the line's free space at each gap between its characters that may take one
+        // (cjk::justifiable_gaps; line_box::finish): its characters are drawn and selected that far apart, and its
+        // width has them.
+        pixel_t justify_gap = 0_px;
 
         explicit render_text(std::shared_ptr<element> src_el) :
             render_item_inline(std::move(src_el))

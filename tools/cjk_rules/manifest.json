@@ -4,13 +4,63 @@
       "name": "stone_engine_js",
       "repo": "https://github.com/non-standardworld/stone_engine_js",
       "commit": "caae3076008dcc7abf9804c611b4bad8bd64d49f",
-      "path": "src/punctuation.ts",
+      "paths": [
+        "src/punctuation.ts",
+        "src/unicode.ts"
+      ],
       "licence": "MIT",
-      "use": "source: generate.py reads its tables",
+      "use": "source: generate.py reads its tables from paths; litehtml mirrors the functions in mirrored by hand",
       "sha256": {
         "LICENSE": "0dca6458e84c98b704c33b252272a87195437601e01b83b1435767e222e383ac",
-        "src/punctuation.ts": "a9888873793a77ad5f209ad1305dcb36d00788b6dc26cf11b517958f9f479ea9"
-      }
+        "src/fonts.ts": "aa503d57b9ff1869e47b4535b7e4c5227e5ca8c75d9ca7bb9bc91b37ebc2acb8",
+        "src/layout.ts": "e57926efd1b77c83673d2eddd3e26637d162dc09769b7b5661fe17f5dd3f652e",
+        "src/punctuation.ts": "a9888873793a77ad5f209ad1305dcb36d00788b6dc26cf11b517958f9f479ea9",
+        "src/unicode.ts": "106f313eaa5a99b6dc3d4295d3ce0879ccbe5e37915166b67f59aaa5b5e665cd"
+      },
+      "mirrored": [
+        {
+          "path": "src/layout.ts",
+          "name": "isJustifiableGap",
+          "in": "litehtml/src/cjk_rules.cpp cjk::justifiable_gap",
+          "sha256": "9451d9eb0749b9225f8e3fad6a8e954b28c2717c53a1e1cc8a455307798293c7"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "isJustifiableGapTbRl",
+          "in": "litehtml/src/line_box.cpp line_box::finish (no gap inside a text-combine-upright piece)",
+          "sha256": "0f2b27c2435bf7e0d61c837ddee793c125a92666e25e26ecceb8bb1563de289a"
+        },
+        {
+          "path": "src/punctuation.ts",
+          "name": "isInseparablePair",
+          "in": "litehtml/src/cjk_rules.cpp cjk::justifiable_gap",
+          "sha256": "fd26f68aed05353c216dee0f4261dcdde68bcee618001a7da00ab61db91c53c6"
+        },
+        {
+          "path": "src/punctuation.ts",
+          "name": "isSpaceChar",
+          "in": "litehtml/src/cjk_rules.cpp is_space",
+          "sha256": "d632f58de9a683a46e8ae0c240c723f7cd26600d56c06372676298a5bb45468d"
+        },
+        {
+          "path": "src/punctuation.ts",
+          "name": "WHITESPACE_RE",
+          "in": "litehtml/src/cjk_rules.cpp is_space",
+          "sha256": "3d68ca3c8fa9cacc6572438c33b198e37ea3521bc007a20e9cf222d5e9ec6225"
+        },
+        {
+          "path": "src/unicode.ts",
+          "name": "scriptOfCodePoint",
+          "in": "tools/cjk_rules/generate.py scripts()",
+          "sha256": "f850ea8f7b251db71f59b1509ee595f5159cc7040cea51770fd151dd81c345ac"
+        },
+        {
+          "path": "src/fonts.ts",
+          "name": "fontIdForChar",
+          "in": "tools/cjk_rules/generate.py scripts() (no script: Latin)",
+          "sha256": "e88f3b0b3fe365e88ec5bdfdd2b5b00b38277dc62191a73b75379e6837a764f8"
+        }
+      ]
     },
     {
       "name": "stone_engine",

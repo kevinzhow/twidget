@@ -7,6 +7,8 @@
 #include "render_inline.h"
 #include "document_container.h"
 #include "types.h"
+#include "cjk_rules.h"
+#include "utf8_strings.h"
 #include <algorithm>
 #include <cmath>
 
@@ -386,22 +388,58 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         shift_x = 0_px;
     }
 
-    // Justified, the space goes between the items, but not after a soft hyphen: the word goes on there.
-    const auto inside_word = [](const std::unique_ptr<line_box_item>& item) {
-        auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get());
-        return item->get_type() == line_box_item::type_text_part && text && text->ends_with_soft_hyphen();
-    };
-    int gaps = 0;
-    for(auto it = m_items.begin(); it != m_items.end() && std::next(it) != m_items.end(); ++it)
-        if(!inside_word(*it))
-            gaps++;
-    if(gaps == 0 && m_items.size() > 1)
-        spacing_x = 0_px;  // one word broken at soft hyphens: nowhere to put the space
+    // Justified, the space goes into the gaps between characters that the CJK rule set lets widen
+    // (cjk::justifiable_gap), as stone_engine does: between two texts' characters and inside a text (its
+    // render_text::justify_gap at each), never inside a Latin word or number, nor inside …… or ――. An inline box (an
+    // image, an inline-block, a ruby) has a gap each side. Inline starts and ends take none: the gap after a text goes
+    // after the ends that follow it.
+    std::vector<int> gaps_before(m_items.size(), 0), gaps_inside(m_items.size(), 0);
+    int              gaps = 0;
+    if(spacing_x != 0_px)
+    {
+        enum { nothing, text, box } before = nothing;  // what came last: a text, an inline box, or neither yet
+        char32_t last = 0;                             // the last text's last character
+        int      slot = -1;                            // the item the gap after it goes before
+        size_t i = 0;
+        for(auto it = m_items.begin(); it != m_items.end(); ++it, ++i)
+        {
+            const auto type = (*it)->get_type();
+            if(type != line_box_item::type_text_part)
+            {
+                if(slot < 0 && type != line_box_item::type_inline_end)
+                    slot = int(i);
+                continue;
+            }
+            auto part = std::dynamic_pointer_cast<render_text>((*it)->get_el());
+            auto src  = part ? dynamic_cast<const el_text*>(part->src_el().get()) : nullptr;
+            const std::u32string chars =
+                src ? std::u32string(utf8_to_utf32(part->is_fragment ? part->fragment_text : src->display_text())) : U"";
+            if(src && chars.empty())
+                continue;
+            if(slot < 0)
+                slot = int(i);
+            if(before != nothing && (before == box || !src || cjk::justifiable_gap(last, chars.front())))
+            {
+                gaps_before[slot]++;
+                gaps++;
+            }
+            before = src ? text : box;
+            slot   = -1;
+            if(!src)
+                continue;
+            last = chars.back();
+            // stone's isJustifiableGapTbRl: 縦中横 takes one em, its characters set together.
+            if(!(src->css().is_vertical_rl() && src->css().combines_upright()))
+                gaps_inside[i] = int(cjk::justifiable_gaps(part->is_fragment ? part->fragment_text : src->display_text()).size());
+            gaps += gaps_inside[i];
+        }
+        if(gaps == 0)
+            spacing_x = 0_px;  // nowhere to put the space: one word, or one 縦中横
+    }
 
     int   counter = 0;
     float offj    = static_cast<float>(spacing_x) / std::max(1.f, static_cast<float>(gaps));
     float cixx    = 0.0f;
-    const std::unique_ptr<line_box_item>* previous = nullptr;
 
     std::optional<pixel_t> line_height;
 
@@ -457,17 +495,18 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         // Apply text-align-justify
         m_rendered_width.natural_width += lbi->get_rendered_natural_width();
         m_rendered_width.min_width      = std::max(m_rendered_width.min_width, lbi->get_rendered_min_width());
-        if(spacing_x != 0_px && counter)
+        if(spacing_x != 0_px)
         {
-            if(!inside_word(*previous))
-                cixx += offj;
-            if((counter + 1) == static_cast<int>(m_items.size()))
-            {
-                cixx += 0.99f;
-            }
+            cixx         += offj * float(gaps_before[counter]);
             lbi->pos().x += pixel_t(cixx);
+            if(gaps_inside[counter])
+            {
+                auto part          = std::static_pointer_cast<render_text>(lbi->get_el());
+                part->justify_gap  = pixel_t(offj);
+                part->pos().width += pixel_t(offj * float(gaps_inside[counter]));
+                cixx              += offj * float(gaps_inside[counter]);
+            }
         }
-        previous = &lbi;
         counter++;
         if((align == text_align_right || spacing_x != 0_px) && counter == static_cast<int>(m_items.size()))
         {

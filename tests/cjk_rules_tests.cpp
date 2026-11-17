@@ -185,6 +185,25 @@ int main() {
         check(classify(c) == want, what);
     }
 
+    // Where justify may widen the gap between two characters (stone's isJustifiableGap, and no gap inside a cluster).
+    struct Gap {
+        char32_t before, after;
+        bool widens;
+    };
+    const Gap gaps[] = {
+        {U'漢', U'字', true},   {U'あ', U'。', true},  {U'」', U'「', true},  {U'漢', U'a', true},
+        {U'9', U'漢', true},    {U'a', U' ', true},    {U' ', U'a', true},    {U'a', 0xA0, true},
+        {U'a', U'b', false},    {U'1', U'2', false},   {U'a', U'.', false},   {U'é', U'ß', false},
+        {U'α', U'β', false},    {U'…', U'…', false},   {U'‥', U'‥', false},   {U'―', U'―', false},
+        {U'—', U'—', false},    {U'─', U'─', false},   {U'葛', 0xE0100, false}, {U'か', 0x3099, false},
+        {U'…', U'あ', true},    {U'ア', U'ー', true},
+    };
+    for (auto [a, b, widens] : gaps) {
+        char what[96];
+        std::snprintf(what, sizeof what, "justifiable_gap(U+%04X, U+%04X) == %s", unsigned(a), unsigned(b), widens ? "true" : "false");
+        check(justifiable_gap(a, b) == widens, what);
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

@@ -29,6 +29,7 @@ namespace litehtml
         position                 box;         // laid-out coordinates (document::vertical() turns them onto the page)
         int                      block = 0;   // the block container it flows in
         bool                     annotation = false;  // inside a ruby annotation (<rt>)
+        pixel_t                  justify_gap = 0_px;  // text-align: justify's at each of its gaps (render_text::justify_gap)
     };
 
     /// Text selection over a laid-out document, horizontal or vertical-rl (a reader's selection, not a widget's:
@@ -64,7 +65,9 @@ namespace litehtml
         std::unordered_map<const el_text*, size_t> m_first_run;
         /// The run and the offset in it; false when the position is in no run.
         bool    locate(const text_position& p, size_t& run, size_t& offset) const;
-        pixel_t advance(const text_run& run, size_t bytes) const;
+        /// How far along the run the character boundary at `bytes` is: at a gap justify widened, the end of the
+        /// character before it, or (after_gap) the start of the one after it.
+        pixel_t advance(const text_run& run, size_t bytes, bool after_gap) const;
         bool    ordered(const text_position& a, const text_position& b, size_t& r0, size_t& o0, size_t& r1, size_t& o1) const;
     };
 } // namespace litehtml

@@ -18,6 +18,11 @@ namespace litehtml
         std::vector<std::pair<uint_ptr, std::vector<pixel_t>>> advances;
     };
 
+    /// How far text-align: justify moves the boundary at byte `at` of a piece's text, which has `gap` more at each of
+    /// its justifiable gaps (cjk::justifiable_gaps, render_text::justify_gap). A boundary at a gap is two places: the end
+    /// of the character before it, and the start of the one after it (`after_gap`).
+    pixel_t justify_shift(const std::string& text, size_t at, pixel_t gap, bool after_gap = true);
+
     class el_text : public element
     {
       protected:
@@ -71,6 +76,10 @@ namespace litehtml
         /// What a line broken at its soft hyphen draws: a hyphen-minus for it (a glyph every Latin font has, where
         /// Blink takes U+2010 when the font has one).
         std::string hyphenated() const { return display_text().substr(0, display_text().size() - 2) + "-"; }
+        /// How far the first `bytes` of `shown` reach along a horizontal line: when `shown` is its whole text, its
+        /// share of the shaped run, as its width is (with the kerning inside it, as the piece is drawn whole); otherwise
+        /// (a fragment, the hyphenated end) measured alone.
+        pixel_t advance_to(const std::string& shown, size_t bytes) const;
         uint32_t source_pos() const { return m_src_pos; }
         uint32_t source_utf16() const { return m_src_utf16; }
         void compute_styles(bool recursive) override;
