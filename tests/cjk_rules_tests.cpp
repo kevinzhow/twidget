@@ -201,6 +201,10 @@ int main() {
         const std::string a = drawn_at(got, r.first), b = drawn_at(got, r.second);
         check(!a.empty() && !b.empty() && line_of(a) == line_of(b) && x_of(b) != "0", std::string(r.why) + ": " + got);
     }
+    // A ruby after a text is measured at its own width, not the line's: 「 and a ruby that fit stay on the line.
+    got = layout("48px", kan + "「<ruby>仕切<rt>しき</rt></ruby>字");
+    check(line_of(drawn_at(got, "「")) == line_of(drawn_at(got, kan)) && line_of(drawn_at(got, "仕")) == line_of(drawn_at(got, kan)),
+          "「 and a ruby that fit stay on the line: " + got);
     // A break stays allowed where the rule set allows one: after a ruby before a kanji.
     got = layout("24px", kan + kan + "<ruby>仕<rt>し</rt></ruby>字");
     check(line_of(drawn_at(got, "仕")) != line_of(drawn_at(got, "字")) && x_of(drawn_at(got, "字")) == "0",
