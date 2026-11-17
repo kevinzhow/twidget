@@ -208,7 +208,8 @@ namespace litehtml
         /// writing-mode: vertical-rl (the only vertical mode the fork lays out): lines are columns, right to left.
         bool is_vertical_rl() const { return m_writing_mode == writing_mode_vertical_rl; }
         text_orientation get_text_orientation() const { return m_text_orientation; }
-        /// text-combine-upright: all (or the prefixed horizontal), 縦中横: the text sits upright in one em.
+        /// text-combine-upright: all (or the prefixed horizontal), 縦中横: the text sits upright in one em. none and
+        /// digits (digits 2) leave it to the automatic rule (cjk::tate_chu_yoko: one or two digits, !? and the like).
         bool combines_upright() const { return m_text_combine == text_combine_all || m_text_combine == text_combine_horizontal; }
         uint_ptr get_font_emphasis() const { return m_font_emphasis; }
         const font_metrics& get_emphasis_metrics() const { return m_emphasis_metrics; }

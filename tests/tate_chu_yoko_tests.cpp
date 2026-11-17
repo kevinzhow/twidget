@@ -207,6 +207,14 @@ std::string selected(Laid& l, bool vertical, size_t n) {
     return num(float(vertical ? rects[0].y : rects[0].x)) + "+" + num(float(vertical ? rects[0].height : rects[0].width));
 }
 
+// The tokens cjk::tate_chu_yoko finds in text[from, to), "|"-separated.
+std::string tokens(const std::string& text, size_t from = 0, size_t to = std::string::npos) {
+    std::string out;
+    for (const auto& t : cjk::tate_chu_yoko(text, from, to == std::string::npos ? text.size() : to))
+        out += (out.empty() ? "" : "|") + text.substr(t.from, t.to - t.from);
+    return out;
+}
+
 void expect(bool vertical, float length, const std::string& html, const std::string& want, const std::string& what,
             const char* align = "left") {
     Laid l;
@@ -259,6 +267,22 @@ int main() {
         check(selected(l, true, 4) == "64+16", "vertical: selecting !? in か!?」: " + selected(l, true, 4));
         check(selected(l, true, 5) == "80+16", "vertical: selecting 」 after it: " + selected(l, true, 5));
     }
+    // The rule (cjk::tate_chu_yoko): a token ends at a word boundary, as stone's Intl.Segmenter("ja") draws it.
+    auto rule = [](const std::string& text, const std::string& want, const std::string& what, size_t from = 0,
+                   size_t to = std::string::npos) {
+        const std::string got = tokens(text, from, to);
+        check(got == want, "the rule: " + what + ": \"" + got + "\", want \"" + want + "\"");
+    };
+    rule("12時30分、第3回", "12|30|3", "numbers between kanji");
+    rule("12,000円 12:30 12/25 1_2 3’", "12|30|12|25|3", "12,000 and 1_2 are one token each; : / ’ end one");
+    rule("Ⅱ2 x2 ２1 1２ ²", "", "a letter, a Roman numeral or a full-width digit next to it; ² is not an ASCII digit");
+    rule("か!?」 か!!? Wow!? ‼⁉", "!?|‼|⁉", "the overlay's tokens, not next to Latin");
+    // A piece of a longer text: the text around it decides where a token ends; one running past the piece is not
+    // returned.
+    rule("あ1２あ", "", "1 before ２, as a piece", 3, 4);
+    rule("あ12あ", "", "half of 12", 3, 4);
+    rule("あ12あ", "12", "12 as a piece", 3, 5);
+
     // Horizontal text is unchanged.
     expect(false, 400, "第12回", "第@0 12@16 回@33.6", "digits");
     expect(false, 400, "か!?」", "か!?」@0", "!?");

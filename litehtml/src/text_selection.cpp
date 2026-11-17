@@ -16,14 +16,6 @@ namespace litehtml
     namespace
     {
         bool continuation(const std::string& s, size_t i) { return i < s.size() && (uint8_t(s[i]) & 0xC0) == 0x80; }
-        size_t chars(const std::string& s, size_t bytes)
-        {
-            size_t n = 0;
-            for(size_t i = 0; i < bytes && i < s.size(); i++)
-                if(!continuation(s, i))
-                    n++;
-            return n;
-        }
     } // namespace
 
     text_selection::text_selection(document& doc) :
@@ -109,10 +101,7 @@ namespace litehtml
             return 0_px;
         if(bytes >= run.shown.size())
             return run.box.width;
-        const auto&   css    = run.text->parent()->css();
         const pixel_t spread = justify_shift(run.shown, bytes, run.justify_gap, after_gap) - trim_shift(run.trims, bytes);
-        if(css.is_vertical_rl() && css.get_text_orientation() == text_orientation_upright)
-            return css.get_font_metrics().font_size * pixel_t(float(chars(run.shown, bytes))) + spread;
         return run.text->advance_to(run.shown, bytes) + spread;
     }
 

@@ -72,6 +72,20 @@ namespace litehtml::cjk
     // bracket or 、。 before a closing bracket, 、。 or a middle dot gives up its second half, and so does one ending a
     // line that wraps. Nothing else is trimmed (・：； keep their ems).
     trim compression(char32_t prev, char32_t c, char32_t next, uint8_t at);
+
+    // Bytes [from, to) of a text.
+    struct span
+    {
+        size_t from = 0, to = 0;
+        bool   operator==(const span& o) const { return from == o.from && to == o.to; }
+    };
+
+    // Tate-chu-yoko (縦中横): the tokens of text[from, to) that vertical text sets upright, side by side in one em of
+    // the column, in order. A token of one or two half-width (ASCII) digits, as a word boundary ends it (not 123, 1.5,
+    // A12, nor 1２ next to a full-width digit); and one of the overlay's tokens (!? !! ?! ??, ‼ ⁉ ⁈ ⁇) with no Latin
+    // character next to it. The characters of text around [from, to) decide where a token ends; one that runs past
+    // either end is not returned.
+    std::vector<span> tate_chu_yoko(const std::string& text, size_t from, size_t to);
 } // namespace litehtml::cjk
 
 #endif // LH_CJK_RULES_H

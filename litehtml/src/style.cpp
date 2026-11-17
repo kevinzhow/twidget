@@ -515,6 +515,11 @@ namespace litehtml
             name = _text_emphasis_color_;
         if(name == __webkit_text_emphasis_position_ || name == __epub_text_emphasis_position_)
             name = _text_emphasis_position_;
+        // text-combine-upright: digits 2 is digits (CSS Writing Modes 4): two digits in one em, as the automatic rule
+        // sets them (cjk::tate_chu_yoko). digits 3 and digits 4 are not supported.
+        if(name == _text_combine_upright_ && value.size() == 2 && value[0].ident() == "digits" && value[1].type == NUMBER &&
+           value[1].n.number_type == css_number_integer && value[1].n.number == 2)
+            ident = "digits";
         if(ident == "inherit")
         {
             return inherit_property(name, important);

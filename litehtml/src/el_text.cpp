@@ -122,16 +122,22 @@ namespace
         return open ? "\xEF\xB9\x86" : "\xEF\xB9\x85";
     }
 
+    litehtml::pixel_t vertical_advance(litehtml::document_container* container, const std::string& text, size_t end,
+                                       litehtml::text_orientation orientation, litehtml::uint_ptr font, litehtml::pixel_t em,
+                                       const std::vector<litehtml::cjk::span>& tcy);
+
     // Draws a mark over (or under) each character of the run, centred on it along the line; in vertical text the
-    // marks go on the right (over) and stand upright. Line boxes do not grow for them (they use the leading).
+    // marks go on the right (over) and stand upright, one for a tate-chu-yoko token. Line boxes do not grow for them
+    // (they use the leading).
     void draw_emphasis(litehtml::document* doc, litehtml::uint_ptr hdc, const std::string& text,
                        const litehtml::css_properties& css, const litehtml::position& pos, bool vertical,
-                       litehtml::pixel_t gap, const std::vector<litehtml::char_trim>& trims)
+                       litehtml::pixel_t gap, const std::vector<litehtml::char_trim>& trims,
+                       const std::vector<litehtml::cjk::span>& tcy)
     {
         using namespace litehtml;
         const uint_ptr mark_font = css.get_font_emphasis();
         const std::string mark   = emphasis_mark(css.get_text_emphasis_style(), vertical);
-        if(!mark_font || mark.empty() || css.combines_upright())
+        if(!mark_font || mark.empty())
             return;
         auto*               container = doc->container();
         const font_metrics& fm        = css.get_font_metrics();
@@ -155,13 +161,14 @@ namespace
             char32_t cp = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
             for(size_t k = 1; k < n; k++)
                 cp = (cp << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
-            if(!emphasis_skips(cp))
+            auto token = std::find_if(tcy.begin(), tcy.end(), [&](const cjk::span& t) { return t.from <= i && i < t.to; });
+            if(!emphasis_skips(cp) && (token == tcy.end() || token->from == i))
             {
                 pixel_t x0, w;
-                if(em_each)
+                if(vertical)
                 {
-                    x0 = fm.font_size * pixel_t(float(utf8_length(text.substr(0, i))));
-                    w  = fm.font_size;
+                    x0 = vertical_advance(container, text, i, css.get_text_orientation(), css.get_font(), fm.font_size, tcy);
+                    w  = em_each || token != tcy.end() ? fm.font_size : container->text_width(text.substr(i, n).c_str(), css.get_font());
                 } else
                 {
                     x0 = i ? container->text_width(text.substr(0, i).c_str(), css.get_font()) : 0_px;
@@ -210,60 +217,63 @@ namespace
         return cp;
     }
 
-    // The advance of text[0, end) along a vertical line (text-orientation mixed or sideways): each upright character
-    // measured alone, as Blink shapes vertical text top to bottom with no pair kerning between them; each run of
+    // The advance of text[0, end) along a vertical line: a tate-chu-yoko token an em (a boundary inside one, its share
+    // of the em by characters); with text-orientation: upright, each other character an em; else each upright character
+    // measured alone, as Blink shapes vertical text top to bottom with no pair kerning between them, and each run of
     // sideways characters as one horizontal run.
     litehtml::pixel_t vertical_advance(litehtml::document_container* container, const std::string& text, size_t end,
-                                       litehtml::text_orientation orientation, litehtml::uint_ptr font)
+                                       litehtml::text_orientation orientation, litehtml::uint_ptr font, litehtml::pixel_t em,
+                                       const std::vector<litehtml::cjk::span>& tcy)
     {
         using namespace litehtml;
         pixel_t advance = 0_px;
         size_t  run     = 0;  // start of the sideways run not measured yet
+        auto    sideways = [&](size_t to) {
+            if(to > run)
+                advance += container->text_width(text.substr(run, to - run).c_str(), font);
+        };
+        auto token = tcy.begin();
         for(size_t i = 0, n = 0; i < end; i += n)
         {
+            if(token != tcy.end() && token->from == i)
+            {
+                sideways(i);
+                if(end < token->to)
+                    return advance + em * pixel_t(float(utf8_length(text.substr(i, end - i)))) /
+                                         pixel_t(float(utf8_length(text.substr(i, token->to - i))));
+                advance += em;
+                n        = token->to - i;
+                run      = token->to;
+                ++token;
+                continue;
+            }
             const char32_t    cp    = code_point_at(text, i, n);
             const std::string glyph = text.substr(i, n);
-            if(!drawn_upright(container, orientation, cp, glyph, font))
+            if(orientation != text_orientation_upright && !drawn_upright(container, orientation, cp, glyph, font))
                 continue;
-            if(i > run)
-                advance += container->text_width(text.substr(run, i - run).c_str(), font);
-            advance += container->text_width(glyph.c_str(), font);
+            sideways(i);
+            advance += orientation == text_orientation_upright ? em : container->text_width(glyph.c_str(), font);
             run = i + n;
         }
-        if(end > run)
-            advance += container->text_width(text.substr(run, end - run).c_str(), font);
+        sideways(end);
         return advance;
     }
 
     // Vertical text (document::vertical()): the page's turn already makes a run sideways, so runs of sideways
     // characters are drawn as horizontal text is; each upright character is turned back about its em box's centre
-    // and drawn with the font's vertical forms. The em box's centre is the line's central baseline.
+    // and drawn with the font's vertical forms, and so is each tate-chu-yoko token, its characters side by side. The em
+    // box's centre is the line's central baseline.
     void draw_vertical(litehtml::document* doc, litehtml::uint_ptr hdc, const std::string& text,
                        const litehtml::css_properties& css, litehtml::web_color color, const litehtml::position& pos,
-                       litehtml::pixel_t gap, const std::vector<litehtml::char_trim>& trims)
+                       litehtml::pixel_t gap, const std::vector<litehtml::char_trim>& trims,
+                       const std::vector<litehtml::cjk::span>& tcy)
     {
         using namespace litehtml;
         auto*               container   = doc->container();
         const uint_ptr      font        = css.get_font();
-        if(css.combines_upright())
-        {
-            // 縦中横: the whole run upright in one em, squeezed across when wider (as Chromium fits 2 to 4
-            // characters), centred on the column.
-            const font_metrics& m  = css.get_font_metrics();
-            const pixel_t       w  = container->text_width(text.c_str(), font);
-            const pixel_t       cx = pos.x + pos.width / 2_px;
-            const pixel_t       cy = pos.y + pos.height - m.descent - (m.em_top() - m.em_bottom()) / 2_px;
-            const float         s  = w > m.font_size ? float(m.font_size / w) : 1.0f;
-            paint_group         group;
-            group.matrix = {0, -s, 1, 0, float(cx - cy), s * float(cx) + float(cy)};
-            group.bounds = position(cx - w / 2_px, pos.y, w, pos.height);
-            container->begin_group(hdc, group);
-            container->draw_text(hdc, text.c_str(), font, color, position(cx - w / 2_px, pos.y, w, pos.height));
-            container->end_group(hdc);
-            return;
-        }
         const uint_ptr      upright     = css.get_font_upright();
         const font_metrics& fm          = css.get_font_metrics();
+        const pixel_t       em          = fm.font_size;
         const auto          orientation = css.get_text_orientation();
         const pixel_t       baseline    = pos.y + pos.height - fm.descent;
         // Upright glyphs are centred on the central baseline, halfway between the ascent and descent the line makes
@@ -281,16 +291,14 @@ namespace
         }
         const pixel_t       cy          = baseline - (ascent - descent) / 2_px;
         size_t              run         = 0;  // start of the sideways run not drawn yet
-        // text-orientation: upright gives each character an em (el_text::compute_styles); mixed keeps the advances.
+        // text-orientation: upright gives each character an em; mixed keeps the advances.
         const bool all_upright = orientation == text_orientation_upright;
         // Justified, the characters are that much further apart at their gaps (render_text::justify_gap); compressed,
         // nearer by what the marks before them give up (render_text::trims).
         const std::vector<size_t> parts = cuts(text, gap, trims);
         auto advance = [&](size_t end) {
-            const pixel_t spread = justify_shift(text, end, gap) - trim_shift(trims, end);
-            if(all_upright)
-                return fm.font_size * pixel_t(float(utf8_length(text.substr(0, end)))) + spread;
-            return vertical_advance(container, text, end, orientation, font) + spread;
+            return vertical_advance(container, text, end, orientation, font, em, tcy) + justify_shift(text, end, gap) -
+                   trim_shift(trims, end);
         };
         // A sideways run is drawn a piece between two gaps (or around a trimmed mark: full width, moved back by the
         // half it gives up) at a time.
@@ -308,35 +316,54 @@ namespace
                 from = to;
             }
         };
-        for(size_t i = 0, n = 0; i < text.size();)
+        auto token = tcy.begin();
+        for(size_t i = 0, n = 0; i < text.size(); i += n)
         {
-            const char32_t    cp    = code_point_at(text, i, n);
-            const std::string glyph = text.substr(i, n);
-            if(drawn_upright(container, orientation, cp, glyph, font))
+            if(token != tcy.end() && token->from == i)
             {
+                // 縦中横: the token drawn as horizontal text, centred in its em of the column, squeezed across it when
+                // wider (as Blink fits text-combine-upright; stone lets two digits overhang the em).
                 flush(i);
-                // A trimmed mark: the font's half-width form (vhal) where its em box starts, else its full-width
-                // form moved back by the half it gives up.
-                uint_ptr          f     = upright;
-                pixel_t           back  = 0_px;
-                if(const char_trim* t = trim_at(trims, i))
-                {
-                    if(container->has_half_width_form(glyph.c_str(), font, true))
-                        f = css.get_font_half();
-                    else
-                        back = t->start;
-                }
-                const pixel_t     w     = container->text_width(glyph.c_str(), font);
-                const pixel_t     cx    = pos.x + advance(i) - back + (all_upright ? fm.font_size : w) / 2_px;
+                const std::string glyphs = text.substr(i, token->to - i);
+                const pixel_t     w      = container->text_width(glyphs.c_str(), font);
+                const pixel_t     cx     = pos.x + advance(i) + em / 2_px;
+                const float       s      = w > em ? float(em / w) : 1.0f;
                 paint_group       group;
-                group.matrix = upright_matrix(float(cx), float(cy));
+                group.matrix = {0, -s, 1, 0, float(cx - cy), s * float(cx) + float(cy)};
                 group.bounds = position(cx - w / 2_px, pos.y, w, pos.height);
                 container->begin_group(hdc, group);
-                container->draw_text(hdc, glyph.c_str(), f, color, position(cx - w / 2_px, pos.y, w, pos.height));
+                container->draw_text(hdc, glyphs.c_str(), font, color, group.bounds);
                 container->end_group(hdc);
-                run = i + n;
+                n   = token->to - i;
+                run = token->to;
+                ++token;
+                continue;
             }
-            i += n;
+            const char32_t    cp    = code_point_at(text, i, n);
+            const std::string glyph = text.substr(i, n);
+            if(!drawn_upright(container, orientation, cp, glyph, font))
+                continue;
+            flush(i);
+            // A trimmed mark: the font's half-width form (vhal) where its em box starts, else its full-width
+            // form moved back by the half it gives up.
+            uint_ptr          f     = upright;
+            pixel_t           back  = 0_px;
+            if(const char_trim* t = trim_at(trims, i))
+            {
+                if(container->has_half_width_form(glyph.c_str(), font, true))
+                    f = css.get_font_half();
+                else
+                    back = t->start;
+            }
+            const pixel_t     w     = container->text_width(glyph.c_str(), font);
+            const pixel_t     cx    = pos.x + advance(i) - back + (all_upright ? em : w) / 2_px;
+            paint_group       group;
+            group.matrix = upright_matrix(float(cx), float(cy));
+            group.bounds = position(cx - w / 2_px, pos.y, w, pos.height);
+            container->begin_group(hdc, group);
+            container->draw_text(hdc, glyph.c_str(), f, color, position(cx - w / 2_px, pos.y, w, pos.height));
+            container->end_group(hdc);
+            run = i + n;
         }
         flush(text.size());
     }
@@ -423,6 +450,7 @@ void litehtml::el_text::set_text(const std::string& text)
 {
     m_text = text;
     m_run.reset();
+    m_tate_chu_yoko.clear();
     m_strong_direction = 2;
     m_transformed_text.clear();
     m_use_transformed = false;
@@ -479,6 +507,27 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
         font = el_parent->css().get_font();
         fm   = el_parent->css().get_font_metrics();
     }
+
+    // Tate-chu-yoko: the tokens of its text set upright in one em, found in its text node's whole text, where the
+    // characters around it decide where a token ends (1 before ２ is not one).
+    std::vector<cjk::span> tcy;
+    const std::string&     shown = display_text();
+    if(el_parent && el_parent->css().is_vertical_rl() && el_parent->css().get_text_orientation() != text_orientation_sideways &&
+       !is_white_space() && !is_break() && !shown.empty())
+    {
+        if(el_parent->css().combines_upright())
+            tcy.push_back({0, shown.size()});
+        else if(m_run && !m_use_transformed && m_run_end <= m_run->text.size())
+            for(const auto& t : cjk::tate_chu_yoko(m_run->text, m_run_begin, m_run_end))
+                tcy.push_back({t.from - m_run_begin, t.to - m_run_begin});
+        else
+            tcy = cjk::tate_chu_yoko(shown, 0, shown.size());
+    }
+    if(tcy != m_tate_chu_yoko)
+    {
+        m_tate_chu_yoko = std::move(tcy);
+        m_measured_font = 0;
+    }
     if(is_break() || !font)
     {
         m_size.height      = 0;
@@ -520,24 +569,17 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
             }
             if(m_size.width < 0_px)
             {
-                // Vertical text as draw_vertical places it: its upright characters not kerned.
+                // Vertical text as draw_vertical places it: its upright characters not kerned, its tate-chu-yoko
+                // tokens an em each.
                 const std::string& measured = m_use_transformed ? m_transformed_text : m_text;
                 m_size.width = el_parent->css().is_vertical_rl()
                                    ? vertical_advance(get_document()->container(), measured, measured.size(),
-                                                      el_parent->css().get_text_orientation(), font)
+                                                      el_parent->css().get_text_orientation(), font, fm.font_size,
+                                                      m_tate_chu_yoko)
                                    : get_document()->container()->text_width(measured.c_str(), font);
             }
             if(ends_with_soft_hyphen() && !el_parent->css().is_vertical_rl())
                 m_end_extra = get_document()->container()->text_width(hyphenated().c_str(), font) - m_size.width;
-            if(el_parent->css().is_vertical_rl() && el_parent->css().combines_upright() && !is_white_space())
-            {
-                // 縦中横: the run sits upright in one em of the column.
-                m_size.width = fm.font_size;
-            } else if(el_parent->css().is_vertical_rl() && el_parent->css().get_text_orientation() == text_orientation_upright)
-            {
-                // Upright text in a vertical line: each character takes an em, as the font's vertical advance.
-                m_size.width = fm.font_size * pixel_t(float(utf8_length(display_text())));
-            }
             m_measured_font      = font;
             m_measured_transform = transform;
         }
@@ -617,15 +659,17 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
                         doc->container()->draw_text(hdc, shown.substr(0, text_item->cut).c_str(), font, color, pos);
                 } else if(doc->vertical() && el_parent->css().is_vertical_rl())
                 {
-                    draw_vertical(doc, hdc, shown, el_parent->css(), color, pos, gap, trims);
-                    draw_emphasis(doc, hdc, shown, el_parent->css(), pos, true, gap, trims);
+                    static const std::vector<cjk::span> no_tokens;
+                    const auto& tcy = text_item && text_item->is_fragment ? no_tokens : m_tate_chu_yoko;
+                    draw_vertical(doc, hdc, shown, el_parent->css(), color, pos, gap, trims, tcy);
+                    draw_emphasis(doc, hdc, shown, el_parent->css(), pos, true, gap, trims, tcy);
                 } else if(text_item && text_item->hyphen)
                 {
                     draw_justified(*this, hdc, hyphenated(), font, el_parent->css().get_font_half(), color, pos, gap, trims);
                 } else
                 {
                     draw_justified(*this, hdc, shown, font, el_parent->css().get_font_half(), color, pos, gap, trims);
-                    draw_emphasis(doc, hdc, shown, el_parent->css(), pos, false, gap, trims);
+                    draw_emphasis(doc, hdc, shown, el_parent->css(), pos, false, gap, trims, {});
                 }
             }
         }
@@ -638,6 +682,13 @@ litehtml::pixel_t litehtml::el_text::advance_to(const std::string& shown, size_t
         return 0_px;
     element::ptr   el_parent = parent();
     const uint_ptr font      = el_parent ? el_parent->css().get_font() : 0;
+    if(el_parent && el_parent->css().is_vertical_rl())
+    {
+        static const std::vector<cjk::span> no_tokens;
+        const css_properties& css = el_parent->css();
+        return vertical_advance(get_document()->container(), shown, bytes, css.get_text_orientation(), font,
+                                css.get_font_metrics().font_size, shown == display_text() ? m_tate_chu_yoko : no_tokens);
+    }
     if(!m_use_transformed && m_run && bytes <= shown.size() && m_run_end - m_run_begin == shown.size() && shown == m_text)
         for(const auto& entry : m_run->advances)
             if(entry.first == font && entry.second.size() == m_run->text.size() + 1)
@@ -672,7 +723,7 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
 {
     std::vector<char_trim> out;
     element::ptr           el_parent = parent();
-    if(!el_parent || shown.empty() || (el_parent->css().is_vertical_rl() && el_parent->css().combines_upright()))
+    if(!el_parent || shown.empty())
         return out;
     const css_properties& css = el_parent->css();
     std::vector<std::pair<size_t, char32_t>> chars;
@@ -683,6 +734,10 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
         const char32_t prev = k ? chars[k - 1].second : before;
         const char32_t next = k + 1 < chars.size() ? chars[k + 1].second : after;
         const uint8_t  at   = (k == 0 ? first : 0) | (k + 1 == chars.size() ? last : 0);
+        // A tate-chu-yoko token's characters are set together in their em.
+        if(std::any_of(m_tate_chu_yoko.begin(), m_tate_chu_yoko.end(),
+                       [&](const cjk::span& t) { return t.from <= chars[k].first && chars[k].first < t.to; }))
+            continue;
         const cjk::trim t   = cjk::compression(prev, chars[k].second, next, at);
         if(t.start == 0 && t.end == 0)
             continue;

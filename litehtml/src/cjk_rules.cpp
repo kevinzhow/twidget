@@ -25,6 +25,11 @@ namespace litehtml::cjk
 #include "cjk_scripts_table.inc"
         };
 
+        // The tokens the overlay sets as tate-chu-yoko (UTF-8), besides stone's numbers.
+        constexpr const char* tate_chu_yoko_tokens[] = {
+#include "cjk_tate_chu_yoko_table.inc"
+        };
+
         // stone's isSpaceChar: JavaScript's \s less the line breaks.
         bool is_space(char32_t c)
         {
@@ -40,6 +45,75 @@ namespace litehtml::cjk
                    (c >= 0x20D0 && c <= 0x20FF) || (c >= 0xFE20 && c <= 0xFE2F) || c == 0x3099 || c == 0x309A ||
                    (c >= 0xFE00 && c <= 0xFE0F) || (c >= 0xE0100 && c <= 0xE01EF) || c == 0x200C || c == 0x200D ||
                    (c >= 0x1F3FB && c <= 0x1F3FF) || (c >= 0xE0020 && c <= 0xE007F);
+        }
+
+        // The code point at text[i], and its length in bytes.
+        char32_t decode(const std::string& text, size_t i, size_t& n)
+        {
+            const unsigned char c0 = text[i];
+            n = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+            n = std::min(n, text.size() - i);
+            char32_t c = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
+            for(size_t k = 1; k < n; k++)
+                c = (c << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
+            return c;
+        }
+
+        // The code point ending at byte i (0 at the text's start), and where it starts.
+        char32_t decode_before(const std::string& text, size_t i, size_t& at)
+        {
+            at = i;
+            if(i == 0)
+                return 0;
+            do
+                at--;
+            while(at > 0 && (static_cast<unsigned char>(text[at]) & 0xC0) == 0x80);
+            size_t n;
+            return decode(text, at, n);
+        }
+
+        bool ascii_digit(char32_t c) { return c >= '0' && c <= '9'; }
+
+        // stone's tokens are Intl.Segmenter("ja") words (parser.ts splitWords): around a number, UAX #29's word
+        // boundaries. A number joins the letters and digits next to it (WB9-WB10: ALetter, Numeric; ExtendNumLet _),
+        // of the scripts a Japanese book mixes in: Latin, Greek, Cyrillic, Roman numerals, full-width letters and digits.
+        // Kana and kanji do not join it.
+        bool word_char(char32_t c)
+        {
+            return (c < 0x80 && (ascii_digit(c) || ((c | 0x20) >= 'a' && (c | 0x20) <= 'z') || c == '_')) || c == 0xAA ||
+                   c == 0xB5 || c == 0xBA || (c >= 0xC0 && c <= 0x24F && c != 0xD7 && c != 0xF7) ||
+                   (c >= 0x370 && c <= 0x52F && c != 0x37E && c != 0x387) || (c >= 0x2160 && c <= 0x2188) ||
+                   (c >= 0xFF10 && c <= 0xFF19) || (c >= 0xFF21 && c <= 0xFF3A) || (c >= 0xFF41 && c <= 0xFF5A);
+        }
+
+        bool numeric(char32_t c) { return ascii_digit(c) || (c >= 0xFF10 && c <= 0xFF19); }
+
+        // UAX #29's MidNum and MidNumLet (and the apostrophe): between two digits, part of one number (1.5, 12,000).
+        bool mid_num(char32_t c)
+        {
+            return c == ',' || c == '.' || c == ';' || c == '\'' || c == 0x2018 || c == 0x2019 || c == 0x2024 ||
+                   c == 0x2044 || c == 0xFE50 || c == 0xFE52 || c == 0xFE54 || c == 0xFF07 || c == 0xFF0C ||
+                   c == 0xFF0E || c == 0xFF1B;
+        }
+
+        // Whether the number ending (forward: starting) at byte i is part of a longer word: a letter or digit next to
+        // it, or a separator with a digit beyond it.
+        bool joins_number(const std::string& text, size_t i, bool forward)
+        {
+            size_t   n = 0, at = i;
+            char32_t c = forward ? (i < text.size() ? decode(text, i, n) : 0) : decode_before(text, i, at);
+            if(word_char(c))
+                return true;
+            if(!mid_num(c))
+                return false;
+            size_t beyond = 0;
+            return numeric(forward ? (i + n < text.size() ? decode(text, i + n, n) : 0) : decode_before(text, at, beyond));
+        }
+
+        // A Latin character next to an overlay token (not a space): it is part of a Latin word or a longer run of marks.
+        bool latin_next_to(char32_t c)
+        {
+            return c > ' ' && !is_space(c) && script_of(c) == script::latin;
         }
     } // namespace
 
@@ -88,6 +162,47 @@ namespace litehtml::cjk
         if((is & first_half) && ((classify(next) & (first_half | middle_dot)) || (at & line_end)))
             return {0, 0.5f};
         return {};
+    }
+
+    // stone_engine_js context.ts isTateChuYoko / isTateChuYokoToken: a token of at most 2 runs, each a number
+    // (isNumberChar: \p{N}) the Latin font sets (rotated, not notNeedsToClockwiseInTbRl): of those, the ASCII digits
+    // (manifest.json "mirrored"). The overlay's tokens are ours.
+    std::vector<span> tate_chu_yoko(const std::string& text, size_t from, size_t to)
+    {
+        std::vector<span> out;
+        to = std::min(to, text.size());
+        for(size_t i = from, n = 0; i < to; i += n)
+        {
+            const char32_t c = decode(text, i, n);
+            if(ascii_digit(c))
+            {
+                size_t start = i, end = i, at = 0;
+                while(start > 0 && ascii_digit(decode_before(text, start, at)))
+                    start = at;
+                while(end < text.size() && ascii_digit(static_cast<unsigned char>(text[end])))
+                    end++;
+                if(end - start <= 2 && start >= from && end <= to && !joins_number(text, start, false) &&
+                   !joins_number(text, end, true))
+                    out.push_back({start, end});
+                n = end - i;
+                continue;
+            }
+            for(const char* token : tate_chu_yoko_tokens)
+            {
+                if(!token)
+                    continue;
+                const size_t len = std::char_traits<char>::length(token);
+                size_t       at  = 0, m = 0;
+                if(i + len <= to && text.compare(i, len, token) == 0 && !latin_next_to(decode_before(text, i, at)) &&
+                   !latin_next_to(i + len < text.size() ? decode(text, i + len, m) : 0))
+                {
+                    out.push_back({i, i + len});
+                    n = len;
+                    break;
+                }
+            }
+        }
+        return out;
     }
 
     std::vector<size_t> justifiable_gaps(const std::string& text)

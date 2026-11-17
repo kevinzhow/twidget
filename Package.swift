@@ -44,7 +44,7 @@ let package = Package(
         .target(
             name: "TwidgetLitehtml",
             path: "litehtml",
-            exclude: ["LICENSE", "src/gumbo/LICENSE", "src/cjk_rules_table.inc", "src/cjk_scripts_table.inc"],
+            exclude: ["LICENSE", "src/gumbo/LICENSE", "src/cjk_rules_table.inc", "src/cjk_scripts_table.inc", "src/cjk_tate_chu_yoko_table.inc"],
             sources: ["src"],
             publicHeadersPath: "no-public-headers",
             cSettings: [

@@ -58,6 +58,10 @@ namespace litehtml
         // Its width shaped alone less its share of the run: what it takes more when it ends a line (Blink shapes a
         // line's end again after the break, without the kerning with what went to the next line).
         pixel_t m_end_extra = 0_px;
+        // Tate-chu-yoko (縦中横) in vertical text: the tokens of display_text() set upright in one em of the column
+        // (cjk::tate_chu_yoko; text-combine-upright: all, the whole text). Its width, drawing, justify, punctuation
+        // compression and selection take each as one em.
+        std::vector<cjk::span> m_tate_chu_yoko;
 
       public:
         el_text(const char* text, const document::ptr& doc);
@@ -89,15 +93,17 @@ namespace litehtml
         /// What a line broken at its soft hyphen draws: a hyphen-minus for it (a glyph every Latin font has, where
         /// Blink takes U+2010 when the font has one).
         std::string hyphenated() const { return display_text().substr(0, display_text().size() - 2) + "-"; }
-        /// How far the first `bytes` of `shown` reach along a horizontal line: when `shown` is its whole text, its
-        /// share of the shaped run, as its width is (with the kerning inside it, as the piece is drawn whole); otherwise
-        /// (a fragment, the hyphenated end) measured alone.
+        /// How far the first `bytes` of `shown` reach along its line: when `shown` is its whole text, its share of the
+        /// shaped run, as its width is (with the kerning inside it, as the piece is drawn whole); otherwise (a fragment,
+        /// the hyphenated end) measured alone. In vertical text, as draw_vertical places it (its tate-chu-yoko tokens an
+        /// em each).
         pixel_t advance_to(const std::string& shown, size_t bytes) const;
         /// Punctuation compression of `shown` (its text) between `before` and `after`, the characters next to it in its
         /// line's flow (0: none), its first and last characters at `first` and `last` (cjk::line_position): each trimmed
         /// character, with its share of its advance (an em, upright in vertical text).
         std::vector<char_trim> compression(const std::string& shown, char32_t before, char32_t after, uint8_t first,
                                            uint8_t last) const;
+        const std::vector<cjk::span>& tate_chu_yoko() const { return m_tate_chu_yoko; }
         uint32_t source_pos() const { return m_src_pos; }
         uint32_t source_utf16() const { return m_src_utf16; }
         void compute_styles(bool recursive) override;

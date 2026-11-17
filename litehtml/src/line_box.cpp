@@ -458,9 +458,11 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             if(!src)
                 continue;
             last = chars.back();
-            // stone's isJustifiableGapTbRl: 縦中横 takes one em, its characters set together.
-            if(!(src->css().is_vertical_rl() && src->css().combines_upright()))
-                gaps_inside[i] = int(cjk::justifiable_gaps(part->is_fragment ? part->fragment_text : src->display_text()).size());
+            // stone's isJustifiableGapTbRl: none inside a tate-chu-yoko token, its characters set together in one em.
+            for(size_t gap : cjk::justifiable_gaps(part->is_fragment ? part->fragment_text : src->display_text()))
+                if(part->is_fragment || std::none_of(src->tate_chu_yoko().begin(), src->tate_chu_yoko().end(),
+                                                     [&](const cjk::span& t) { return t.from < gap && gap < t.to; }))
+                    gaps_inside[i]++;
             gaps += gaps_inside[i];
         }
         if(gaps == 0)

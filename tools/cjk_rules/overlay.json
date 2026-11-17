@@ -2,13 +2,37 @@
   "additions": [
     {
       "chars": "─",
-      "classes": ["inseparable"],
+      "classes": [
+        "inseparable"
+      ],
       "reason": "U+2500 BOX DRAWINGS LIGHT HORIZONTAL: books set ── as a dash (suzume, g34013); stone's set has only U+2014 and U+2015, so ── was split at a line's end and spaced apart by justify."
     },
     {
       "chars": "%",
-      "classes": ["not_starting"],
+      "classes": [
+        "not_starting"
+      ],
       "reason": "A percent sign stays with the number before it (UAX #14 PO): litehtml's break between two elements kept it there before the rule set replaced that check (\",.;:!?%)]}\"), and stone's set has no %."
+    }
+  ],
+  "tate_chu_yoko": [
+    {
+      "tokens": [
+        "!?",
+        "!!",
+        "?!",
+        "??"
+      ],
+      "reason": "Half-width !? !! ?! ?? between Japanese characters (Kevin's page: 殺されたんですか!?」, 2026-11-17) were drawn sideways, as stone_engine draws them; set upright in one em of the column, as the full-width ⁉ and a book's text-combine-upright set them. Not when a Latin character is next to them (Really!?, !?!)."
+    },
+    {
+      "tokens": [
+        "‼",
+        "⁉",
+        "⁈",
+        "⁇"
+      ],
+      "reason": "Already upright (UAX #50 U) and set in one em by stone (its Japanese script), but measured by their horizontal width in a Latin font (25.49 px at 30 px, where Chromium advances 30): set in one em of the column."
     }
   ]
 }
