@@ -277,8 +277,10 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
                         width = measured.width;
                     } else
                     {
-                        following->render(0_px, 0_px, self_size, fmt_ctx);  // as place_inline measures an inline box
-                        width = following->width();
+                        // As place_inline measures an inline box: at its shrink-to-fit width, not the line's (render first: it
+                        // sets the width).
+                        const pixel_t natural = following->render(0_px, 0_px, self_size, fmt_ctx).natural_width;
+                        width = std::min(natural, following->width());
                     }
                     m_trailing += starts + width;
                     for(next++; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
