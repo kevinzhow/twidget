@@ -593,7 +593,7 @@ typedef struct GumboInternalOptions {
    * is provided so that if the page is totally borked, we don't completely fill
    * up the errors vector and exhaust memory with useless redundant errors.  Set
    * to -1 to disable the limit.
-   * Default: -1
+   * Default: 0
    */
   int max_errors;
 
