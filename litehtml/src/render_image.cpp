@@ -46,9 +46,9 @@ litehtml::rendered_width litehtml::render_item_image::_render(pixel_t x, pixel_t
         }
 
         // check for max-height
-        if(!src_el()->css().get_max_height().is_predefined())
+        if(self_size.max_height.type != containing_block_context::cbc_value_type_none)
         {
-            pixel_t max_height = calc_max_height(sz.height, containing_block_size.height);
+            pixel_t max_height = self_size.max_height;
             if(m_pos.height > max_height)
             {
                 m_pos.height = max_height;
@@ -69,9 +69,9 @@ litehtml::rendered_width litehtml::render_item_image::_render(pixel_t x, pixel_t
         }
 
         // check for max-height
-        if(!src_el()->css().get_max_height().is_predefined())
+        if(self_size.max_height.type != containing_block_context::cbc_value_type_none)
         {
-            pixel_t max_height = calc_max_height(sz.height, containing_block_size.height);
+            pixel_t max_height = self_size.max_height;
             if(m_pos.height > max_height)
             {
                 m_pos.height = max_height;
@@ -120,9 +120,9 @@ litehtml::rendered_width litehtml::render_item_image::_render(pixel_t x, pixel_t
         }
 
         // check for max-height
-        if(!src_el()->css().get_max_height().is_predefined())
+        if(self_size.max_height.type != containing_block_context::cbc_value_type_none)
         {
-            pixel_t max_height = calc_max_height(sz.height, containing_block_size.height);
+            pixel_t max_height = self_size.max_height;
             if(m_pos.height > max_height)
             {
                 m_pos.height = max_height;
@@ -147,11 +147,4 @@ litehtml::rendered_width litehtml::render_item_image::_render(pixel_t x, pixel_t
     ret.natural_width = ret.min_width = m_pos.width + content_offset_left() + content_offset_right();
 
     return ret;
-}
-
-litehtml::pixel_t litehtml::render_item_image::calc_max_height(pixel_t image_height, pixel_t containing_block_height)
-{
-    document::ptr doc = src_el()->get_document();
-    return doc->to_pixels(css().get_max_height(), css().get_font_metrics(),
-                          containing_block_height == 0_px ? image_height : containing_block_height);
 }

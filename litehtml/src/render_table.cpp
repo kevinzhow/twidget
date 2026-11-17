@@ -430,8 +430,11 @@ litehtml::rendered_width litehtml::render_item_table::_render(pixel_t x, pixel_t
 
     // calculate minimum height from m_css.get_min_height()
     pixel_t min_height = 0_px;
-    if(!src_el()->css().get_min_height().is_predefined() &&
-       src_el()->css().get_min_height().units() == css_units_percentage)
+    if(percent_of_auto(src_el()->css().get_min_height(), containing_block_size.height))
+    {
+        min_height = 0_px;
+    } else if(!src_el()->css().get_min_height().is_predefined() &&
+              src_el()->css().get_min_height().units() == css_units_percentage)
     {
         min_height = src_el()->css().get_min_height().calc_percent(containing_block_size.height);
     } else
