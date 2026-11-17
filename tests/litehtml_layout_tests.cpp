@@ -84,6 +84,23 @@ position box(const document::ptr& doc, const char* id) {
     return el ? el->get_placement() : position();
 }
 
+/// The box of each <b>'s text as "x,y w" in order, and the block's height: the line boxes the text makes.
+std::string words(const document::ptr& doc) {
+    std::string out;
+    for (const auto& el : doc->root()->select_all("b")) {
+        const position p = el->children().front()->get_placement();
+        out += num(p.x) + "," + num(p.y) + " " + num(p.width) + "; ";
+    }
+    return out + "h=" + num(box(doc, "t").height);
+}
+
+/// The elements under `el` that are white space (el_space).
+size_t spaces(const element::ptr& el) {
+    size_t n = el->is_space() ? 1 : 0;
+    for (const auto& child : el->children()) n += spaces(child);
+    return n;
+}
+
 } // namespace
 
 int main() {
@@ -145,6 +162,60 @@ int main() {
         doc = layout(c, "<img id=\"t\" style=\"height:200px;max-width:250px\">");
         check(near(box(doc, "t").width, 149.5f) && near(box(doc, "t").height, 200),
               "img height:200px;max-width:250px is 149.5 x 200: " + num(box(doc, "t").width) + " x " + num(box(doc, "t").height));
+    }
+    {
+        // White space between elements under each white-space value: the same line boxes as one element per character
+        // gave (130 px wide: 16 characters of 8 px).
+        const std::string text = "<b>aa</b>   \n    <b>bb</b>\t<b>cc</b>\n\n  <b>dd</b>  <b>eeeeeeeeee</b>          <b>ff</b> \r\n "
+                                 "<b>gg</b>\t\t<b>hh</b> <b>\xe6\x97\xa5</b>\n  <b>\xe6\x9c\xac</b>";
+        const char* modes[] = {"normal", "nowrap", "pre-line", "pre", "pre-wrap", "break-spaces"};
+        const char* expected[] = {
+            "0.00,0.00 16.00; 24.00,0.00 16.00; 48.00,0.00 16.00; 72.00,0.00 16.00; 0.00,16.00 80.00; 88.00,16.00 16.00; 112.00,16.00 16.00; 0.00,32.00 16.00; 24.00,32.00 24.00; 56.00,32.00 24.00; h=48.00",
+            "0.00,0.00 16.00; 24.00,0.00 16.00; 48.00,0.00 16.00; 72.00,0.00 16.00; 96.00,0.00 80.00; 184.00,0.00 16.00; 208.00,0.00 16.00; 232.00,0.00 16.00; 256.00,0.00 24.00; 288.00,0.00 24.00; h=16.00",
+            "0.00,0.00 16.00; 24.00,0.00 16.00; 48.00,0.00 16.00; 0.00,16.00 16.00; 24.00,16.00 80.00; 112.00,16.00 16.00; 0.00,32.00 16.00; 24.00,32.00 16.00; 48.00,32.00 24.00; 0.00,48.00 24.00; h=64.00",
+            "0.00,0.00 16.00; 32.00,16.00 16.00; 80.00,16.00 16.00; 16.00,48.00 16.00; 48.00,48.00 80.00; 208.00,48.00 16.00; 8.00,64.00 16.00; 88.00,64.00 16.00; 112.00,64.00 24.00; 16.00,80.00 24.00; h=96.00",
+            // pre-wrap as main lays it out since 3a3ca6c: eeeeeeeeee, followed by kept spaces, goes to the next line.
+            "0.00,0.00 16.00; 32.00,16.00 16.00; 80.00,16.00 16.00; 16.00,48.00 16.00; 0.00,64.00 80.00; 0.00,80.00 16.00; 8.00,96.00 16.00; 88.00,96.00 16.00; 0.00,112.00 24.00; 16.00,128.00 24.00; h=144.00",
+            "0.00,0.00 16.00; 24.00,0.00 16.00; 48.00,0.00 16.00; 72.00,0.00 16.00; 0.00,16.00 80.00; 88.00,16.00 16.00; 112.00,16.00 16.00; 0.00,32.00 16.00; 24.00,32.00 24.00; 56.00,32.00 24.00; h=48.00"};
+        for (int m = 0; m < 6; m++) {
+            Stub c;
+            auto doc = layout(c, std::string("<div id=\"t\" style=\"width:130px;white-space:") + modes[m] + "\">" + text + "</div>");
+            const std::string got = words(doc);
+            check(got == expected[m], std::string("white-space:") + modes[m] + ": " + got);
+        }
+        // The same when a patch changes white-space (update_from_string restyles in place).
+        auto html = [&](const char* mode) {
+            return std::string("<html><head></head><body style=\"margin:0\"><div id=\"t\" style=\"width:130px;white-space:") + mode +
+                   "\">" + text + "</div></body></html>";
+        };
+        for (int from : {0, 3}) {
+            const int to = 3 - from;
+            Stub c;
+            auto doc = document::createUpdatableFromString(html(modes[from]), &c, master_css);
+            doc->render(300);
+            bool changed = false;
+            const bool patched = doc->update_from_string(html(modes[to]), &changed);
+            doc->render(300);
+            const std::string got = words(doc);
+            check(patched && changed && got == expected[to],
+                  std::string("white-space:") + modes[from] + " patched to " + modes[to] + ": " + got);
+        }
+    }
+    {
+        // 100 KB of indentation around paragraphs, as a pretty-printed book has it: one element for each run of white
+        // space, not one for each character.
+        std::string body = "<div>", bare = "<div>";
+        for (int i = 0; i < 100; i++) {
+            body += "\n" + std::string(1000, ' ') + "<p>w</p>";
+            bare += "<p>w</p>";
+        }
+        Stub c;
+        auto doc = layout(c, body + "\n</div>");
+        const size_t n = spaces(doc->root());
+        check(n <= 101, "100 runs of 1001 white space characters make " + std::to_string(n) + " elements (at most 101)");
+        auto without = layout(c, bare + "</div>");
+        check(doc->height() == without->height(), "the paragraphs are laid out as without the indentation: " + num(doc->height()) +
+                                                      " (" + num(without->height()) + " without)");
     }
     std::printf("%s\n", failures ? "FAILED" : "OK");
     return failures ? 1 : 0;
