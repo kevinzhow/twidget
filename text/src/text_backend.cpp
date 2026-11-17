@@ -10,6 +10,8 @@
 #endif
 #include <hb.h>
 #include <hb-ot.h>
+#include <opentype-sanitiser.h>
+#include <ots-memory-stream.h>
 #if defined(TWT_HB_GPU)
 #include <hb-gpu.h>
 #endif
@@ -1181,11 +1183,14 @@ std::vector<TextBackend::GlyphRun> TextBackend::shape(int font, const std::strin
 }
 
 bool TextBackend::add_book_font(const std::string& family, int weight, bool italic, std::vector<uint8_t> bytes) {
-    if (family.empty() || bytes.size() < 12) return false;
-    const uint8_t* b = bytes.data();
-    bool sfnt = (b[0] == 0 && b[1] == 1 && b[2] == 0 && b[3] == 0) || std::memcmp(b, "OTTO", 4) == 0 || std::memcmp(b, "true", 4) == 0 ||
-                std::memcmp(b, "ttcf", 4) == 0;
-    if (!sfnt) return false;  // WOFF and WOFF2 need a decompressor this build does not have
+    if (family.empty() || bytes.empty()) return false;
+    // The OpenType Sanitizer, as a browser runs a web font through it: OpenType, TrueType and collections checked
+    // and written out again, WOFF and WOFF2 unpacked, anything else refused. Its output is what HarfBuzz measures
+    // with and what the painter loads.
+    ots::ExpandingMemoryStream out(bytes.size() * 2 + 4096, 64u << 20);
+    ots::OTSContext ots;
+    if (!ots.Process(&out, bytes.data(), bytes.size(), 0)) return false;
+    bytes.assign(static_cast<const uint8_t*>(out.get()), static_cast<const uint8_t*>(out.get()) + out.Tell());
     auto face = std::make_unique<Face>();
     face->bytes = std::make_shared<std::vector<uint8_t>>(std::move(bytes));
     face->family = family;

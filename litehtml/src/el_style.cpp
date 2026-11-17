@@ -1,5 +1,6 @@
 #include "el_style.h"
 #include "document.h"
+#include "el_cdata.h"
 
 litehtml::el_style::el_style(const std::shared_ptr<document>& doc) :
     element(doc)
@@ -19,7 +20,8 @@ void litehtml::el_style::parse_attributes()
 
 bool litehtml::el_style::appendChild(const ptr& el)
 {
-    if(el && el->is_text())
+    // Its text: text nodes, and CDATA sections (an SVG <style>, foreign content, has them as gumbo reads XML).
+    if(el && (el->is_text() || dynamic_cast<const el_cdata*>(el.get())))
     {
         m_children.push_back(el);
         return true;

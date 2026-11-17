@@ -1849,6 +1849,10 @@ namespace litehtml
         {
             return;
         }
+        if(doc_ptr()->container()->draw_svg(hdc, shared_from_this(), pos))
+        {
+            return;
+        }
         paint_group group;
         float       view[4];
         view_group(pos, view, group);

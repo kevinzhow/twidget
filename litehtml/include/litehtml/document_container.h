@@ -119,6 +119,9 @@ namespace litehtml
         }
         virtual void draw_backdrop(litehtml::uint_ptr /*hdc*/, const filter_paint& /*filter*/) {}
         virtual void draw_path(litehtml::uint_ptr /*hdc*/, const vector_path& /*path*/) {}
+        /// An <svg> element about to be drawn in `pos` (its box, document coordinates): true when the container drew it
+        /// itself (el_svg then draws none of it), false for el_svg to draw its shapes.
+        virtual bool draw_svg(litehtml::uint_ptr /*hdc*/, const std::shared_ptr<element>& /*svg*/, const position& /*pos*/) { return false; }
         virtual void end_group(litehtml::uint_ptr /*hdc*/) {}
         virtual bool draw_cached(litehtml::uint_ptr /*hdc*/, const position& /*box*/, uint64_t /*key*/,
                                  const std::function<void(litehtml::uint_ptr)>& /*paint*/)
