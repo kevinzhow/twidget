@@ -257,16 +257,30 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
             pixel_t starts = 0_px;
             for(; next < events.size() && events[next].second == iterator_item_type_start_parent; next++)
                 starts += lbi_start(events[next].first).width();
-            if(next > index + 1 && next < events.size() && events[next].second == iterator_item_type_child &&
-               el->src_el()->is_text() && !el->src_el()->is_white_space() && !el->src_el()->is_break())
+            // A ruby counts by its base text, on either side: <ruby>仕切<rt>しき</rt></ruby>って keeps 切 with っ.
+            // Two texts next to each other are one text's words, which the container's split_text already broke.
+            auto is_ruby = [](const std::shared_ptr<render_item>& item) { return item->src_el()->tag() == _ruby_; };
+            const bool here_text = el->src_el()->is_text() && !el->src_el()->is_white_space() && !el->src_el()->is_break();
+            if(next < events.size() && events[next].second == iterator_item_type_child && (here_text || is_ruby(el)) &&
+               (next > index + 1 || is_ruby(el) || is_ruby(events[next].first)))
             {
-                auto text = std::dynamic_pointer_cast<el_text>(events[next].first->src_el());
-                if(text && !text->is_white_space() &&
-                   cjk::no_break_between(edge_char(el->src_el(), false), edge_char(text, true)))
+                const auto& following = events[next].first;
+                auto text = std::dynamic_pointer_cast<el_text>(following->src_el());
+                if(((text && !text->is_white_space()) || is_ruby(following)) &&
+                   cjk::no_break_between(edge_char(el->src_el(), false), edge_char(following->src_el(), true)))
                 {
-                    size measured;
-                    events[next].first->src_el()->get_content_size(measured, self_size.render_width);
-                    m_trailing += starts + measured.width;
+                    pixel_t width = 0_px;
+                    if(text)
+                    {
+                        size measured;
+                        following->src_el()->get_content_size(measured, self_size.render_width);
+                        width = measured.width;
+                    } else
+                    {
+                        following->render(0_px, 0_px, self_size, fmt_ctx);  // as place_inline measures an inline box
+                        width = following->width();
+                    }
+                    m_trailing += starts + width;
                     for(next++; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
                         m_trailing += lbi_end(events[next].first).width();
                 }
