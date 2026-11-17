@@ -4,6 +4,7 @@
 // Fixtures: tests/fixtures/fonts (Pacifico.woff, Macondo.woff2: SIL Open Font License, the files beside them).
 #include "text_backend.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -60,6 +61,18 @@ int main() {
         if (f.bookFaces.empty()) continue;
         CHECK(sfnt(face_bytes(face_info(f.bookFaces.front()).id)), "%s: the painter gets an OpenType file", c.family);
         CHECK(!backend.shape(font, "Hello").empty(), "%s: shapes text", c.family);
+    }
+
+    // A ligature is one cluster: text_advances has no advance between its characters (NaN), so that a piece of a run
+    // cut there is measured alone. Pacifico's ff, also formed across a soft hyphen (HarfBuzz skips default ignorables).
+    {
+        const int font = backend.create_font("\"Book Woff\", serif", 16, 400, false, "", m);
+        std::vector<float> p;
+        backend.text_advances(font, "aff", p);
+        CHECK(p.size() == 4 && p[0] == 0 && p[1] > 0 && std::isnan(p[2]) && p[3] > p[1], "ff: one cluster");
+        backend.text_advances(font, "af\xC2\xAD" "fr", p);
+        CHECK(p.size() == 7 && p[1] > 0 && std::isnan(p[2]) && std::isnan(p[3]) && std::isnan(p[4]) && p[5] > p[1] && p[6] > p[5],
+              "f<soft hyphen>f: one cluster");
     }
 
     // Not fonts: a WOFF header over garbage, and text.
