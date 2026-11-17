@@ -145,6 +145,9 @@ public:
     /// No images here: a host loads its own (a card backend overrides this).
     bool load_image(int, const std::string&, float&, float&) override { return false; }
 
+    /// Whether the face `text` (one character) is drawn with in `font` has a vertical form for it: OpenType vert gives
+    /// it another glyph (a CJK font's … is ︙; a Latin font has none).
+    bool has_vertical_form(int font, const std::string& text);
     /// The faces `text` is measured with in `font`, in order (text_width shapes each segment with its face).
     std::vector<Segment> segments(int font, const std::string& text);
     /// The ascent and descent (CSS px, unrounded) of each face other than the font's own that `text` is measured with

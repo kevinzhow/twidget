@@ -992,6 +992,24 @@ void TextBackend::text_advances(int font, const std::string& text, std::vector<f
     prefix[text.size()] = float(sum);
 }
 
+bool TextBackend::has_vertical_form(int font, const std::string& text) {
+    const std::vector<Segment> faces = segments(font, text);
+    const std::vector<uint32_t> cps = utf8(text);
+    hb_codepoint_t nominal = 0;
+    if (faces.empty() || !faces.front().face || cps.empty() || !hb_font_get_nominal_glyph(faces.front().face->font, cps[0], &nominal))
+        return false;
+    hb_buffer_t* buf = hb_buffer_create();
+    hb_buffer_add_codepoints(buf, cps.data(), int(cps.size()), 0, int(cps.size()));
+    hb_buffer_guess_segment_properties(buf);
+    const hb_feature_t vert{HB_TAG('v', 'e', 'r', 't'), 1, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END};
+    hb_shape(faces.front().face->font, buf, &vert, 1);
+    unsigned n = 0;
+    const hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
+    const bool substituted = n > 0 && info[0].codepoint != nominal;
+    hb_buffer_destroy(buf);
+    return substituted;
+}
+
 std::vector<TextBackend::Segment> TextBackend::segments(int font, const std::string& text) {
     std::vector<Segment> out;
     auto it = fonts_.find(font);

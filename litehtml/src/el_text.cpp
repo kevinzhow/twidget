@@ -188,12 +188,13 @@ namespace
             char32_t cp = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
             for(size_t k = 1; k < n; k++)
                 cp = (cp << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
+            const std::string glyph = text.substr(i, n);
             const bool up = orientation == text_orientation_upright ||
-                            (orientation == text_orientation_mixed && upright_in_vertical(cp));
+                            (orientation == text_orientation_mixed && upright_in_vertical(cp) &&
+                             (!turned_in_vertical(cp) || container->has_vertical_form(glyph.c_str(), font)));
             if(up)
             {
                 flush(i);
-                const std::string glyph = text.substr(i, n);
                 const pixel_t     w     = container->text_width(glyph.c_str(), font);
                 const pixel_t     cx    = pos.x + advance(i) + (all_upright ? fm.font_size : w) / 2_px;
                 paint_group       group;
