@@ -3,6 +3,7 @@
 // and cuts its text after each character from U+2000, so every break between two characters here is litehtml's choice
 // at an element boundary.
 #include <litehtml.h>
+#include <litehtml/cjk_rules.h>
 
 #include <cstdio>
 #include <string>
@@ -160,6 +161,29 @@ int main() {
     // A space after the element is no character the next line would start with: the line breaks there as before.
     got = layout("16px", "一<span>二</span> 三");
     check(got == "一@0,2 二@8,2 三@0,22", "a space after an element: " + got);
+
+    // The classes the steps after line breaking (justify, punctuation compression) read.
+    using namespace litehtml::cjk;
+    const std::pair<char32_t, classes> classes_of[] = {
+        {U'「', not_ending | opening},
+        {U'」', not_starting | closing},
+        {U'（', not_ending | opening},
+        {U'）', not_starting | closing},
+        {U'。', not_starting | full_stop_comma | hanging},
+        {U'、', not_starting | full_stop_comma | hanging},
+        {U'・', not_starting | middle_dot},
+        {U'：', not_starting | middle_dot},
+        {U'ー', not_starting},
+        {U'…', inseparable},
+        {U'─', inseparable},
+        {U'漢', 0},
+        {U'a', 0},
+    };
+    for (auto [c, want] : classes_of) {
+        char what[64];
+        std::snprintf(what, sizeof what, "classify(U+%04X) == %#x (got %#x)", unsigned(c), unsigned(want), unsigned(classify(c)));
+        check(classify(c) == want, what);
+    }
 
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;

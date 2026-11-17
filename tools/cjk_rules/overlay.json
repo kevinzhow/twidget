@@ -1,0 +1,14 @@
+{
+  "additions": [
+    {
+      "chars": "─",
+      "classes": ["inseparable"],
+      "reason": "U+2500 BOX DRAWINGS LIGHT HORIZONTAL: books set ── as a dash (suzume, g34013); stone's set has only U+2014 and U+2015, so ── was split at a line's end and spaced apart by justify."
+    },
+    {
+      "chars": "%",
+      "classes": ["not_starting"],
+      "reason": "A percent sign stays with the number before it (UAX #14 PO): litehtml's break between two elements kept it there before the rule set replaced that check (\",.;:!?%)]}\"), and stone's set has no %."
+    }
+  ]
+}

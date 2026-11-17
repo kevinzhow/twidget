@@ -1,0 +1,28 @@
+{
+  "upstream": [
+    {
+      "name": "stone_engine_js",
+      "repo": "https://github.com/non-standardworld/stone_engine_js",
+      "commit": "caae3076008dcc7abf9804c611b4bad8bd64d49f",
+      "path": "src/punctuation.ts",
+      "licence": "MIT",
+      "use": "source: generate.py reads its tables",
+      "sha256": {
+        "LICENSE": "0dca6458e84c98b704c33b252272a87195437601e01b83b1435767e222e383ac",
+        "src/punctuation.ts": "a9888873793a77ad5f209ad1305dcb36d00788b6dc26cf11b517958f9f479ea9"
+      }
+    },
+    {
+      "name": "stone_engine",
+      "repo": "https://github.com/ndc-stone/stone_engine",
+      "commit": "f8b2dc5d64c2022bc730275d287124561b406fef",
+      "path": "Sources/stone_engine/context/STObject.swift",
+      "licence": "MIT",
+      "use": "reference: the Swift original (STPunctuation, STKinsoku); the JS port fixed its sets and says how in src/punctuation.ts and src/layout.ts",
+      "sha256": {
+        "LICENSE": "0dca6458e84c98b704c33b252272a87195437601e01b83b1435767e222e383ac",
+        "Sources/stone_engine/context/STObject.swift": "6fbc726ab6787f9be0bfc1f76934bd89261048b15852d8f75a63771c0d1802ed"
+      }
+    }
+  ]
+}
