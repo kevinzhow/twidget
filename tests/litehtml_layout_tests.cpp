@@ -136,6 +136,16 @@ int main() {
         check(near(box(doc, "t").height, 400) && near(box(doc, "t").width, 299),
               "img max-height:100% of height:400px is 299 x 400: " + num(box(doc, "t").width) + " x " + num(box(doc, "t").height));
     }
+    {
+        // An img with a set height and an auto width obeys max-width too, and keeps its ratio.
+        Stub c;
+        auto doc = layout(c, "<img id=\"t\" style=\"height:800px;max-width:300px\">");
+        check(near(box(doc, "t").width, 300) && near(box(doc, "t").height, 401.34f),
+              "img height:800px;max-width:300px is 300 x 401.34: " + num(box(doc, "t").width) + " x " + num(box(doc, "t").height));
+        doc = layout(c, "<img id=\"t\" style=\"height:200px;max-width:250px\">");
+        check(near(box(doc, "t").width, 149.5f) && near(box(doc, "t").height, 200),
+              "img height:200px;max-width:250px is 149.5 x 200: " + num(box(doc, "t").width) + " x " + num(box(doc, "t").height));
+    }
     std::printf("%s\n", failures ? "FAILED" : "OK");
     return failures ? 1 : 0;
 }
