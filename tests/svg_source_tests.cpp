@@ -104,6 +104,14 @@ int main() {
         check(c.svgs.size() == 1, "draw_svg true: asked once");
         check(c.paths.empty(), "draw_svg true: el_svg draws none of its shapes");
     }
+    {
+        // An SVG <style> in a CDATA section, as SVG files and XHTML books write it (W3C cnt-svg-embedded): its rules apply.
+        Stub c;
+        draw(c, "<svg width=\"40\" height=\"20\"><style><![CDATA[ rect.a { fill: #00ff00 } ]]></style>"
+                "<rect class=\"a\" width=\"10\" height=\"10\"/></svg>");
+        check(c.paths.size() == 1 && c.paths[0].fill_color == web_color(0, 255, 0),
+              "a <style>'s CDATA section is its text: the rect is green");
+    }
     std::printf("%s\n", failures ? "FAILED" : "OK");
     return failures ? 1 : 0;
 }
