@@ -112,6 +112,13 @@ int main() {
         check(c.paths.size() == 1 && c.paths[0].fill_color == web_color(0, 255, 0),
               "a <style>'s CDATA section is its text: the rect is green");
     }
+    {
+        // A CR after a tag name, as a file with CRLF line ends has it (IDPF svg-in-spine's Tsuru_wiki pages: every <path
+        // on a line of its own): the element is there, as with any other white space.
+        Stub c;
+        draw(c, "<svg width=\"40\" height=\"20\"><rect\r\n width=\"10\" height=\"10\" fill=\"#00ff00\"/><path\r\n d=\"M0 0H5V5Z\"/></svg>");
+        check(c.paths.size() == 2, "a CR after a tag name: <rect> and <path> are drawn (" + std::to_string(c.paths.size()) + " paths)");
+    }
     std::printf("%s\n", failures ? "FAILED" : "OK");
     return failures ? 1 : 0;
 }
