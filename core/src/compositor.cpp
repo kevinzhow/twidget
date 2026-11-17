@@ -306,24 +306,39 @@ PaintSummary summarize(const DisplayList& list) {
         Affine matrix;
         bool hidden;
         Rect filtered;  // inside a filter: where its result paints, which a change inside may all change
+        bool clipped;   // inside clips: `clip` bounds what can show of it (their boxes as transformed, intersected)
+        Rect clip;
     };
-    std::vector<Frame> stack{{1469598103934665603ull, Affine{}, false, {}}};
+    auto intersect = [](const Rect& a, const Rect& b) {
+        float x0 = std::max(a.x, b.x), y0 = std::max(a.y, b.y);
+        float x1 = std::min(a.x + a.w, b.x + b.w), y1 = std::min(a.y + a.h, b.y + b.h);
+        return Rect{x0, y0, std::max(0.0f, x1 - x0), std::max(0.0f, y1 - y0)};
+    };
+    std::vector<Frame> stack{{1469598103934665603ull, Affine{}, false, {}, false, {}}};
     for (const Command& c : list) {
         Digest d;
         d.value(stack.back().context);
         digest(d, c);
         switch (c.kind) {
-        case Cmd::ClipPush:
-            stack.push_back({d.h, stack.back().matrix, stack.back().hidden, stack.back().filtered});
-            continue;
-        case Cmd::GroupPush: {
-            Affine own{c.matrix[0], c.matrix[1], c.matrix[2], c.matrix[3], c.matrix[4], c.matrix[5]};
-            stack.push_back({d.h, stack.back().matrix * own, stack.back().hidden || c.hidden || c.opacity <= 0, stack.back().filtered});
+        case Cmd::ClipPush: {
+            // A clip's box (a clip path's bounds), transformed: what is outside it never shows, so it is no damage (a
+            // box spinning inside an overflow: hidden ancestor damages that ancestor, not its own turning bounds).
+            const Frame& f = stack.back();
+            Rect box = transformed(c.rect, f.matrix);
+            stack.push_back({d.h, f.matrix, f.hidden, f.filtered, true, f.clipped ? intersect(f.clip, box) : box});
             continue;
         }
-        case Cmd::FilterPush:
-            stack.push_back({d.h, stack.back().matrix, stack.back().hidden, transformed(ink_of(c), stack.back().matrix)});
+        case Cmd::GroupPush: {
+            Affine own{c.matrix[0], c.matrix[1], c.matrix[2], c.matrix[3], c.matrix[4], c.matrix[5]};
+            const Frame& f = stack.back();
+            stack.push_back({d.h, f.matrix * own, f.hidden || c.hidden || c.opacity <= 0, f.filtered, f.clipped, f.clip});
             continue;
+        }
+        case Cmd::FilterPush: {
+            const Frame& f = stack.back();
+            stack.push_back({d.h, f.matrix, f.hidden, transformed(ink_of(c), f.matrix), f.clipped, f.clip});
+            continue;
+        }
         case Cmd::ClipPop:
         case Cmd::GroupPop:
         case Cmd::FilterPop:
@@ -336,7 +351,11 @@ PaintSummary summarize(const DisplayList& list) {
         e.key = d.h;
         e.canvas = c.canvas;
         e.backdrop = c.kind == Cmd::Backdrop;
-        if (!stack.back().hidden) e.ink = stack.back().filtered.empty() ? transformed(ink_of(c), stack.back().matrix) : stack.back().filtered;
+        const Frame& f = stack.back();
+        if (!f.hidden) {
+            e.ink = f.filtered.empty() ? transformed(ink_of(c), f.matrix) : f.filtered;
+            if (f.clipped) e.ink = intersect(e.ink, f.clip);
+        }
         out.entries.push_back(e);
     }
     return out;

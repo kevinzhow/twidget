@@ -385,6 +385,41 @@ int main() {
             auto ids = layer_ids(c);
             check(ids.count(40) == 1 && ids.count(41) == 1 && ids.count(43) == 0, "the mover and the heading (with its <small>) are layers (" + c.composition_debug() + ")");
         }
+        {
+            // The obscurer limit counts layers, not boxes: one clock of 12 digits over a sweep is one still layer (the
+            // flash-sale hero: the clock's digits used to count one by one and kept the sweep painted every frame).
+            Renderer c(300, 1, false, fb);
+            std::string ops = R"({"op":"el","id":40,"tag":"div","attrs":[["id","m"]]},{"op":"ins","parent":4,"id":40,"before":null},
+                    {"op":"el","id":41,"tag":"div","attrs":[["id","clock"]]},{"op":"ins","parent":4,"id":41,"before":null})";
+            for (int i = 0; i < 12; i++) {
+                int id = 50 + 2 * i;
+                ops += R"(,{"op":"el","id":)" + std::to_string(id) + R"(,"tag":"span","attrs":[["class","d"]]},{"op":"ins","parent":41,"id":)" + std::to_string(id) +
+                       R"(,"before":null},{"op":"text","id":)" + std::to_string(id + 1) + R"(,"data":"8"},{"op":"ins","parent":)" + std::to_string(id) + R"(,"id":)" +
+                       std::to_string(id + 1) + R"(,"before":null})";
+            }
+            make(c, "#m{position:absolute;left:0;top:0;width:200px;height:60px;background:#ff0000;animation:spin 9s linear infinite} #clock{position:relative;margin:10px} "
+                    ".d{display:inline-block;width:12px;background:#333;color:#fff}",
+                 ops);
+            auto ids = layer_ids(c);
+            check(ids.count(40) == 1 && ids.count(41) == 1 && ids.count(50) == 0, "the mover and the clock (with its 12 digits) are layers (" + c.composition_debug() + ")");
+        }
+        {
+            // A card that pops in (opacity and scale) while an avatar inside it grows (width, height: no layer property):
+            // the card is a layer drawn from one picture, the avatar a still layer nested in it, repainted as it grows.
+            Renderer c(300, 1, false, fb);
+            make(c, "#card{width:200px;height:120px;background:#fff;animation:pop 2s linear} @keyframes pop{from{opacity:0;transform:scale(.96)}} "
+                    "#face{display:inline-block;width:22px;height:22px;background:#07f;animation:grow 2s linear} @keyframes grow{from{width:2px;height:2px}}",
+                 R"({"op":"el","id":40,"tag":"div","attrs":[["id","card"]]},{"op":"ins","parent":4,"id":40,"before":null},
+                    {"op":"el","id":41,"tag":"span","attrs":[["id","face"]]},{"op":"ins","parent":40,"id":41,"before":null})");
+            const Layer* card = nullptr;
+            const Layer* face = nullptr;
+            for (const Layer& l : c.composition().layers) {
+                if (l.id == 40) card = &l;
+                if (l.id == 41) face = &l;
+            }
+            check(card && face && face->parent == 40 && card->track.keys.size() >= 2,
+                  "a popping card with a growing avatar inside is a layer, the avatar a still one in it (" + c.composition_debug() + ")");
+        }
     }
 
     // ── compositor layers ──
@@ -770,6 +805,14 @@ int main() {
         d.trim();
         std::string after = to_json(d.paint());
         check(!d.damage(rects) && after == before, "after a trim the next paint is whole, and the same");
+        // A box larger than its overflow: hidden parent turns: the damage is the parent's box, not the box's bounds.
+        d.receive(parse(R"J({"type":"ops","ops":[
+            {"op":"el","id":9,"tag":"div","attrs":[["style","position:absolute;left:10px;top:100px;width:100px;height:50px;overflow:hidden"]]},{"op":"ins","parent":4,"id":9,"before":null},
+            {"op":"el","id":10,"tag":"div","attrs":[["style","position:absolute;left:-100px;top:-100px;width:300px;height:250px;background:red;transform:rotate(10deg)"]]},{"op":"ins","parent":9,"id":10,"before":null}]})J"));
+        d.paint();
+        d.receive(parse(R"J({"type":"ops","ops":[{"op":"style","id":10,"name":"transform","value":"rotate(20deg)"}]})J"));
+        d.paint();
+        check(d.damage(rects) && covers(10, 100, 100, 50) && within(9, 99, 102, 52), "a turning box inside an overflow: hidden parent damages only the parent's box");
     }
 
     // ── height bound ──

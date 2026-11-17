@@ -1,6 +1,7 @@
 // twidget::text's glyph outlines for GPU text (encode_glyph_outline, HarfBuzz hb-gpu): the glyphs a shaped run names
-// encode to blobs whose ink box is the glyph's, a space has no ink, an unknown face is refused, and the encoding is
-// the same every time and from another thread. Without hb-gpu in the build, only that it says so.
+// encode to blobs whose ink box is the glyph's, a space has no ink, a colour emoji has no outline, an unknown face is
+// refused, and the encoding is the same every time and from another thread. Without hb-gpu in the build, only that it
+// says so.
 #include "text_backend.h"
 
 #include <cstdio>
@@ -69,8 +70,21 @@ int main() {
     });
     t.join();
     for (size_t i = 0; i < glyphs.size(); i++) CHECK(here[i].blob == there[i].blob, "glyph %zu the same on another thread", i);
+    // A colour emoji (when the system has a colour emoji font): no outline, so painters draw its run as before.
+    const int emojiFont = backend.create_font("Noto Color Emoji, emoji", 16, 400, false, "", m);
+    int emoji = 0;
+    for (const auto& run : backend.shape(emojiFont, "\xF0\x9F\x8F\x86")) {
+        const FaceInfo& info = face_info(run.face);
+        if (info.family.find("Emoji") == std::string::npos) continue;
+        for (uint32_t g : run.glyphs) {
+            GlyphOutline o;
+            CHECK(!encode_glyph_outline(info.id, g, o), "colour emoji glyph %u (%s) has no outline", g, info.family.c_str());
+            emoji++;
+        }
+    }
     GlyphOutline none;
     CHECK(!encode_glyph_outline(0, 1, none) && !encode_glyph_outline(1 << 20, 1, none), "unknown faces are refused");
-    std::printf("text_outline_tests: %d glyphs (%d inked); %d checks, %d failed\n", int(glyphs.size()), inked, g_checks, g_failed);
+    std::printf("text_outline_tests: %d glyphs (%d inked), %d colour emoji; %d checks, %d failed\n", int(glyphs.size()), inked, emoji,
+                g_checks, g_failed);
     return g_failed ? 1 : 0;
 }
