@@ -170,6 +170,14 @@ namespace litehtml
         }
     };
 
+    /// Whether there is no break opportunity between two adjacent pieces of a line's text, `before` and `after` (el_text
+    /// or el_space; CSS Text 3 §5): the nearest common ancestor of the two has white-space nowrap or pre (§5.1); both
+    /// are letters under word-break: keep-all (§5.2); or, with `kinsoku` (pieces of different texts: one text's pieces
+    /// are where the container's split_text broke it), the CJK rule set forbids a break (cjk::no_break_between).
+    bool no_break_opportunity(const std::shared_ptr<element>& before, const std::shared_ptr<element>& after, bool kinsoku);
+    /// Whether `before` and `after` are pieces of one text: adjacent children of one element.
+    bool same_text(const std::shared_ptr<element>& before, const std::shared_ptr<element>& after);
+
     class line_box
     {
         struct va_context
