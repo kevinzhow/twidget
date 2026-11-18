@@ -46,7 +46,10 @@ ROWS = [
          test="punctuation_tests.cpp: \"an opening bracket at a line's start\", \"「 starting a wrapped line\"", shot="b-aozora-v",
          freq=["para-start-open:h", "para-start-open:v", "sim-wrapped-line-start-open:h", "sim-wrapped-line-start-open:v"], after={'status': 'done', 'ours': '段首（块的第一行、<br> 后的一行）的始め括弧：段落自己的 text-indent ≥1em 时去前一半（墨在缩进处）；不足 1em 而本书其他段落有缩进（U+3000 或 text-indent）时括弧保留全角，再补足到墨离行头一字（全角アキ）；折行行头仍天ツキ。完全不缩进的书、标题、居中段落照旧。', 'code': 'litehtml/src/render_inline_context.cpp paragraphs_indented, new_box; litehtml/src/line_box.cpp set_paragraph_start, add_item', 'test': 'punctuation_tests.cpp: "3.1.5 ①: a paragraph that starts with 「 after one indented with U+3000" 等 8 例'}),
     dict(id="3.1.5-2", sec="3.1.5 ②", title="段首全角半アキ、折行二分アキ", req="可选方案。", status="na", ours="不做（取①为默认）。", code="—", test="—", shot=""),
-    dict(id="3.1.5-3", sec="3.1.5 ③", title="段首二分アキ、折行天ツキ", req="可选方案（小说常用）。", status="na", ours="不做（取①为默认）。", code="—", test="—", shot=""),
+    dict(id="3.1.5-3", sec="3.1.5 ③", title="段首二分アキ、折行天ツキ", req="可选方案（小说常用）。", status="na", ours="不做（取①为默认）。", code="—", test="—", shot="",
+         after=dict(status="done", ours="document::set_paragraph_brackets(half_em)：段首括弧保留全角、不再补空（墨在半字处），折行天ツキ。阅读器「段首括号」设置：自动（小说 ③、其他书 ①，每本书打开时判定一次）/①/③。",
+                    code="litehtml/include/litehtml/document.h paragraph_brackets; litehtml/src/render_inline_context.cpp new_box; reader: native/src/brackets.cpp",
+                    test="punctuation_tests.cpp: \"3.1.5 ③: …\" 6 例; reader engine_tests paragraph_bracket_tests")),
     # 3.1.6
     dict(id="3.1.6-1", sec="3.1.6 ①", title="？！ 句末后全角空", req="？！ 用全角；作句末时前紧排、后空一字（接终わり括弧时紧排，括弧后二分）。",
          status="missing", ours="书里写了　（U+3000）就有空；没写时 ？！ 后直接接下一字。", code="litehtml/src/cjk_rules.cpp:155",
