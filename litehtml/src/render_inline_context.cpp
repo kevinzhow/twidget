@@ -945,15 +945,19 @@ litehtml::pixel_t litehtml::render_item_inline_context::new_box(const std::uniqu
                                                          new_pos.left + new_pos.width, css().line_height(),
                                                          css().get_font_metrics(), css().get_text_align(),
                                                          css().get_direction() == direction_rtl));
-    // JLReq 3.1.5 ①: an opening bracket that starts a paragraph has a full em before its ink (全角アキ). With an indent
-    // of its own of an em or more, the bracket's first half goes (as at any line's start); with less, in a book that
-    // indents its paragraphs, the bracket keeps it, after the half em less the indent. Not for a centred or end-aligned
-    // line, nor a negative (hanging) indent.
+    // JLReq 3.1.5: an opening bracket that starts a paragraph. With an indent of its own of an em or more, the
+    // bracket's first half goes (as at any line's start). With less, in a book that indents its paragraphs, the bracket
+    // keeps it: in ① (the default) after the half em less the indent, so a full em is before its ink (全角アキ); in ③
+    // with nothing more (二分アキ, document::set_paragraph_brackets). Not for a centred or end-aligned line, nor a
+    // negative (hanging) indent.
     if(paragraph && is_one_of(css().get_text_align(), text_align_left, text_align_justify, text_align_start))
     {
         const pixel_t em = css().get_font_size();
         if(text_indent >= 0_px && text_indent < em && first_line_margin == 0_px && paragraphs_indented())
-            m_line_boxes.back()->set_paragraph_start(std::max(0_px, em / 2_px - text_indent));
+        {
+            const bool full_em = src_el()->get_document()->get_paragraph_brackets() == paragraph_brackets::full_em;
+            m_line_boxes.back()->set_paragraph_start(full_em ? std::max(0_px, em / 2_px - text_indent) : 0_px);
+        }
     }
 
     // Add items returned by finish_last_box function into the new line
