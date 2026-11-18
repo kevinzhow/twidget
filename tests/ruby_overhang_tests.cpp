@@ -202,6 +202,10 @@ void run(bool vertical) {
     expect(400, shun + "又", "^しゅん@0 旬@0 又@24", "line-edge a: at the line's head before a kanji, the space after 旬");
     expect(72, "あいう" + shun + "えお", "あ@0 い@16 う@32 ^しゅん@40 旬@48 | え@0 お@16",
            "line-edge b: at a wrapped line's end, 旬 and しゅん end together, onto う");
+    expect(80, "あいうえ" + shun + "おか", "あ@0 い@16 う@32 え@48 ^しゅん@56 旬@64 | お@0 か@16",
+           "line-edge b: a ruby that fits only with its whole excess over the kana before it ends the line there");
+    expect(80, "あいう漢" + shun + "おか", "あ@0 い@16 う@32 漢@48 ^しゅん@0 | 旬@0 お@16 か@32",
+           "line-edge b: after a kanji it does not fit, and starts the next line");
     expect(72, "あい漢" + shun + "えお", "あ@0 い@16 漢@32 ^しゅん@48 旬@56 | え@0 お@16",
            "line-edge b: at a wrapped line's end after a kanji, the space before 旬");
 }
