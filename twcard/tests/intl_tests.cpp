@@ -53,6 +53,30 @@ void checkPart(const IntlProvider& provider, std::string_view request, std::stri
     ++failures;
 }
 
+#ifdef TWCARD_ICU4X
+void checkDateParts(const IntlProvider& provider, std::string_view request, std::string_view expected) {
+    auto input = Json::parse(request).value();
+    const auto reply = provider.format(input);
+    const auto parts = reply ? Json::parse(*reply) : std::nullopt;
+    std::string fields, joined;
+    if (parts) {
+        for (const auto& part : parts->arr()) {
+            const auto& type = part["type"].asString();
+            const auto& value = part["value"].asString();
+            joined += value;
+            if (type == "literal") continue;
+            if (!fields.empty()) fields += ' ';
+            fields += type + '=' + value;
+        }
+    }
+    input.set("kind", "date");
+    if (parts && fields == expected && provider.format(input) == joined) return;
+    std::fprintf(stderr, "FAIL: %s, got %s, expected date fields %.*s and matching format()\n",
+                 std::string(request).c_str(), reply.value_or("(no parts)").c_str(), int(expected.size()), expected.data());
+    ++failures;
+}
+#endif
+
 } // namespace
 
 int main() {
@@ -104,6 +128,16 @@ int main() {
     check(icu, R"({"kind":"date","locale":"en-US","options":{"timeZone":"UTC"},"value":1704153600000})", "1/2/2024");
     check(icu, R"({"kind":"date","locale":"en-GB","options":{"timeZone":"UTC","timeStyle":"short"},"value":1704200400000})",
           "13:00");
+    checkDateParts(icu, R"({"kind":"dateParts","locale":"en-US","options":{"timeZone":"UTC","hour":"2-digit","minute":"2-digit","hour12":false},"value":1710054309000})",
+                   "hour=07 minute=05");
+    checkDateParts(icu, R"({"kind":"dateParts","locale":"en-US","options":{"timeZone":"UTC","hour":"numeric","minute":"2-digit","second":"2-digit","fractionalSecondDigits":3,"hour12":true},"value":1710054309012})",
+                   "hour=7 minute=05 second=09 fractionalSecond=012 dayPeriod=AM");
+    checkDateParts(icu, R"({"kind":"dateParts","locale":"en-US","options":{"timeZone":"UTC","year":"numeric","month":"2-digit","day":"2-digit"},"value":1710054309000})",
+                   "month=03 day=10 year=2024");
+    checkDateParts(icu, R"({"kind":"dateParts","locale":"en-US","options":{"timeZone":"UTC","year":"numeric","month":"short","day":"numeric","hour":"numeric","minute":"2-digit"},"value":1710054309000})",
+                   "month=Mar day=10 year=2024 hour=7 minute=05 dayPeriod=AM");
+    checkPart(icu, R"({"kind":"dateParts","locale":"en-US","options":{"timeZone":"UTC","numberingSystem":"arab","hour":"numeric","minute":"2-digit","hour12":true},"value":1710054309000})",
+              "hour", "٧");
 #if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
     check(icu, R"({"kind":"date","locale":"en-GB","options":{"timeZone":"America/New_York","timeStyle":"short"},"value":1704200400000})",
           "08:00");

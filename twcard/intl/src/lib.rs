@@ -3,7 +3,7 @@ use icu::calendar::Calendar;
 use icu::casemap::CaseMapper;
 use icu::collator::{Collator, options::CollatorOptions, options::Strength};
 use icu::datetime::{
-    DateTimeFormatter, DateTimeFormatterPreferences,
+    DateTimeFormatter, DateTimeFormatterPreferences, FormattedDateTime,
     fieldsets::{self, builder::{DateFields, FieldSetBuilder, ZoneStyle}},
     input::{Date, DateTime, Time, UtcOffset, ZonedDateTime},
     options::{Alignment, Length, SubsecondDigits, TimePrecision, YearStyle},
@@ -72,6 +72,7 @@ type Emit = extern "C" fn(*mut c_void, Text, Text);
 struct Output {
     parts: Vec<(&'static str, String)>,
     current: &'static str,
+    date: bool,
 }
 
 fn ecma_part(part: Part) -> &'static str {
@@ -84,7 +85,9 @@ fn ecma_part(part: Part) -> &'static str {
         "plusSign" | "plus_sign" => "plusSign",
         "percentSign" | "percent_sign" => "percentSign",
         "currency" => "currency",
-        "year" => "year",
+        "year" | "extendedYear" => "year",
+        "relatedYear" => "relatedYear",
+        "yearName" => "yearName",
         "month" => "month",
         "day" => "day",
         "weekday" => "weekday",
@@ -119,7 +122,17 @@ impl PartsWrite for Output {
     type SubPartsWrite = Self;
     fn with_part(&mut self, part: Part, mut write: impl FnMut(&mut Self) -> fmt::Result) -> fmt::Result {
         let previous = self.current;
-        self.current = ecma_part(part);
+        self.current = if self.date {
+            // ICU4X nests localized decimal parts inside each date field. S8.2 uses the outer field.
+            match (part.category, part.value, previous) {
+                ("datetime", _, _) => ecma_part(part),
+                ("decimal", "decimal", "second") => "literal",
+                ("decimal", "fraction", "second") => "fractionalSecond",
+                _ => previous,
+            }
+        } else {
+            ecma_part(part)
+        };
         let result = write(self);
         self.current = previous;
         result
@@ -134,7 +147,7 @@ impl Output {
     }
 
     fn literal(value: impl Into<String>) -> Option<Self> {
-        Some(Self { parts: vec![("literal", value.into())], current: "" })
+        Some(Self { parts: vec![("literal", value.into())], ..Self::default() })
     }
 }
 
@@ -192,6 +205,7 @@ fn resolve_options(
 
 fn format_date<'options>(
     prefs: DateTimeFormatterPreferences,
+    decimal_prefs: DecimalFormatterPreferences,
     option: impl Fn(&str) -> Option<&'options str>,
     local: &[i32; 7],
     zone: &str,
@@ -205,11 +219,11 @@ fn format_date<'options>(
     let datetime = DateTime { date, time };
     let date_style = option("dateStyle");
     let time_style = option("timeStyle");
-    let has_hour = option("hour").is_some();
+    let hour = option("hour");
     let has_minute = option("minute").is_some();
     let has_second = option("second").is_some();
     let fraction = option("fractionalSecondDigits");
-    let has_time = time_style.is_some() || has_hour || has_minute || has_second || fraction.is_some();
+    let has_time = time_style.is_some() || hour.is_some() || has_minute || has_second || fraction.is_some();
     let year = option("year");
     let month = option("month");
     let day = option("day");
@@ -248,7 +262,7 @@ fn format_date<'options>(
         fields.date_fields.is_some() && date_style != Some("short") && year != Some("2-digit") {
         fields.year_style = Some(YearStyle::Full);
     }
-    if [month, day, option("hour"), option("minute"), option("second")].contains(&Some("2-digit")) {
+    if [month, day, hour, option("minute"), option("second")].contains(&Some("2-digit")) {
         fields.alignment = Some(Alignment::Column);
     }
     if has_time {
@@ -272,27 +286,46 @@ fn format_date<'options>(
         _ if time_style == Some("long") => Some(ZoneStyle::SpecificShort),
         _ => None,
     };
+    let write = |value: FormattedDateTime<'_>| {
+        let mut output = Output { date: true, ..Output::default() };
+        value.write_to_parts(&mut output).ok()?;
+        // ICU4X's column alignment applies to the whole pattern. S8.2 keeps an explicit numeric hour unpadded.
+        if hour == Some("numeric") {
+            let two_digit_hour = output.parts.iter_mut()
+                .find(|(kind, value)| *kind == "hour" && value.chars().count() == 2);
+            if let Some((_, value)) = two_digit_hour {
+                let decimal = DecimalFormatter::try_new(decimal_prefs, Default::default()).ok()?;
+                let zero = Decimal::from(0);
+                let formatted_zero = decimal.format(&zero);
+                let zero = formatted_zero.write_to_string();
+                if let Some(hour) = value.strip_prefix(zero.as_ref()) {
+                    *value = hour.to_owned();
+                }
+            }
+        }
+        Some(output)
+    };
     if fields.zone_style.is_some() {
         let offset = UtcOffset::try_from_seconds((offset_ms / 1000).try_into().ok()?).ok()?;
         let zone = IanaParser::new().parse(zone).with_offset(Some(offset)).at_date_time_iso(datetime);
         let zoned = ZonedDateTime { date, time, zone };
         let fmt = DateTimeFormatter::try_new(prefs, fields.build_composite().ok()?).ok()?;
-        return Output::write(fmt.format(&zoned));
+        return write(fmt.format(&zoned));
     }
     if has_time {
         if fields.date_fields.is_none() {
             let fmt = DateTimeFormatter::try_new(prefs, fields.build_time().ok()?).ok()?;
-            return Output::write(fmt.format(&datetime.time));
+            return write(fmt.format(&datetime.time));
         }
         let fmt = DateTimeFormatter::try_new(prefs, fields.build_date_and_time().ok()?).ok()?;
-        return Output::write(fmt.format(&datetime));
+        return write(fmt.format(&datetime));
     }
     if matches!(fields.date_fields, Some(DateFields::Y | DateFields::YM | DateFields::M)) {
         let fmt = DateTimeFormatter::try_new(prefs, fields.build_calendar_period().ok()?).ok()?;
-        return Output::write(fmt.format(&datetime.date));
+        return write(fmt.format(&datetime.date));
     }
     let fmt = DateTimeFormatter::try_new(prefs, fields.build_date().ok()?).ok()?;
-    Output::write(fmt.format(&datetime.date))
+    write(fmt.format(&datetime.date))
 }
 
 macro_rules! relative_units {
@@ -389,7 +422,7 @@ fn format<'options>(
             Some(result)
         }
         "date" | "dateParts" => format_date(
-            date_prefs, option, &request.local, unsafe { request.zone.read() }?, request.offset_ms,
+            date_prefs, decimal_prefs, option, &request.local, unsafe { request.zone.read() }?, request.offset_ms,
         ),
         "plural" => {
             let mut options = PluralRulesOptions::default();
