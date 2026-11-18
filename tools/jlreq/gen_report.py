@@ -6,9 +6,16 @@ import html, json, os, shutil, sys
 sys.path.insert(0, os.path.dirname(__file__))
 from rows import ROWS
 
-pub = json.load(open(sys.argv[1]))
-priv = json.load(open(sys.argv[2]))
-shots, md_out, html_dir = sys.argv[3], sys.argv[4], sys.argv[5]
+AFTER = "--after" in sys.argv  # each batch-1 row as this change leaves it
+args = [a for a in sys.argv[1:] if a != "--after"]
+pub = json.load(open(args[0]))
+priv = json.load(open(args[1]))
+shots, md_out, html_dir = args[2], args[3], args[4]
+if AFTER:
+    for r in ROWS:
+        if r.get("after"):
+            r["before_status"] = r["status"]
+            r.update(r["after"])
 
 ST = {"done": "已实现", "partial": "部分", "missing": "缺失", "na": "不适用"}
 ORDER = ["done", "partial", "missing", "na"]
@@ -39,14 +46,25 @@ for r in ROWS:
         groups.setdefault(key, []).append(r)
 ranked = sorted(groups.values(), key=lambda g: (-freq(g[0], pub), -freq(g[0], priv), g[0]["id"]))
 
-SUMMARY = (
-    "本表逐条对照 W3C《日本語組版処理の要件》(JLReq, 2020-08-11 WG Note) 第 3 章与新阅读器（twidget litehtml + oyomi 阅读器）。"
-    "共 %d 条：已实现 %d、部分 %d、缺失 %d、不适用 %d。"
-    "缺口集中在三处：(1) 行头始め括弧不分段首与折行（3.1.5）；(2) ルビ完全不掛（3.3.5、3.3.8），比亲字长的ルビ一律把亲字空开；"
-    "(3) 两端对齐只会扩展、而且在括弧和句读点旁也加空，没有 JLReq 3.8 的先压缩（追込み）和优先顺序。"
-    "此外缺少和欧间四分（3.2.6）、横排 ，． 的约物处理（3.1.1）和熟語ルビ。"
-    "第 1 批做 3.1.5 ① 与ルビ掛け（规则 1、2 与行头行尾）；其余按公共语料出现次数排在“第 2 批候选”。" % (
-        total, counts["done"], counts["partial"], counts["missing"], counts["na"]))
+BEFORE_COUNTS = {s: sum(1 for r in ROWS if r.get("before_status", r["status"]) == s) for s in ORDER}
+if AFTER:
+    SUMMARY = (
+        "本表逐条对照 W3C《日本語組版処理の要件》(JLReq, 2020-08-11 WG Note) 第 3 章与新阅读器（twidget litehtml + oyomi 阅读器）。"
+        "共 %d 条：已实现 %d、部分 %d、缺失 %d、不适用 %d（这次修改之前：已实现 %d、部分 %d、缺失 %d）。"
+        "这次修改（第 1 批）做了 3.1.5 ①（段首始め括弧全角アキ、折行天ツキ）和ルビ掛け（3.3.5、3.3.8 规则 1、2、相邻ルビ、行头行尾 a/b），"
+        "标有“本次”的行。仍缺：两端对齐的先压缩与括弧旁不加空（3.1.11、3.8）、和欧间四分（3.2.6）、横排 ，．（3.1.1）、"
+        "ルビ掛句读点和括弧（3.3.8 规则 3–6）、熟語ルビ；见“第 2 批候选”。" % (
+            total, counts["done"], counts["partial"], counts["missing"], counts["na"], BEFORE_COUNTS["done"],
+            BEFORE_COUNTS["partial"], BEFORE_COUNTS["missing"]))
+else:
+    SUMMARY = (
+        "本表逐条对照 W3C《日本語組版処理の要件》(JLReq, 2020-08-11 WG Note) 第 3 章与新阅读器（twidget litehtml + oyomi 阅读器）。"
+        "共 %d 条：已实现 %d、部分 %d、缺失 %d、不适用 %d。"
+        "缺口集中在三处：(1) 行头始め括弧不分段首与折行（3.1.5）；(2) ルビ完全不掛（3.3.5、3.3.8），比亲字长的ルビ一律把亲字空开；"
+        "(3) 两端对齐只会扩展、而且在括弧和句读点旁也加空，没有 JLReq 3.8 的先压缩（追込み）和优先顺序。"
+        "此外缺少和欧间四分（3.2.6）、横排 ，． 的约物处理（3.1.1）和熟語ルビ。"
+        "第 1 批做 3.1.5 ① 与ルビ掛け（规则 1、2 与行头行尾）；其余按公共语料出现次数排在“第 2 批候选”。" % (
+            total, counts["done"], counts["partial"], counts["missing"], counts["na"]))
 
 METHOD = (
     "代码与测试的位置以 twidget 9e7730b（main e6790b9 + #22）、阅读器 83076d2（#31）为准。截图是 `reader-cli` 画的我们自己的小页面"
@@ -61,13 +79,16 @@ def md_cell(s):
 
 
 def write_md():
-    out = ["# JLReq 规则级对照（新阅读器）", "", "## 摘要", "", SUMMARY, "", METHOD, "",
+    out = ["# JLReq 规则级对照（新阅读器）", "", "## 摘要", "", SUMMARY, "", METHOD + (
+        "（截图为这次修改之后。）" if AFTER else ""), "",
            "| 状态 | 条数 |", "|---|---|"]
     out += ["| %s | %d |" % (ST[s], counts[s]) for s in ORDER]
     out += ["", "## 对照表", "",
             "| 条目 | 要求 | 状态 | 我们现在 | 代码 | 测试 | 截图 | 频次（公共 / K8） |", "|---|---|---|---|---|---|---|---|"]
     for r in ROWS:
         title = r["sec"] + " " + r["title"] + (" **(第1批)**" if r.get("batch") == 1 else "")
+        if r.get("before_status") and r["before_status"] != r["status"]:
+            title += "（本次；之前%s）" % ST[r["before_status"]]
         out.append("| %s | %s | %s | %s | `%s` | %s | %s | %s |" % tuple(md_cell(x) for x in (
             title, r["req"], ST[r["status"]], r["ours"], r["code"], r["test"], r["shot"] or "—", freq_text(r))))
     out += ["", "## 第 2 批候选（按公共语料出现次数）", ""]
