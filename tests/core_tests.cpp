@@ -1050,12 +1050,13 @@ int main() {
         c.receive(parse(R"({"type":"listen","types":["pointermove","mousemove","pointerup","mouseup","gotpointercapture","lostpointercapture"]})"));
         c.touch(0, 10, 10, 0, true, true, 0);
         auto got = c.receive(parse(R"({"type":"ops","ops":[{"op":"call","id":11,"method":"setPointerCapture","args":[1]}]})"));
-        check(types(got).empty(), "setPointerCapture on the pressed mouse: no gotpointercapture, outside profile 1 (got " + types(got) + ")");
+        check(types(got) == "gotpointercapture:11 ", "setPointerCapture dispatches gotpointercapture to the target");
         c.touch(1, 150, 10, 0, true, true, 0);
         auto moved = c.tick();
         check(types(moved) == "pointermove:11 mousemove:12 ", "captured: pointermove to the capture, mousemove to the element under the mouse (got " + types(moved) + ")");
         auto up = c.touch(2, 150, 10, 0, true, true, 0);
-        check(types(up) == "pointerup:11 mouseup:12 ", "release: pointerup to the capture, mouseup under the mouse (got " + types(up) + ")");
+        check(types(up) == "pointerup:11 mouseup:12 lostpointercapture:11 ",
+              "release sends pointerup to the capture, mouseup under the mouse, then lostpointercapture");
         c.touch(0, 10, 10, 0, true, true, 0);
         auto click = events(c.touch(2, 10, 10, 0, true, true, 0));
         bool actions = false;
@@ -2306,6 +2307,29 @@ int main() {
               "an SVG shape's rect goes through the view box (got x " + std::to_string(rect["x"].asNumber()) + " w " + std::to_string(rect["width"].asNumber()) + ")");
         double length = ask(Json::object().set("q", "svg").set("id", 12).set("method", "getComputedTextLength")).asNumber();
         check(length > 10, "getComputedTextLength measures an SVG text (got " + std::to_string(length) + ")");
+
+        // S11.5: viewport and screen matrices differ by the surrounding HTML layout;
+        // text metrics count advances across tspans even when a tspan resets x.
+        s.receive(parse(R"svg({"type":"ops","ops":[
+            {"op":"style","id":10,"name":"margin-left","value":"20px"},
+            {"op":"attr","id":11,"name":"transform","value":"translate(3 4)"},
+            {"op":"style","id":12,"name":"letter-spacing","value":"2px"},
+            {"op":"el","id":14,"tag":"tspan","ns":"svg","attrs":[["x","0"]]},
+            {"op":"text","id":15,"data":"AB"},
+            {"op":"ins","id":14,"parent":12,"before":null},
+            {"op":"ins","id":15,"parent":14,"before":null}]})svg"));
+        auto svg = [&](int id, const char* method, Json args = Json::array()) {
+            return ask(Json::object().set("q", "svg").set("id", id).set("method", method).set("args", std::move(args)));
+        };
+        auto viewportMatrix = svg(11, "getCTM");
+        auto screenMatrix = svg(11, "getScreenCTM");
+        check(viewportMatrix["a"].asNumber() == 2 && viewportMatrix["e"].asNumber() == 6 &&
+              viewportMatrix["f"].asNumber() == 8 && screenMatrix["e"].asNumber() == 26,
+              "SVG viewport and screen matrices compose the element transform and view box");
+        check(svg(12, "getNumberOfChars").asInt() == 7 &&
+              svg(12, "getComputedTextLength").asNumber() == 70 &&
+              svg(12, "getSubStringLength", Json::array().push(4).push(2)).asNumber() == 20,
+              "SVG text and substring metrics sum the letter-spaced advances across tspans");
 
         // Computed paint: inherited from a group, currentColor resolved; a link in the theme's link colour, from the UA layer.
         s.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":20,"tag":"g","svg":true,"attrs":[["fill","#0a0"],["stroke","currentColor"],["style","color:rgb(1, 2, 3)"]]},{"op":"ins","parent":10,"id":20,"before":null},

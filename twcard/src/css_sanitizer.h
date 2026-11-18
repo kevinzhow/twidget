@@ -41,7 +41,7 @@ public:
     bool supportsCondition(std::string_view condition) const;
 
     /// A media query list from matchMedia: the re-serialised list, nullopt when no query in it can match in profile 1.
-    std::optional<std::string> mediaQueryList(std::string_view text) const;
+    std::optional<std::string> mediaQueryList(std::string_view text, std::optional<bool> darkTheme = std::nullopt) const;
 
     /// A CSS <easing-function> (S9.7 `anim` easing): re-serialised, or nullopt.
     std::optional<std::string> easing(std::string_view text) const;

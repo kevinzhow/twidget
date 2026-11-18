@@ -18,8 +18,8 @@ namespace litehtml
     /// What an SVG <text> draws, run by run, and where all of it goes, in its user space.
     bool  svg_text_runs(const element::ptr& el, document_container* container, std::vector<svg_text_run>& runs, position& box);
     bool  svg_text_box(const element::ptr& el, document_container* container, position& box);
-    /// An SVG element's user space to document coordinates: its transforms, its parents', and the view box.
-    bool  svg_ctm(const element::ptr& el, transform_matrix& ctm);
+    /// An SVG element's user space to the document, or to its SVG viewport (SPEC S11.5).
+    bool  svg_ctm(const element::ptr& el, transform_matrix& ctm, bool viewport_only = false);
     bool  svg_paint_color(const element::ptr& el, bool fill, web_color& out, document_container* container);
     /// What an SVG element's own CSS transform works in: `outer`, its parents' user space to document coordinates
     /// (their transforms and the view box), and the reference box and origin percentages and transform-origin

@@ -819,11 +819,32 @@ bool media_query(const css_token_vector& q) {
     return media_condition(rest, 0);
 }
 
+// SPEC S10.2: resolve theme-dependent media features before dispatching layout queries.
+void resolve_media_preferences(css_token_vector& tokens, bool dark) {
+    for (auto& token : tokens) {
+        if (token.type != lh::ROUND_BLOCK) continue;
+        const auto values = trimmed(token.value);
+        if (values.empty()) continue;
+        bool matches;
+        if (is_ident(values.front(), "prefers-color-scheme")) {
+            matches = values.size() == 1 ||
+                (values.size() == 3 && is_ident(values.back(), dark ? "dark" : "light"));
+        } else if (is_ident(values.front(), "prefers-reduced-motion")) {
+            matches = values.size() == 3 && is_ident(values.back(), "no-preference");
+        } else {
+            resolve_media_preferences(token.value, dark);
+            continue;
+        }
+        token = std::move(parse_tokens(matches ? "(min-width: 0px)" : "(width < 0px)").front());
+    }
+}
+
 /// The queries of a list that can match in profile 1, serialised; nullopt when none.
-std::optional<std::string> media_list(const css_token_vector& prelude) {
+std::optional<std::string> media_list(const css_token_vector& prelude, std::optional<bool> dark = std::nullopt) {
     std::string out;
-    for (const css_token_vector& q : split_commas(prelude)) {
+    for (css_token_vector& q : split_commas(prelude)) {
         if (!media_query(q)) continue;
+        if (dark) resolve_media_preferences(q, *dark);
         if (!out.empty()) out += ", ";
         out += serialize(q);
     }
@@ -833,9 +854,9 @@ std::optional<std::string> media_list(const css_token_vector& prelude) {
 
 } // namespace
 
-std::optional<std::string> CssSanitizer::mediaQueryList(std::string_view text) const {
+std::optional<std::string> CssSanitizer::mediaQueryList(std::string_view text, std::optional<bool> darkTheme) const {
     if (text.size() > 4096) return std::nullopt;
-    auto r = media_list(parse_tokens(text));
+    auto r = media_list(parse_tokens(text), darkTheme);
     if (!r) diag("profile", "media query");
     return r;
 }

@@ -8,6 +8,7 @@
 #include <litehtml/html_tag.h>
 #include <litehtml/render_inline_context.h>
 #include <litehtml/render_item.h>
+#include <litehtml/media_query.h>
 #ifdef TW_LITEHTML_TWIDGET
 #include <litehtml/css_effects.h>
 #include <litehtml/el_break.h>
@@ -15,6 +16,7 @@
 #include <litehtml/el_svg.h>
 #include <litehtml/el_text.h>
 #include <litehtml/render_inline.h>
+#include <litehtml/utf8_strings.h>
 #endif
 
 #include <algorithm>
@@ -50,6 +52,7 @@ const char* const ALWAYS_FORWARD[] = {"click", "load", "error", "toggle", "anima
 const char* const PROFILE_EVENTS[] = {
     "click", "pointerdown", "pointerup", "pointermove", "pointerenter", "pointerleave", "pointerover", "pointerout", "pointercancel",
     "dblclick", "contextmenu",
+    "gotpointercapture", "lostpointercapture",
     "mousedown", "mouseup", "mousemove", "mouseenter", "mouseleave", "mouseover", "mouseout",
     "load", "error", "toggle", "animationstart", "animationend", "animationiteration", "transitionend",
 };
@@ -278,6 +281,13 @@ std::vector<Rect> inline_boxes_of(const litehtml::element::ptr& el) {
 }
 
 #ifdef TW_LITEHTML_TWIDGET
+litehtml::transform_matrix layout_transform(const litehtml::element::ptr& el) {
+    litehtml::transform_matrix result;
+    for (auto item = el->get_render_item(); item; item = item->parent())
+        result = result.then(item->get_visual_transform());
+    return result;
+}
+
 /// A path's bounds, sampled along its outline so that curves bound by their ink, not their control points.
 bool path_bounds(const litehtml::vector_path& path, float& x0, float& y0, float& x1, float& y1) {
     const int steps = 512;
@@ -312,6 +322,41 @@ std::optional<Rect> svg_box_of(const litehtml::element::ptr& el) {
         bx0 = std::min(bx0, tx); by0 = std::min(by0, ty); bx1 = std::max(bx1, tx); by1 = std::max(by1, ty);
     }
     return Rect{bx0, by0, bx1 - bx0, by1 - by0};
+}
+
+// S11.5 indexes the rendered text in UTF-16 units. Keep the painter's run boundaries, fonts and spacing.
+Json svg_text_metric(const std::vector<litehtml::svg_text_run>& runs, litehtml::document_container& container,
+                     std::string_view method, const Json& args) {
+    const size_t start = size_t(std::max(0, args[0].asInt()));
+    const size_t end = start + size_t(std::max(0, args[1].asInt()));
+    const bool substring = method == "getSubStringLength" && start < end;
+    size_t units = 0;
+    double length = 0, subLength = 0;
+    for (const auto& run : runs) {
+        length += run.box.width.value();
+        int first = -1, last = 0, byte = 0;
+        while (size_t(byte) < run.text.size()) {
+            const int previous = byte;
+            const char32_t character = litehtml::read_utf8_char(run.text, byte);
+            if (byte == previous) ++byte;
+            const size_t next = units + (character > 0xffff ? 2 : 1);
+            if (substring && next > start && units < end) {
+                if (first < 0) first = previous;
+                last = byte;
+            }
+            units = next;
+        }
+        if (first >= 0) {
+            const auto font = run.style->css().get_font();
+            const double to = size_t(last) == run.text.size() ? run.box.width.value()
+                : container.text_width(run.text.substr(0, last).c_str(), font).value();
+            const double from = first == 0 ? 0
+                : container.text_width(run.text.substr(0, first).c_str(), font).value();
+            subLength += to - from;
+        }
+    }
+    if (method == "getNumberOfChars") return units;
+    return method == "getSubStringLength" ? subLength : length;
 }
 #endif
 
@@ -366,8 +411,7 @@ void content_extent(const std::shared_ptr<litehtml::render_item>& ri, float& rig
 /// Where `r`, in `el`'s layout coordinates, shows: its transform and its ancestors', as a bounding box.
 Rect transformed_box(const litehtml::element::ptr& el, Rect r) {
 #ifdef TW_LITEHTML_TWIDGET
-    litehtml::transform_matrix m;
-    for (auto ri = el->get_render_item(); ri; ri = ri->parent()) m = m.then(ri->get_visual_transform());
+    const auto m = layout_transform(el);
     if (m.is_identity()) return r;
     float xs[4] = {r.x, r.x + r.w, r.x, r.x + r.w}, ys[4] = {r.y, r.y, r.y + r.h, r.y + r.h};
     float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
@@ -5932,10 +5976,29 @@ Json Renderer::answer(const Json& q) {
 #ifdef TW_LITEHTML_TWIDGET
     if (kind == "svg") {
         const std::string& method = q["method"].asString();
-        litehtml::position text;
-        if (el && litehtml::svg_text_box(el, container_.get(), text)) {
-            if (method == "getComputedTextLength") return double(text.width);
-            if (method == "getBBox") return Json::object().set("x", double(text.x)).set("y", double(text.y)).set("width", double(text.width)).set("height", double(text.height));
+        if (el && (method == "getCTM" || method == "getScreenCTM")) {
+            litehtml::transform_matrix matrix;
+            if (!litehtml::svg_ctm(el, matrix, method == "getCTM"))
+                return Json::object().set("error", "no SVG viewport");
+            if (method == "getScreenCTM") {
+                for (auto root = el; root; root = root->parent()) {
+                    if (dynamic_cast<litehtml::el_svg*>(root.get())) {
+                        matrix = matrix.then(layout_transform(root));
+                        break;
+                    }
+                }
+            }
+            return Json::object().set("a", matrix.a).set("b", matrix.b).set("c", matrix.c)
+                .set("d", matrix.d).set("e", matrix.tx).set("f", matrix.ty);
+        }
+        if (el && shadow && (shadow->tag == "text" || shadow->tag == "tspan")) {
+            litehtml::position text;
+            std::vector<litehtml::svg_text_run> runs;
+            litehtml::svg_text_runs(el, container_.get(), runs, text);
+            if (method == "getComputedTextLength" || method == "getNumberOfChars" || method == "getSubStringLength")
+                return svg_text_metric(runs, *container_, method, q["args"]);
+            if (method == "getBBox")
+                return Json::object().set("x", double(text.x)).set("y", double(text.y)).set("width", double(text.width)).set("height", double(text.height));
         }
         litehtml::vector_path path;
         if (!el || !litehtml::svg_geometry(el, path)) return Json::object().set("error", "unsupported");
@@ -5960,21 +6023,12 @@ Json Renderer::answer(const Json& q) {
 }
 
 bool Renderer::match_media(const std::string& query) const {
-    std::string q = lower(query);
-    if (q.find("prefers-color-scheme") != std::string::npos) return (q.find("dark") != std::string::npos) == dark_;
-    auto px = [&](const char* key) -> double {
-        size_t i = q.find(key);
-        if (i == std::string::npos) return NAN;
-        size_t j = i + std::strlen(key);
-        while (j < q.size() && (q[j] == ' ' || q[j] == ':')) j++;
-        return std::atof(q.c_str() + j);
-    };
-    double v;
-    if (!std::isnan(v = px("max-width"))) return width_ <= v;
-    if (!std::isnan(v = px("min-width"))) return width_ >= v;
-    if (q.find("hover") != std::string::npos) return q.find("none") != std::string::npos;
-    if (q.find("pointer") != std::string::npos) return q.find("coarse") != std::string::npos;
-    return false;
+    auto* doc = container_->doc();
+    if (!doc) return false;
+    litehtml::media_features features{};
+    container_->get_media_features(features);
+    const auto parsed = litehtml::parse_media_query_list(rewrite_color_scheme(query, dark_), doc->shared_from_this());
+    return parsed.check(features);
 }
 
 int64_t Renderer::widget_id_at(double x, double y, Rect* placement) const {

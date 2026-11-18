@@ -1,5 +1,6 @@
 #include "twcard/card_host.h"
 
+#include "css_sanitizer.h"
 #include "profile.h"
 #include "twcard/validator.h"
 #include "twidget/paint_limits.h"
@@ -314,7 +315,11 @@ struct CardHost::Impl : EngineDelegate, std::enable_shared_from_this<Impl> {
         queryResult.reset();
         queryBinary.reset();
         lock.unlock();
-        post([id, query = std::move(query)](Impl& h) {
+        post([id, query = std::move(query)](Impl& h) mutable {
+            if (query["q"].asString() == "matchMedia") {
+                const auto checked = CssSanitizer().mediaQueryList(query["query"].asString(), isThemeDark(h.theme));
+                query.set("query", checked.value_or("not all"));
+            }
             h.send(message("query").set("qid", id).set("query", query));
         });
         lock.lock();
