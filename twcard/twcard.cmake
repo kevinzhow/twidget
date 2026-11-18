@@ -53,7 +53,9 @@ if(NOT TARGET twcard)
         "${CMAKE_CURRENT_LIST_DIR}/src/engine.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/src/profile.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/src/urls.cpp"
-        "${CMAKE_CURRENT_LIST_DIR}/src/css_sanitizer.cpp")
+        "${CMAKE_CURRENT_LIST_DIR}/src/css_sanitizer.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/src/validation.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/src/validator.cpp")
     add_library(twidget::twcard ALIAS twcard)
     target_include_directories(twcard PUBLIC "${CMAKE_CURRENT_LIST_DIR}/include" PRIVATE "${CMAKE_CURRENT_LIST_DIR}/src")
     # The validator parses CSS with litehtml's own parser (SPEC S9.5) and reads image headers with twidget::display_list.
@@ -74,7 +76,7 @@ if(NOT TARGET twcard)
     endif()
 
     if(TWIDGET_BUILD_TESTS)
-        foreach(_t throttle engine css)
+        foreach(_t throttle engine css validator)
             add_executable(twcard_${_t}_tests "${CMAKE_CURRENT_LIST_DIR}/tests/${_t}_tests.cpp")
             target_link_libraries(twcard_${_t}_tests PRIVATE twcard twcard_quickjs litehtml twidget::display_list)
             target_include_directories(twcard_${_t}_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/src")
