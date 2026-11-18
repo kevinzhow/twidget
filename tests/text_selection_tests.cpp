@@ -129,11 +129,26 @@ void centered_bands(bool vertical) {
         check(std::abs(float(both[0].bottom() - both[1].y)) <= 0.01f, mode + ": the fallback runs meet without a gap");
 }
 
+void whitespace_between_runs() {
+    Stub c;
+    c.asymmetric_metrics = true;
+    const auto doc = document::createFromString(
+        "<html style=\"writing-mode:vertical-rl\"><body style=\"margin:0;font-size:16px;line-height:32px\">"
+        "<p style=\"margin:0\"><span>漢</span> <span>漢</span></p></body></html>", &c);
+    doc->render(300);
+    text_selection selection(*doc);
+    const auto& runs = selection.runs();
+    const auto bands = selection.rects({runs.front().text, runs.front().offset},
+                                      {runs.back().text, runs.back().offset + runs.back().shown.size()});
+    check(bands.size() == 1, "vertical: whitespace keeps the neighbouring fallback band's centre");
+}
+
 } // namespace
 
 int main() {
     centered_bands(false);
     centered_bands(true);
+    whitespace_between_runs();
     const std::string sentence2 = "\xE3\x81\x88\xE3\x81\x8A\xE3\x80\x82";  // えお。
     const std::string base = "\xE3\x81\x82\xE3\x81\x84\xE6\xBC\xA2\xE3\x81\x86\xE3\x80\x82";  // あい漢う。
     {

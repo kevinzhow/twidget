@@ -190,6 +190,7 @@ namespace litehtml
             return out;
         position line;
         std::vector<position> bands;
+        bool has_text = false;
         auto finish_line = [&] {
             for(auto& band : bands)
             {
@@ -200,6 +201,7 @@ namespace litehtml
                 out.push_back(to_page(band));
             }
             bands.clear();
+            has_text = false;
         };
         for(size_t i = r0; i <= r1; i++)
         {
@@ -226,9 +228,20 @@ namespace litehtml
             // Keep the line's selection thickness. Adjacent runs with the same centre share a rectangle.
             // At a change of centre, split at the next run's start so justified gaps stay covered and the
             // painter never tints a pixel twice.
-            const pixel_t center = r.text->selection_center(r.shown, r.box);
-            if(!bands.empty() && std::abs(float(bands.back().y - center)) < 0.01f)
+            const bool space = r.text->is_space();
+            if(space && !bands.empty())
+            {
                 bands.back().width = line.right() - bands.back().x;
+                continue;
+            }
+            const pixel_t center = r.text->selection_center(r.shown, r.box);
+            if(!bands.empty() && (!has_text || std::abs(float(bands.back().y - center)) < 0.01f))
+            {
+                // Leading whitespace takes the centre of the first visible run.
+                if(!has_text)
+                    bands.back().y = center;
+                bands.back().width = line.right() - bands.back().x;
+            }
             else
             {
                 pixel_t start = part.x;
@@ -240,6 +253,7 @@ namespace litehtml
                 }
                 bands.emplace_back(start, center, line.right() - start, 0_px);
             }
+            has_text = has_text || !space;
         }
         finish_line();
         return out;
