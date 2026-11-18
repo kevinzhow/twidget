@@ -745,15 +745,25 @@ litehtml::pixel_t litehtml::el_text::advance_to(const std::string& shown, size_t
         return vertical_advance(get_document()->container(), shown, bytes, css.get_text_orientation(), font,
                                 css.get_font_upright(), css.get_font_metrics().font_size, shown == display_text() ? m_tate_chu_yoko : no_tokens);
     }
-    if(!m_use_transformed && m_run && bytes <= shown.size() && m_run_end - m_run_begin == shown.size() && shown == m_text)
-        for(const auto& entry : m_run->advances)
-            if(entry.first == font && entry.second.size() == m_run->text.size() + 1)
-            {
-                const pixel_t from = entry.second[m_run_begin], to = entry.second[m_run_begin + bytes];
-                if(!std::isnan(float(from)) && !std::isnan(float(to)))
-                    return to - from;
-            }
+    if(const std::vector<pixel_t>* prefix = run_advances(shown); prefix && bytes <= shown.size())
+    {
+        const pixel_t from = (*prefix)[m_run_begin], to = (*prefix)[m_run_begin + bytes];
+        if(!std::isnan(float(from)) && !std::isnan(float(to)))
+            return to - from;
+    }
     return get_document()->container()->text_width(shown.substr(0, bytes).c_str(), font);
+}
+
+const std::vector<litehtml::pixel_t>* litehtml::el_text::run_advances(const std::string& shown) const
+{
+    element::ptr el_parent = parent();
+    if(!el_parent || m_use_transformed || !m_run || m_run_end - m_run_begin != shown.size() || shown != m_text)
+        return nullptr;
+    const uint_ptr font = el_parent->css().get_font();
+    for(const auto& entry : m_run->advances)
+        if(entry.first == font && entry.second.size() == m_run->text.size() + 1)
+            return &entry.second;
+    return nullptr;
 }
 
 litehtml::pixel_t litehtml::justify_shift(const std::string& text, size_t at, pixel_t gap, bool after_gap)
@@ -799,8 +809,11 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
             continue;
         const size_t  from    = chars[k].first;
         const size_t  to      = k + 1 < chars.size() ? chars[k + 1].first : shown.size();
+        // Its share of the shaped run where the container shaped one (advance_to): measured alone, a mark may take
+        // another font's glyph than in its run.
         const pixel_t advance = css.is_vertical_rl() && css.get_text_orientation() == text_orientation_upright
                                     ? css.get_font_metrics().font_size
+                                    : run_advances(shown) ? advance_to(shown, to) - advance_to(shown, from)
                                     : get_document()->container()->text_width(shown.substr(from, to - from).c_str(), css.get_font());
         out.push_back({from, advance * pixel_t(t.start), advance * pixel_t(t.end)});
     }

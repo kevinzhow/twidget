@@ -111,6 +111,9 @@ namespace litehtml
         /// the hyphenated end) measured alone. In vertical text, as draw_vertical places it (its tate-chu-yoko tokens an
         /// em each).
         pixel_t advance_to(const std::string& shown, size_t bytes) const;
+        /// The advances (shaped_text::advances) of the piece's run in its font, when `shown` is the whole piece and the
+        /// container shaped the run; null otherwise.
+        const std::vector<pixel_t>* run_advances(const std::string& shown) const;
         /// Punctuation compression of `shown` (its text) between `before` and `after`, the characters next to it in its
         /// line's flow (0: none), its first and last characters at `first` and `last` (cjk::line_position): each trimmed
         /// character, with its share of its advance (an em, upright in vertical text).
