@@ -24,6 +24,9 @@ const std::string ellipsis = "\xE2\x80\xA6", leader = "\xE2\x80\xA5";
 struct Stub : document_container {
     float w = 300, h = 400;
     bool latin_ellipsis = false;  // … and ‥ come from a font without vertical forms (a Latin font first in the list)
+    // … is 6 px in the font (a Latin font's, first in the list) and an em in the upright font (vert: the Japanese
+    // font's vertical form, as twidget::text picks it).
+    bool narrow_ellipsis = false;
     std::vector<transform_matrix> groups;
     std::string drawn;  // each text drawn: "up:" (in a group turning it back upright) or "side:", and the text
     std::string placed;  // each text drawn, "text@x" (x along the column)
@@ -37,11 +40,12 @@ struct Stub : document_container {
             fm->ch_width = 8;
             fm->draw_spaces = false;
         }
-        return 1;
+        return d.features.find("vert") != std::string::npos ? 2 : 1;
     }
     void delete_font(uint_ptr) override {}
     // 8 px a (3-byte) character; あっ is kerned to 14 px, as a horizontal shaping kerns a pair (Noto Sans CJK's まっ).
-    pixel_t text_width(const char* text, uint_ptr) override {
+    pixel_t text_width(const char* text, uint_ptr font) override {
+        if (narrow_ellipsis && text == ellipsis) return font == 2 ? 16 : 6;
         if (std::string(text) == "\xE3\x81\x82\xE3\x81\xA3") return 14;
         return pixel_t(8.0f * float(std::string(text).size() / 3));
     }
@@ -87,9 +91,10 @@ struct Stub : document_container {
     void get_language(std::string& lang, std::string& culture) const override { lang = "ja"; culture.clear(); }
 };
 
-std::string draw(const std::string& text, bool latin_ellipsis, bool placed = false) {
+std::string draw(const std::string& text, bool latin_ellipsis, bool placed = false, bool narrow_ellipsis = false) {
     Stub c;
     c.latin_ellipsis = latin_ellipsis;
+    c.narrow_ellipsis = narrow_ellipsis;
     auto doc = document::createFromString("<html style=\"writing-mode:vertical-rl\"><body style=\"margin:0;font-size:16px\"><p style=\"margin:0\">" +
                                               text + "</p></body></html>",
                                           &c);
@@ -116,6 +121,13 @@ int main() {
     const std::string tsu = "\xE3\x81\xA3", i = "\xE3\x81\x84";
     got = draw(a + tsu + i, false, true);
     check(got == a + "@0 " + tsu + "@8 " + i + "@16", "upright characters are not kerned: " + got);
+
+    // An upright character takes the advance of the glyph drawn: the upright font's (its vertical form), not the
+    // font's. A … whose Latin glyph is 6 px but whose vertical form (the Japanese font's) is an em: あ……あ puts each
+    // … an em down the column, and the last あ after them.
+    got = draw(a + ellipsis + ellipsis + a, false, true, true);
+    check(got == a + "@0 " + ellipsis + "@8 " + ellipsis + "@24 " + a + "@40",
+          "upright …: the upright font's advance: " + got);
 
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
