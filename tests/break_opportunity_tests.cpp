@@ -184,6 +184,11 @@ int main() {
     got = layout("32px", "<span style=\"word-break:keep-all\">" + a + i + ten + u + e + o + "</span>");
     check(got == a + "@0,2 " + i + "@8,2 " + ten + "@16,2 " + u + "@0,22 " + e + "@8,22 " + o + "@16,22",
           "keep-all: あい、 then うえお on the next line: " + got);
+    // An empty element between two pieces does not end the run (jlreq: 表3<span class="back-book"/>，): う goes to
+    // the next line with 。 instead of 。 hanging past the line's end.
+    got = layout("24px", a + i + u + "<span></span>" + maru + e);
+    check(got == a + "@0,2 " + i + "@8,2 " + u + "@0,22 " + maru + "@8,22 " + e + "@16,22",
+          "あいう<span></span>。え in three characters: あい, then う。え: " + got);
     // Without them, as before: a break between any two kana.
     got = layout("40px", a + i + u + "<span>" + e + o + a + "</span>");
     check(got == a + "@0,2 " + i + "@8,2 " + u + "@16,2 " + e + "@24,2 " + o + "@32,2 " + a + "@0,22",
