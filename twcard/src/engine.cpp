@@ -13,6 +13,7 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <map>
 #include <pthread.h>
 #include <sstream>
 #include <stdexcept>
@@ -72,6 +73,17 @@ std::string memory_reason(size_t limit) {
     return "memory: over the " + Json::number(double(limit) / double(1 << 20)) + " MiB limit";
 }
 
+// SPEC S0: compiled trusted bundles are shared as byte strings across QuickJS runtimes.
+struct BundleCache {
+    std::mutex mutex;
+    std::map<std::string, std::vector<uint8_t>, std::less<>> entries;
+};
+
+BundleCache& bundleCache() {
+    static BundleCache cache;
+    return cache;
+}
+
 } // namespace
 
 // ───────────────────────────── Resources ─────────────────────────────
@@ -111,8 +123,8 @@ std::shared_ptr<Resources> Resources::fromDirectory(const std::string& dir) {
         return s.str();
     };
     auto r = std::make_shared<Resources>();
-    r->bundle = *read(dir + "/twcard-runtime.js", true);
-    if (auto bc = read(dir + "/twcard-runtime.qbc", false)) r->bytecode.assign(bc->begin(), bc->end());
+    r->bundle = *read(dir + "/twcard.js", true);
+    if (auto bc = read(dir + "/twcard.qbc", false)) r->bytecode.assign(bc->begin(), bc->end());
     return r;
 }
 
@@ -135,7 +147,7 @@ struct Engine::Impl {
     double lastMemoryAt = -1e18;
 
     // Unhandled promise rejections seen during the task (S1.4.7), until a handler comes.
-    std::vector<std::pair<JSValue, std::string>> rejections;
+    std::vector<std::pair<JSValue, JSValue>> rejections;
 
     explicit Impl(Engine& engine) : e(engine) {}
 
@@ -165,12 +177,13 @@ struct Engine::Impl {
             for (auto it = self->rejections.begin(); it != self->rejections.end(); ++it)
                 if (JS_VALUE_GET_PTR(it->first) == JS_VALUE_GET_PTR(promise)) {
                     JS_FreeValue(ctx, it->first);
+                    JS_FreeValue(ctx, it->second);
                     self->rejections.erase(it);
                     return;
                 }
             return;
         }
-        self->rejections.emplace_back(JS_DupValue(ctx, promise), self->describe(reason));
+        self->rejections.emplace_back(JS_DupValue(ctx, promise), JS_DupValue(ctx, reason));
     }
 
     bool create() {
@@ -189,7 +202,10 @@ struct Engine::Impl {
     }
 
     void destroy() {
-        for (auto& [p, m] : rejections) JS_FreeValue(ctx, p);
+        for (auto& [promise, reason] : rejections) {
+            JS_FreeValue(ctx, promise);
+            JS_FreeValue(ctx, reason);
+        }
         rejections.clear();
         if (ctx) {
             JS_FreeValue(ctx, dispatch);
@@ -293,6 +309,15 @@ struct Engine::Impl {
             if (!bytes.empty() && !random_bytes(bytes.data(), bytes.size())) return JS_NULL;
             return JS_NewArrayBufferCopy(ctx, bytes.data(), bytes.size());
         }
+        if (kind == "error") {
+            if (arg.size() > protocol::kMaxErrorBytes) {
+                size_t count = protocol::kMaxErrorBytes;
+                while ((static_cast<unsigned char>(arg[count]) & 0xc0) == 0x80) --count;
+                arg.resize(count);
+            }
+            report_uncaught(arg);
+            return JS_UNDEFINED;
+        }
 
         // The rest goes to the host.
         const bool query = kind == "query";
@@ -385,29 +410,33 @@ struct Engine::Impl {
         return out;
     }
 
-    /// The pending exception after a call returned JS_EXCEPTION: a limit kills the card (S1.4.2, S1.1), anything
-    /// else is reported and the card goes on (S1.4.7).
-    void on_exception() {
-        // Room to look at the exception even when it is the memory limit's.
-        JS_SetMemoryLimit(rt, e.options_.memoryLimitBytes + (size_t(1) << 20));
-        JSValue exc = JS_GetException(ctx);
-        const bool uncatchable = JS_IsUncatchableError(exc);
+    bool fatalException(JSValueConst exc) {
         std::string reason;
         if (e.killRequested_.load()) {
             std::lock_guard l(e.mutex_);
             reason = e.killReason_.empty() ? "stopped" : e.killReason_;
         } else if (!interruptReason.empty()) {
             reason = interruptReason;
-        } else if (uncatchable) {
-            std::string text = describe(exc);
+        } else if (JS_IsUncatchableError(exc)) {
+            // Leave room to inspect the exception when QuickJS reached the runtime's memory limit.
+            JS_SetMemoryLimit(rt, e.options_.memoryLimitBytes + (size_t(1) << 20));
+            const auto text = describe(exc);
+            JS_SetMemoryLimit(rt, e.options_.memoryLimitBytes);
             if (text.find("out of memory") != std::string::npos) reason = memory_reason(e.options_.memoryLimitBytes);
-            else report_uncaught(text);
-        } else {
-            report_uncaught(describe(exc));
+        }
+        if (reason.empty()) return false;
+        e.die(reason);
+        return true;
+    }
+
+    void on_exception(bool dispatchFailure = false) {
+        JSValue exc = JS_GetException(ctx);
+        if (!fatalException(exc)) {
+            const auto text = describe(exc);
+            report_uncaught(text);
+            if (dispatchFailure) e.delegate_.diagnostic("protocol", text);
         }
         JS_FreeValue(ctx, exc);
-        JS_SetMemoryLimit(rt, e.options_.memoryLimitBytes);
-        if (!reason.empty()) e.die(reason);
     }
 
     void report_uncaught(const std::string& text) {
@@ -415,62 +444,66 @@ struct Engine::Impl {
         e.delegate_.uncaughtError(text);
     }
 
-    /// dispatch(kind, arg): the answer as a string, nullopt for undefined/null/non-strings or an exception.
-    std::optional<std::string> call(const char* kind, const std::optional<std::string>& arg = std::nullopt) {
-        if (e.dead_.load() || !JS_IsFunction(ctx, dispatch)) return std::nullopt;
-        JSValue args[2];
-        args[0] = JS_NewString(ctx, kind);
-        args[1] = arg ? JS_NewStringLen(ctx, arg->data(), arg->size()) : JS_UNDEFINED;
-        JSValue r = JS_Call(ctx, dispatch, JS_UNDEFINED, 2, args);
+    /// S1.3a: the caller owns the return value. JS arguments are borrowed.
+    JSValue callValue(const char* kind, JSValueConst arg = JS_UNDEFINED, JSValueConst arg2 = JS_UNDEFINED) {
+        if (e.dead_.load() || e.killRequested_.load()) return JS_UNDEFINED;
+        JSValue args[] = {JS_NewString(ctx, kind), arg, arg2};
+        JSValue result = JS_IsException(args[0]) ? JS_EXCEPTION : JS_Call(ctx, dispatch, JS_UNDEFINED, 3, args);
         JS_FreeValue(ctx, args[0]);
-        JS_FreeValue(ctx, args[1]);
-        if (JS_IsException(r)) {
+        if (JS_IsException(result)) {
+            on_exception(true);
+            return JS_UNDEFINED;
+        }
+        return result;
+    }
+
+    void call(const char* kind) { JS_FreeValue(ctx, callValue(kind)); }
+
+    void call(const char* kind, std::string_view arg) {
+        JSValue text = JS_NewStringLen(ctx, arg.data(), arg.size());
+        if (JS_IsException(text)) {
             on_exception();
-            return std::nullopt;
+            return;
         }
-        std::optional<std::string> out;
-        if (JS_IsString(r)) {
-            size_t len = 0;
-            const char* s = JS_ToCStringLen(ctx, &len, r);
-            if (s) {
-                out.emplace(s, len);
-                JS_FreeCString(ctx, s);
-            }
-        }
-        JS_FreeValue(ctx, r);
-        return out;
+        JS_FreeValue(ctx, callValue(kind, text));
+        JS_FreeValue(ctx, text);
     }
 
     void drain_jobs() {
-        for (;;) {
-            if (e.dead_.load()) return;
+        while (!e.dead_.load() && !e.killRequested_.load() && JS_IsJobPending(rt)) {
+            if (interrupt(ctx, this)) {
+                if (!interruptReason.empty()) e.die(interruptReason);
+                return;
+            }
             JSContext* c = nullptr;
-            int r = JS_ExecutePendingJob(rt, &c);
-            if (r == 0) break;
-            if (r < 0) on_exception();
+            const int result = JS_ExecutePendingJob(rt, &c);
+            if (result < 0) on_exception();
         }
     }
 
     void report_rejections() {
-        if (rejections.empty() || e.dead_.load()) return;
         auto list = std::move(rejections);
         rejections.clear();
-        for (auto& [p, message] : list) {
-            JS_FreeValue(ctx, p);
-            call(protocol::kRejection, Json::object().set("message", message).dump());
+        for (auto& [promise, reason] : list) {
+            JS_FreeValue(ctx, callValue(protocol::kRejection, promise, reason));
+            JS_FreeValue(ctx, reason);
+            JS_FreeValue(ctx, promise);
         }
     }
 
-    /// S1.4.4: drain promise jobs, endTick, repeat while more work appeared (at most 20 rounds).
+    /// S1.4.4 and 4a: settle normal work, dispatch unhandled rejections in order, then settle their work.
     void settle() {
-        for (int round = 0; round < protocol::kMaxSettleRounds; round++) {
+        for (int round = 0; round < protocol::kMaxSettleRounds; ++round) {
             drain_jobs();
+            if (e.dead_.load() || e.killRequested_.load()) return;
+            JSValue result = callValue(protocol::kEndTick);
+            double code = 0;
+            if (JS_IsNumber(result)) JS_ToFloat64(ctx, &code, result);
+            JS_FreeValue(ctx, result);
+            if (e.dead_.load() || e.killRequested_.load()) return;
+            if (code == 1 || JS_IsJobPending(rt)) continue;
+            if (rejections.empty()) return;
             report_rejections();
-            drain_jobs();
-            if (e.dead_.load()) return;
-            auto more = call(protocol::kEndTick);
-            if (e.dead_.load()) return;
-            if (!(more && *more == protocol::kEndTickMore) && !JS_IsJobPending(rt)) return;
         }
         e.delegate_.diagnostic("settle-limit", taskKind);
     }
@@ -496,7 +529,10 @@ struct Engine::Impl {
                 e.delegate_.diagnostic("bytecode", "version differs from the bundle");
             }
         }
-        if (!done) r = JS_Eval(ctx, res.bundle.data(), res.bundle.size(), "twcard-runtime.js", JS_EVAL_TYPE_GLOBAL);
+        if (!done) {
+            JSValue compiled = compile_bundle(res.bundle);
+            r = JS_IsException(compiled) ? compiled : JS_EvalFunction(ctx, compiled);
+        }
         if (JS_IsException(r)) {
             JSValue exc = JS_GetException(ctx);
             e.delegate_.diagnostic("bundle", describe(exc));
@@ -506,6 +542,29 @@ struct Engine::Impl {
         JS_FreeValue(ctx, r);
         drain_jobs();
         return true;
+    }
+
+    JSValue compile_bundle(const std::string& source) {
+        auto& cache = bundleCache();
+        std::lock_guard lock(cache.mutex);
+        if (auto entry = cache.entries.find(source); entry != cache.entries.end()) {
+            JSValue compiled = JS_ReadObject(ctx, entry->second.data(), entry->second.size(), JS_READ_OBJ_BYTECODE);
+            if (!JS_IsException(compiled)) return compiled;
+            JS_FreeValue(ctx, JS_GetException(ctx));
+        }
+
+        JSValue compiled = JS_Eval(ctx, source.data(), source.size(), "twcard.js",
+                                   JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (JS_IsException(compiled)) return compiled;
+        size_t size = 0;
+        uint8_t* bytes = JS_WriteObject(ctx, &size, compiled, JS_WRITE_OBJ_BYTECODE);
+        if (bytes) {
+            cache.entries.insert_or_assign(source, std::vector<uint8_t>(bytes, bytes + size));
+            js_free(ctx, bytes);
+        } else {
+            JS_FreeValue(ctx, JS_GetException(ctx));
+        }
+        return compiled;
     }
 
     /// S1.2.1-2: the bundle with the host functions, then the names gone.
@@ -518,17 +577,19 @@ struct Engine::Impl {
         }
         JSValue global = JS_GetGlobalObject(ctx);
         // Anonymous functions: neither name nor toString points at what they are (S1.2.2).
-        JS_DefinePropertyValueStr(ctx, global, protocol::kHostGlobal, JS_NewCFunction(ctx, host, "", 2), JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE);
-        JS_DefinePropertyValueStr(ctx, global, protocol::kHostBinaryGlobal, JS_NewCFunction(ctx, host_binary, "", 0),
-                                  JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE);
-        bool ok = eval_bundle();
+        const int privateGlobal = JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE;
+        bool ok = JS_DefinePropertyValueStr(ctx, global, protocol::kHostGlobal,
+                                          JS_NewCFunction(ctx, host, "", 2), privateGlobal) > 0 &&
+                  JS_DefinePropertyValueStr(ctx, global, protocol::kHostBinaryGlobal,
+                                          JS_NewCFunction(ctx, host_binary, "", 0), privateGlobal) > 0 &&
+                  eval_bundle();
         if (ok) {
             dispatch = JS_GetPropertyStr(ctx, global, protocol::kDispatchGlobal);
             ok = JS_IsFunction(ctx, dispatch);
         }
         for (const char* name : {protocol::kHostGlobal, protocol::kHostBinaryGlobal, protocol::kDispatchGlobal}) {
             JSAtom atom = JS_NewAtom(ctx, name);
-            JS_DeleteProperty(ctx, global, atom, 0);
+            if (JS_DeleteProperty(ctx, global, atom, 0) <= 0) ok = false;
             JS_FreeAtom(ctx, atom);
         }
         JS_FreeValue(ctx, global);
@@ -539,47 +600,59 @@ struct Engine::Impl {
         return true;
     }
 
-    /// A module script (S1.5): no import resolves; the error message, or nullopt when it ran.
-    std::optional<std::string> eval_module(const std::string& source) {
-        JSValue r = JS_Eval(ctx, source.data(), source.size(), "card-module", JS_EVAL_TYPE_MODULE);
-        if (JS_IsException(r)) {
-            if (e.killRequested_.load() || !interruptReason.empty()) {
-                on_exception();
-                return std::nullopt;
-            }
+    /// S1.3a and S1.5: one script descriptor, with the evaluation result or thrown value returned to the runtime.
+    bool run_script() {
+        JSValue descriptor = callValue(protocol::kScript);
+        if (!JS_IsString(descriptor)) {
+            JS_FreeValue(ctx, descriptor);
+            return false;
+        }
+        size_t size = 0;
+        const char* bytes = JS_ToCStringLen(ctx, &size, descriptor);
+        JS_FreeValue(ctx, descriptor);
+        if (!bytes) {
+            on_exception();
+            return false;
+        }
+        const auto script = Json::parse(std::string_view(bytes, size));
+        JS_FreeCString(ctx, bytes);
+        if (!script || !script->isObject()) {
+            e.delegate_.diagnostic("protocol", "invalid script descriptor");
+            return false;
+        }
+        if (script->empty()) return true;  // S1.3a: the runtime handled a skipped script.
+        const auto& name = (*script)["name"];
+        const auto& text = (*script)["text"];
+        const auto& module = (*script)["module"];
+        if (!name.isString() || !text.isString() || !module.isBool()) {
+            e.delegate_.diagnostic("protocol", "invalid script fields");
+            return false;
+        }
+        const auto& source = text.asString();
+        const int mode = module.asBool() ? JS_EVAL_TYPE_MODULE : JS_EVAL_TYPE_GLOBAL;
+        JSValue result = JS_Eval(ctx, source.data(), source.size(), name.asString().c_str(), mode);
+        if (JS_IsException(result)) {
             JSValue exc = JS_GetException(ctx);
-            std::string text = describe(exc);
-            const bool oom = JS_IsUncatchableError(exc) && text.find("out of memory") != std::string::npos;
+            if (!fatalException(exc)) {
+                if (JS_IsUncatchableError(exc)) report_uncaught(describe(exc));
+                else JS_FreeValue(ctx, callValue(protocol::kScriptError, exc));
+            }
             JS_FreeValue(ctx, exc);
-            if (oom) e.die(memory_reason(e.options_.memoryLimitBytes));
-            return text;
+        } else {
+            JS_FreeValue(ctx, callValue(protocol::kScriptDone, result));
+            JS_FreeValue(ctx, result);
         }
-        drain_jobs();
-        std::optional<std::string> err;
-        if (JS_IsObject(r) && JS_PromiseState(ctx, r) == JS_PROMISE_REJECTED) {
-            JSValue reason = JS_PromiseResult(ctx, r);
-            err = describe(reason);
-            JS_FreeValue(ctx, reason);
-            // The rejection is reported as the script's error, not again as an unhandled one.
-            for (auto it = rejections.begin(); it != rejections.end(); ++it)
-                if (JS_VALUE_GET_PTR(it->first) == JS_VALUE_GET_PTR(r)) {
-                    JS_FreeValue(ctx, it->first);
-                    rejections.erase(it);
-                    break;
-                }
-        }
-        JS_FreeValue(ctx, r);
-        return err;
+        return true;
     }
 
     std::string probe(const std::string& code) {
         JSValue r = JS_Eval(ctx, code.data(), code.size(), "<probe>", JS_EVAL_TYPE_GLOBAL);
         if (JS_IsException(r)) {
-            if (e.killRequested_.load() || !interruptReason.empty()) {
-                on_exception();
+            JSValue exc = JS_GetException(ctx);
+            if (fatalException(exc)) {
+                JS_FreeValue(ctx, exc);
                 return "Error: dead";
             }
-            JSValue exc = JS_GetException(ctx);
             std::string out;
             JSValue msg = JS_IsObject(exc) ? JS_GetPropertyStr(ctx, exc, "message") : JS_DupValue(ctx, exc);
             const char* s = JS_ToCString(ctx, msg);
@@ -733,8 +806,12 @@ void Engine::kill(const std::string& reason) {
 
 void Engine::stop() {
     {
-        std::lock_guard l(mutex_);
+        std::unique_lock l(mutex_);
         if (joined_) return;
+        if (stopping_) {
+            cv_.wait(l, [this] { return joined_; });
+            return;
+        }
         stopping_ = true;
         if (!started_) {
             joined_ = true;
@@ -748,8 +825,11 @@ void Engine::stop() {
     cv_.notify_all();
     delegate_.abortBlocking();
     pthread_join(impl_->thread, nullptr);
-    std::lock_guard l(mutex_);
-    joined_ = true;
+    {
+        std::lock_guard l(mutex_);
+        joined_ = true;
+    }
+    cv_.notify_all();
 }
 
 void Engine::die(const std::string& reason) {
@@ -793,18 +873,6 @@ void Engine::threadMain() {
         for (Task& t : left)
             if (t.probe) t.probe->set_value("Error: dead");
     }
-    // Wait for stop() before freeing (a dead card keeps its runtime until destroyed; nothing runs in it).
-    {
-        std::unique_lock l(mutex_);
-        cv_.wait(l, [&] {
-            if (!queue_.empty()) {
-                for (Task& t : queue_)
-                    if (t.probe) t.probe->set_value("Error: dead");
-                queue_.clear();
-            }
-            return stopping_;
-        });
-    }
     impl_->destroy();
 }
 
@@ -820,7 +888,7 @@ void Engine::fireDueTimers(double now) {
         const int64_t id = it->first;
         it = timers_.erase(it);
         if (pendingFires_.insert(id).second) {  // one pending fire per timer id
-            Task t{Kind::Timer, Json::object().set("id", (long long)id).dump()};
+            Task t{Kind::Timer, std::to_string(id)};
             t.timerId = id;
             queue_.push_back(std::move(t));
         }
@@ -852,26 +920,11 @@ void Engine::runTask(Task& t) {
     im.cpuDeadline = im.cpuStart + options_.cpuLimitMs;
     im.wallDeadline = wall0 + std::max(4 * options_.cpuLimitMs, 2000.0);  // S1.4.2 backstop
 
+    delegate_.taskStarted();
     std::string probeResult;
     switch (t.kind) {
     case Kind::Boot: im.call(protocol::kBoot, bootArg_); break;
-    case Kind::Script: {
-        auto r = im.call(protocol::kScript);
-        if (r && *r == protocol::kScriptModule) {
-            auto src = im.call(protocol::kModuleSource);
-            std::optional<std::string> err = src ? im.eval_module(*src) : std::optional<std::string>("no module source");
-            if (!dead_.load()) {
-                Json done = Json::object().set("error", err ? Json(*err) : Json());
-                im.call(protocol::kModuleDone, done.dump());
-            }
-            t.arg = "ran";
-        } else if (r && *r == protocol::kScriptRan) {
-            t.arg = "ran";
-        } else {
-            t.arg.clear();
-        }
-        break;
-    }
+    case Kind::Script: t.arg = im.run_script() ? "ran" : ""; break;
     case Kind::Loaded: im.call(protocol::kLoaded); break;
     case Kind::Timer:
         pendingFires_.erase(t.timerId);
@@ -902,7 +955,7 @@ void Engine::runTask(Task& t) {
     }
     case Kind::Probe: probeResult = im.probe(t.arg); break;
     }
-    if (!dead_.load()) im.settle();
+    if (!dead_.load() && (t.kind != Kind::Script || !t.arg.empty())) im.settle();
 
     const double cpu = std::max(0.0, thread_cpu_ms() - im.cpuStart);
     im.cpuDeadline = 0;
@@ -912,7 +965,6 @@ void Engine::runTask(Task& t) {
     tasks_++;
     throttle_.chargeJs(now(), cpu);
     im.update_memory();
-    if (t.probe) t.probe->set_value(dead_.load() ? "Error: dead" : probeResult);
     // A limit that was crossed after the last interrupt poll still kills (S1.7 "also when the task ended…").
     if (!dead_.load() && killRequested_.load()) {
         std::string reason;
@@ -923,6 +975,7 @@ void Engine::runTask(Task& t) {
         if (!reason.empty()) die(reason);
     }
     if (!dead_.load() && !im.interruptReason.empty()) die(im.interruptReason);
+    if (t.probe) t.probe->set_value(dead_.load() || stopping_ ? "Error: dead" : probeResult);
     // A script check that found no script was no task.
     if (t.kind == Kind::Script && t.arg != "ran" && !im.uncaught) {
         tasks_--;

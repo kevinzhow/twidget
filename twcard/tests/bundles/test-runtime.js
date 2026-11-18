@@ -1,11 +1,11 @@
 // twcard 0.0.0-test protocol 1
 // A minimal runtime bundle for the engine's own tests (twcard/tests/engine_tests.cpp): it speaks the engine <-> bundle
-// interface (QUESTIONS Q3 / twcard/src/engine_protocol.h) with just enough of a "card world" to exercise the engine:
+// interface (SPEC S1.3a) with just enough of a card world to exercise the engine:
 // timers, frames, events handed to a global `onTestEvent`, a title to read back with probe. It is not the card runtime.
 (function () {
     'use strict';
-    const host = globalThis.__twcard_host;
-    const hostBinary = globalThis.__twcard_hostBinary;
+    const host = globalThis.host;
+    const hostBinary = globalThis.hostBinary;
     // S1.2.2: before anything else, CallSites hand out no functions or receivers.
     {
         const lock = (proto) => {
@@ -23,12 +23,12 @@
     }
 
     let scripts = [];
-    let pendingModule = '';
+    let scriptIndex = 0;
     const timers = new Map();
     let nextTimer = 1;
     let rafs = [];
 
-    const report = (e) => host('diag', 'uncaught:' + String(e && e.message !== undefined ? e.message : e));
+    const report = (e) => host('error', String(e));
     const run = (fn, ...args) => { try { fn(...args); } catch (e) { report(e); } };
 
     globalThis.document = { title: '', hidden: false };
@@ -45,39 +45,48 @@
     globalThis.randomBytes = (n) => host('random', n);
     globalThis.onTestEvent = null;
 
-    globalThis.__twcard_dispatch = function (kind, arg) {
-        const a = arg === undefined ? undefined : JSON.parse(arg);
+    globalThis.dispatch = function (kind, arg, arg2) {
+        const json = () => JSON.parse(arg);
         switch (kind) {
             case 'boot':
-                scripts = (a.config && a.config.scripts) || [];
+                scripts = json().config.scripts || [];
                 return;
             case 'script': {
-                if (!scripts.length) return undefined;
+                if (!scripts.length) return null;
                 const s = scripts.shift();
-                if (s.module) { pendingModule = s.text; return 'module'; }
-                try { (0, eval)(s.text); } catch (e) { report(e); }
-                return 'run';
+                if (!s.text) return '{}';
+                return JSON.stringify({name: 'card-inline-' + (++scriptIndex) + '.js', module: !!s.module, text: s.text});
             }
-            case 'moduleSource': return pendingModule;
-            case 'moduleDone': if (a.error) report(a.error); return;
+            case 'scriptDone':
+                globalThis.lastScriptResult = arg;
+                return;
+            case 'scriptError':
+                globalThis.lastScriptError = arg;
+                report(arg);
+                return;
             case 'loaded': document.title += '[loaded]'; return;
-            case 'endTick': return undefined;
+            case 'endTick': return 0;
             case 'timer': {
-                const fn = timers.get(a.id);
-                timers.delete(a.id);
+                if (typeof arg !== 'string' || !/^\d+$/.test(arg)) throw new Error('expected decimal timer id');
+                const id = Number(arg);
+                const fn = timers.get(id);
+                timers.delete(id);
                 if (typeof fn === 'function') run(fn);
                 return;
             }
             case 'frame': {
                 const list = rafs;
                 rafs = [];
-                for (const f of list) run(f, a.time);
+                for (const f of list) run(f, json().time);
                 return;
             }
-            case 'event': if (onTestEvent) run(onTestEvent, a); return;
-            case 'visibility': document.hidden = !a.visible; document.title += a.visible ? '[shown]' : '[hidden]'; return;
-            case 'rejection': report('unhandled rejection: ' + a.message); return;
-            case 'insertScript': return;
+            case 'event': if (onTestEvent) run(onTestEvent, json()); return;
+            case 'visibility': document.hidden = !json().visible; document.title += document.hidden ? '[hidden]' : '[shown]'; return;
+            case 'rejection':
+                globalThis.lastRejectedPromise = arg;
+                globalThis.lastRejectionReason = arg2;
+                report('unhandled rejection: ' + String(arg2));
+                return;
         }
     };
     // A way for test cards to queue a script "inserted" during a task (S1.5).

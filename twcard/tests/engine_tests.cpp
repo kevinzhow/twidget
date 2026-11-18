@@ -64,8 +64,7 @@ struct Delegate : EngineDelegate {
             size_t c = a.find(':');
             std::string k = a.substr(0, c), d = c == std::string::npos ? "" : a.substr(c + 1);
             std::lock_guard l(m);
-            if (k == "uncaught") errors.push_back(d);
-            else diags.emplace_back(k, d);
+            diags.emplace_back(k, d);
             return {};
         }
         if (kind == "query") {
@@ -176,6 +175,13 @@ int main() {
         check(wait_for([&] { return c.probe("document.title").find("later") != std::string::npos; }), "inserted script ran");
         check(c.probe("document.title") == "[loaded]nowlater", "after the inserting task");
     }
+    // S1.3a: the script descriptor carries its source name and settlement gets actual JS values.
+    {
+        Card c({{"throw new Error('named error')", false}, {"export const ready = true", true}});
+        check(wait_for([&] { return c.d.isLoaded.load(); }), "named script reports loaded");
+        check(c.probe("lastScriptError instanceof Error && lastScriptError.stack.includes('card-inline-1.js') && "
+                      "lastScriptResult instanceof Promise") == "true", "script completion sees the thrown error and the module promise");
+    }
 
     // E2: runaway loops die with a cpu: reason however the loop is wrapped.
     {
@@ -228,7 +234,7 @@ int main() {
     {
         Card c(js({}));
         wait_for([&] { return c.d.isLoaded.load(); });
-        check(c.probe("typeof __twcard_host + typeof __twcard_hostBinary + typeof __twcard_dispatch") == "undefinedundefinedundefined",
+        check(c.probe("typeof host + typeof hostBinary + typeof dispatch") == "undefinedundefinedundefined",
               "E4: no global names");
         check(c.probe("Object.getOwnPropertyNames(globalThis).filter(n => /twcard|host|dispatch/i.test(n)).join()") == "", "E4: not enumerable either");
         std::string leak = c.probe(
@@ -418,12 +424,15 @@ int main() {
     }
     // Unhandled rejections are reported.
     {
-        Card c(js({"onTestEvent = () => { Promise.reject(new Error('nobody')); Promise.reject(1).catch(() => {}); }"}));
+        Card c(js({"onTestEvent = () => { reason = new Error('nobody'); promise = Promise.reject(reason); "
+                   "Promise.reject(1).catch(() => {}); }"}));
         wait_for([&] { return c.d.isLoaded.load(); });
         c.event("click");
         wait_for([&] { return !c.d.errorsJoined().empty(); });
         std::string errs = c.d.errorsJoined();
         check(errs.find("nobody") != std::string::npos && errs.find("unhandled rejection: 1") == std::string::npos, "unhandled rejections: only the unhandled one (" + errs + ")");
+        check(c.probe("lastRejectedPromise === promise && lastRejectionReason === reason") == "true",
+              "unhandled rejection dispatch preserves the original JS values");
     }
 
     std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "OK", failures);

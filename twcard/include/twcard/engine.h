@@ -37,7 +37,7 @@ struct Resources {
     /// `twcard-bytecode <the bundle's first line>\n` followed by JS_WriteObject's output; ignored when the line does
     /// not match the bundle's (diagnostic `bytecode`).
     std::vector<uint8_t> bytecode;
-    /// `twcard-runtime.js` (+ `twcard-runtime.qbc` when present) in `dir`; throws std::runtime_error when the
+    /// `twcard.js` (+ `twcard.qbc` when present) in `dir`; throws std::runtime_error when the
     /// bundle cannot be read.
     static std::shared_ptr<Resources> fromDirectory(const std::string& dir);
     /// The first line's semver and protocol number; nullopt when the line is not of that form.
@@ -95,6 +95,8 @@ public:
     /// From any thread: the engine is stopping or the card died; a synchronous wait inside hostCall (a query) must
     /// return now (S1.9: "answer a pending query with {"error":"dead"}").
     virtual void abortBlocking() {}
+    /// On the engine's thread, before the task's first dispatch (S1.4, S9.6).
+    virtual void taskStarted() {}
 };
 
 class Engine {
@@ -185,7 +187,8 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<Task> queue_;
-    bool started_ = false, stopping_ = false, joined_ = false;
+    bool started_ = false, joined_ = false;
+    std::atomic<bool> stopping_{false};
     std::atomic<bool> killRequested_{false}, dead_{false};
     std::string killReason_;  // mutex_
 
