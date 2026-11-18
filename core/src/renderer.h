@@ -528,10 +528,7 @@ private:
     int64_t canvas_allowance(int id) override;
     void freeze(const std::string& reason, bool fatal);
     /// Frozen, or stopped past the paint or the layout limit: nothing animates.
-    /// Nothing moves any more: past the paint or the layout limit (the frozen frame is drawn without effects). A widget
-    /// the host froze (`frozen`: CPU, memory, a validator cap, or paused) is not still: as in widget-sandbox's renderer
-    /// (core.ts freeze()), only its script and input stop, and its CSS animations and transitions play on.
-    bool still() const { return paint_stopped_ || layout_stopped_; }
+    bool still() const { return frozen_ || paint_stopped_ || layout_stopped_; }
 
     // Heavy boxes (paint_policy.h): counted before a frame is drawn, after a build, a restyle by the pointer, a batch
     // that moved scripted layers, and an animation of one starting or ending. Past a limit, `limit` goes to the host.

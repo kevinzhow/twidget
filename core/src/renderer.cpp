@@ -3654,12 +3654,9 @@ void Renderer::write_style(const Node* n, std::string& out) const {
 
 namespace {
 const char* const kFrozenBadgeCss =
-    // widget-sandbox 0.6.3, packages/core/src/renderer/core.ts freeze(), but for one selector: the grayscale goes on
-    // <body>, as litehtml paints no filter on the root element (a browser filters the whole page; a card draws nothing
-    // on <html> itself, so the picture is the same).
-    "[data-tw-frozen]{pointer-events:none}[data-tw-frozen=fatal] body{filter:grayscale(.3)}"
-    "[data-tw-badge]{position:fixed;right:6px;bottom:6px;z-index:2147483647;font:11px/1.3 system-ui,sans-serif;color:#fff;"
-    "background:rgba(60,60,60,.75);padding:2px 7px;border-radius:9px;pointer-events:none;user-select:none}";
+    "[data-tw-frozen=fatal] body{opacity:.85}[data-tw-badge]{position:fixed;right:6px;bottom:6px;z-index:2147483647;"
+    "font:11px/1.3 -apple-system,system-ui,sans-serif;color:#fff;background:rgba(60,60,60,.75);padding:2px 7px;"
+    "border-radius:9px}";
 }
 
 std::string Renderer::serialize() const {
@@ -6778,8 +6775,7 @@ bool Renderer::sync_motion(double now) {
 }
 
 void Renderer::count_paint() {
-    // A frozen widget is not counted any more (core.ts: the count returns while frozen): its script is stopped.
-    if (!paint_on_ || still() || frozen_) return;
+    if (!paint_on_ || still()) return;
     double now = now_s();
     // An animation that ended leaves its box's own values, last read while it applied: every box is read again.
     if (sync_motion(now)) paint_scan_ = true;
