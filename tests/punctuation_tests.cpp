@@ -178,12 +178,14 @@ void lay_out(Laid& l, bool vertical, bool half_forms, float length, const std::s
 }
 
 // `body` (paragraphs of their own) in a line (column) `length` px long.
-void lay_out_body(Laid& l, bool vertical, bool half_forms, float length, const std::string& body) {
+void lay_out_body(Laid& l, bool vertical, bool half_forms, float length, const std::string& body,
+                  paragraph_brackets scheme = paragraph_brackets::full_em) {
     l.c.half_forms = half_forms;
     if (vertical) l.c.h = length;
     l.doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
                                            "><body style=\"margin:0;font-size:16px;line-height:20px\">" + body + "</body></html>",
                                        &l.c);
+    l.doc->set_paragraph_brackets(scheme);
     l.doc->render(pixel_t(vertical ? 400 : length));
     l.doc->draw(0, 0, 0, nullptr);
 }
@@ -252,9 +254,10 @@ void run(bool vertical, bool half_forms) {
     // of 1em takes the bracket's first half (as before); a paragraph with none, in a book whose paragraphs are indented
     // (a U+3000 or text-indent on its sibling paragraphs, or on its lines after <br>), gets the em: the bracket full
     // width after half an em. Paragraphs in a book that indents none stay as they were.
-    auto expect_body = [&](float length, const std::string& body, const std::string& want, const std::string& what) {
+    auto expect_body = [&](float length, const std::string& body, const std::string& want, const std::string& what,
+                           paragraph_brackets scheme = paragraph_brackets::full_em) {
         Laid l;
-        lay_out_body(l, vertical, half_forms, length, body);
+        lay_out_body(l, vertical, half_forms, length, body, scheme);
         const std::string got = drawn(l.c.glyphs, half_forms);
         std::string w = want;
         if (!half_forms)
@@ -281,6 +284,23 @@ void run(bool vertical, bool half_forms) {
                 "a heading is not one of the paragraphs: its 「 as before");
     expect_body(400, p0 + "　あ" + e + "<p style=\"margin:0;text-align:center\">「か」</p>", "　@0 あ@16 | 「*@180 か@188 」@204",
                 "a centred paragraph's 「 as before");
+    // JLReq 3.1.5 ③ (document::set_paragraph_brackets(half_em), as novels set dialogue): the same paragraphs' bracket
+    // keeps its full width and no more (二分アキ, its ink half an em in); a wrapped line's is still 天ツキ, a paragraph's
+    // own text-indent:1em still takes its first half, a book that indents nothing is still flush.
+    const auto three = paragraph_brackets::half_em;
+    expect_body(80, p0 + "　あいうえ" + e + p0 + "「かき」くけこさしす" + e,
+                "　@0 あ@16 い@32 う@48 え@64 | 「@8 か@16 き@32 」@48 く@64 | け@0 こ@16 さ@32 し@48 す@64",
+                "3.1.5 ③: a paragraph that starts with 「 after one indented with U+3000: 「 full width (二分アキ)", three);
+    expect_body(80, p0 + "「かき」くけこさし「すせ" + e + p0 + "　あ" + e,
+                "「@8 か@16 き@32 」@48 く@64 | け@0 こ@16 さ@32 し@48 | 「*@0 す@8 せ@24 | 　@0 あ@16",
+                "3.1.5 ③: the paragraph's wrapped line still starts with 「 flush (天ツキ)", three);
+    expect_body(400, p1 + "あい" + e + "<p style=\"margin:0;text-indent:0\">「か」き</p>", "あ@16 い@32 | 「@8 か@16 」@32 き@48",
+                "3.1.5 ③: 草枕's text-indent:0 conversation among text-indent:1em paragraphs", three);
+    expect_body(400, p1 + "「か」き" + e, "「*@16 か@24 」@40 き@56", "3.1.5 ③: a paragraph's own text-indent:1em as in ①", three);
+    expect_body(400, p0 + "あい" + e + p0 + "「か」き" + e, "あ@0 い@16 | 「*@0 か@8 」@24 き@40",
+                "3.1.5 ③: a book that indents no paragraph as before", three);
+    expect_body(400, "<p style=\"margin:0\">　あい<br/>「か」き<br/>　う</p>", "　@0 あ@16 い@32 | 「@8 か@16 」@32 き@48 | 　@0 う@16",
+                "3.1.5 ③: lines after <br> (毒姫)", three);
     {
         Laid l;
         lay_out_body(l, vertical, half_forms, 400, p0 + "　あ" + e + p0 + "「か」" + e);
