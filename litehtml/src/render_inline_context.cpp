@@ -7,6 +7,8 @@
 #include "html_tag.h"
 #include "document_container.h"
 #include "cjk_rules.h"
+#include <algorithm>
+#include <functional>
 
 namespace
 {
@@ -807,10 +809,107 @@ bool litehtml::render_item_inline_context::place_hyphenated(const std::unique_pt
     return true;
 }
 
+namespace
+{
+    // The first character `el` shows (0: none, or not within `budget` elements): leading ASCII white space skipped,
+    // annotations (rt, rp) left out.
+    char32_t leading_char(const litehtml::element::ptr& el, int& budget)
+    {
+        if(!el || --budget < 0 || el->css().get_display() == litehtml::display_none || el->tag() == litehtml::_rt_ ||
+           el->tag() == litehtml::_rp_)
+            return 0;
+        if(el->is_text())
+        {
+            std::string text;
+            el->get_text(text);
+            const size_t at = text.find_first_not_of(" \t\r\n\f");
+            return at == std::string::npos ? 0 : first_char(text.substr(at));
+        }
+        for(const auto& child : el->children())
+            if(char32_t c = leading_char(child, budget))
+                return c;
+        return 0;
+    }
+} // namespace
+
+bool litehtml::render_item_inline_context::paragraphs_indented()
+{
+    if(m_paragraphs_indented >= 0)
+        return m_paragraphs_indented != 0;
+    constexpr char32_t ideographic_space = 0x3000;
+    const element::ptr el                = src_el();
+    bool               yes               = false;
+    // Its own lines after a <br> (a chapter of lines, as calibre makes them).
+    {
+        int  budget = 4000;
+        bool after  = false;
+        std::function<bool(const element::ptr&)> walk = [&](const element::ptr& e) {
+            if(--budget < 0)
+                return false;
+            if(e->is_break())
+            {
+                after = true;
+                return false;
+            }
+            if(e->is_text())
+            {
+                int  one = 1;
+                const char32_t c = leading_char(e, one);
+                if(!c)
+                    return false;
+                const bool indented = after && c == ideographic_space;
+                after               = false;
+                return indented;
+            }
+            if(e->tag() == _rt_ || e->tag() == _rp_)
+                return false;
+            for(const auto& child : e->children())
+                if(walk(child))
+                    return true;
+            return false;
+        };
+        yes = walk(el);
+    }
+    // Its nearest sibling paragraphs.
+    if(!yes && el->parent())
+    {
+        const auto& kids = el->parent()->children();
+        const auto  self = std::find(kids.begin(), kids.end(), el);
+        auto        indented = [&](const element::ptr& s) {
+            if(s->is_text() || s->tag() != el->tag())
+                return false;
+            if(s->css().get_text_indent().val() > 0)
+                return true;
+            int budget = 200;
+            return leading_char(s, budget) == ideographic_space;
+        };
+        if(self != kids.end())
+        {
+            int n = 0;
+            for(auto it = self; it != kids.begin() && n < 8 && !yes;)
+                if(!(*--it)->is_text() && ++n)
+                    yes = indented(*it);
+            n = 0;
+            for(auto it = std::next(self); it != kids.end() && n < 8 && !yes; ++it)
+                if(!(*it)->is_text() && ++n)
+                    yes = indented(*it);
+        }
+    }
+    m_paragraphs_indented = yes ? 1 : 0;
+    return yes;
+}
+
 litehtml::pixel_t litehtml::render_item_inline_context::new_box(const std::unique_ptr<line_box_item>& el,
                                                                 const containing_block_context&       self_size,
                                                                 formatting_context*                   fmt_ctx)
 {
+    // A paragraph starts on the block's first line and on the line after a <br> (JLReq 3.1.5: 改行行頭).
+    bool paragraph = m_line_boxes.empty();
+    if(!paragraph)
+    {
+        const auto last = m_line_boxes.back()->get_last_text_part();
+        paragraph       = last && last->src_el()->is_break();
+    }
     auto    items    = finish_last_box(false, self_size);
     pixel_t line_top = 0_px;
     if(!m_line_boxes.empty())
@@ -846,6 +945,20 @@ litehtml::pixel_t litehtml::render_item_inline_context::new_box(const std::uniqu
                                                          new_pos.left + new_pos.width, css().line_height(),
                                                          css().get_font_metrics(), css().get_text_align(),
                                                          css().get_direction() == direction_rtl));
+    // JLReq 3.1.5: an opening bracket that starts a paragraph. With an indent of its own of an em or more, the
+    // bracket's first half goes (as at any line's start). With less, in a book that indents its paragraphs, the bracket
+    // keeps it: in ① (the default) after the half em less the indent, so a full em is before its ink (全角アキ); in ③
+    // with nothing more (二分アキ, document::set_paragraph_brackets). Not for a centred or end-aligned line, nor a
+    // negative (hanging) indent.
+    if(paragraph && is_one_of(css().get_text_align(), text_align_left, text_align_justify, text_align_start))
+    {
+        const pixel_t em = css().get_font_size();
+        if(text_indent >= 0_px && text_indent < em && first_line_margin == 0_px && paragraphs_indented())
+        {
+            const bool full_em = src_el()->get_document()->get_paragraph_brackets() == paragraph_brackets::full_em;
+            m_line_boxes.back()->set_paragraph_start(full_em ? std::max(0_px, em / 2_px - text_indent) : 0_px);
+        }
+    }
 
     // Add items returned by finish_last_box function into the new line
     for(auto& it : items)

@@ -8,9 +8,83 @@
 #include "document_container.h"
 #include "types.h"
 #include "cjk_rules.h"
+#include "render_ruby.h"
 #include "utf8_strings.h"
 #include <algorithm>
 #include <cmath>
+
+namespace
+{
+    // A line item's ruby, for the overhang (JLReq 3.3.8): its first and last pairs (the item itself for a ruby of one
+    // pair, else the pairs of its inline context), what its annotation sticks out beyond its base before and after,
+    // and one ruby character.
+    struct ruby_sides
+    {
+        litehtml::render_item_ruby_pair* single = nullptr;
+        litehtml::pixel_t                 before = 0, after = 0, em = 0;
+    };
+
+    bool ruby_of(const litehtml::line_box_item* item, ruby_sides& out)
+    {
+        using namespace litehtml;
+        if(!item || item->get_type() != line_box_item::type_text_part || item->get_el()->src_el()->tag() != _ruby_)
+            return false;
+        const auto& el = item->get_el();
+        if(auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(el))
+        {
+            if(!pair->has_annotation || pair->ruby_em <= 0_px || !pair->japanese_base)
+                return false;
+            out.single = pair.get();
+            out.before = pair->base_start + pair->base_shift;
+            out.after  = pair->pos().width - pair->base_end - pair->base_shift;
+            out.em     = pair->ruby_em;
+            return true;
+        }
+        render_item_ruby_pair *first = nullptr, *last = nullptr;
+        for(const auto& child : el->children())
+            if(auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(child))
+            {
+                if(!first)
+                    first = pair.get();
+                last = pair.get();
+            }
+        if(!first || !first->has_annotation || !last->has_annotation || first->ruby_em <= 0_px || last->ruby_em <= 0_px ||
+           !first->japanese_base || !last->japanese_base)
+            return false;
+        out.before = first->pos().x + first->base_start;
+        out.after  = el->pos().width - (last->pos().x + last->base_end);
+        out.em     = std::min(first->ruby_em, last->ruby_em);
+        return true;
+    }
+
+    // The first or last character a line item's text shows (0: not a text, or none).
+    char32_t edge_of(const litehtml::line_box_item* item, bool last)
+    {
+        using namespace litehtml;
+        if(!item || item->get_type() != line_box_item::type_text_part)
+            return 0;
+        auto part = std::dynamic_pointer_cast<render_text>(item->get_el());
+        auto text = part ? std::dynamic_pointer_cast<el_text>(part->src_el()) : nullptr;
+        if(!text)
+            return 0;
+        const std::string& s = part->is_fragment ? part->fragment_text : text->display_text();
+        if(s.empty())
+            return 0;
+        size_t at = 0;
+        if(last)
+        {
+            at = s.size() - 1;
+            while(at > 0 && (static_cast<unsigned char>(s[at]) & 0xC0) == 0x80)
+                at--;
+        }
+        const unsigned char c0 = s[at];
+        const size_t        n  = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+        char32_t            c  = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
+        for(size_t k = 1; k < n && at + k < s.size(); k++)
+            c = (c << 6) | (static_cast<unsigned char>(s[at + k]) & 0x3F);
+        return c;
+    }
+} // namespace
 
 //////////////////////////////////////////////////////////////////////////////////////////
 
@@ -204,13 +278,44 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
     if(add && item->get_type() == line_box_item::type_text_part)
     {
         // Punctuation compression: the line's first character is at a line's start (an opening bracket gives up its
-        // first half), after the text indent too.
+        // first half), after the text indent too; at a paragraph's start (set_paragraph_start) it keeps it, and the
+        // space still missing before it goes first.
         auto part = std::dynamic_pointer_cast<render_text>(item->get_el());
         if(part && !part->is_fragment && first_text_part(m_items.end()))
-            part->compress(cjk::line_start, cjk::line_middle);
+        {
+            const bool first = std::all_of(m_items.begin(), m_items.end(), [](const std::unique_ptr<line_box_item>& i) {
+                return i->get_type() == line_box_item::type_inline_start;
+            });
+            part->compress(first ? start_position() : cjk::line_start, cjk::line_middle);
+            if(first && m_paragraph_start && m_bracket_space > 0_px && starts_with_opening(part))
+            {
+                m_width         += m_bracket_space;
+                m_bracket_space  = 0_px;
+            }
+        }
     }
     if(add)
     {
+        // Ruby overhang (JLReq 3.3.8): a ruby at the line's head starts its base with its annotation (line-edge a);
+        // one after a kana, or a kana after a ruby, overlaps it.
+        ruby_sides r;
+        if(ruby_of(item.get(), r) && r.single)
+        {
+            r.single->align_base(0_px);
+            r.single->overlap_before = 0_px;
+            if(!last_content_item())
+                r.single->align_base(-r.single->base_start);
+        }
+        pixel_t       overlap = ruby_overlap(item.get());
+        // It fits only ending the line (line-edge b): its base ends with its annotation now.
+        if(const pixel_t end = r.single ? ruby_end_overlap(item.get(), 0_px) : -1_px; end >= 0_px)
+        {
+            r.single->align_base(r.single->pos().width - r.single->base_end);
+            overlap = end;
+        }
+        if(r.single)
+            r.single->overlap_before = overlap;
+        m_width -= overlap;
         item->place_to(m_left + m_width, m_top);
         m_width  += item->width();
         m_height  = std::max(m_height, item->get_el()->height());
@@ -333,6 +438,49 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         return ret_items;
     }
 
+    // Ruby at a wrapped line's end (JLReq 3.3.8 line-edge b): its base ends with its annotation, which overhangs a kana
+    // before it by up to one ruby character.
+    if(!last_box && !finished_with_break)
+    {
+        for(auto it = m_items.rbegin(); it != m_items.rend(); ++it)
+        {
+            const auto type = (*it)->get_type();
+            if(type == line_box_item::type_inline_end || type == line_box_item::type_inline_continue)
+                continue;
+            ruby_sides r;
+            if(ruby_of(it->get(), r) && r.single && r.single->base_shift == 0_px && std::next(it) != m_items.rend())
+            {
+                auto* pair = r.single;
+                pair->align_base(r.after);
+                const line_box_item* prev = nullptr;
+                for(auto b = std::next(it); b != m_items.rend() && !prev; ++b)
+                {
+                    const auto t = (*b)->get_type();
+                    if(t != line_box_item::type_inline_start && t != line_box_item::type_inline_end &&
+                       t != line_box_item::type_inline_continue &&
+                       !((*b)->get_el()->src_el()->is_white_space() && (*b)->width() <= 0_px))
+                        prev = b->get();
+                }
+                ruby_sides    other;
+                const bool    onto  = prev && !ruby_of(prev, other) && cjk::ruby_may_overhang(edge_of(prev, true));
+                const pixel_t want  = onto ? std::min(pair->base_start + pair->base_shift, pair->ruby_em) : 0_px;
+                const pixel_t extra = std::max(0_px, want - pair->overlap_before);
+                if(extra > 0_px)
+                {
+                    pair->overlap_before += extra;
+                    m_width              -= extra;
+                    for(auto after = m_items.rbegin();; ++after)
+                    {
+                        (*after)->pos().x -= extra;
+                        if(after == it)
+                            break;
+                    }
+                }
+            }
+            break;
+        }
+    }
+
     // Punctuation compression: a line that wraps (not before <br>, not the paragraph's last) ends at a line's end, where
     // a closing bracket or 、。 gives up its second half; what follows it (inline ends) moves back with it.
     if(!last_box && !finished_with_break)
@@ -345,7 +493,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             if(part && !part->is_fragment)
             {
                 const pixel_t was = part->pos().width;
-                part->compress(first_text_part(std::next(it).base()) ? cjk::line_start : cjk::line_middle, cjk::line_end);
+                part->compress(first_text_part(std::next(it).base()) ? start_position() : cjk::line_middle, cjk::line_end);
                 const pixel_t less = was - part->pos().width;
                 m_width -= less;
                 for(auto after = m_items.rbegin(); after != it; ++after)
@@ -1048,13 +1196,94 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
         if(trailing <= 0_px && !(part && part->is_fragment))
             if(auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get()))
                 end_extra = text->line_end_extra();
-        if(m_left + m_width + item->width() + end_extra - hang + trailing > m_right)
+        if(m_left + m_width - ruby_overlap(item.get()) + item->width() + end_extra - hang + trailing > m_right &&
+           ruby_end_overlap(item.get(), end_extra - hang + trailing) < 0_px)
         {
             return false;
         }
     }
 
     return true;
+}
+
+
+const litehtml::line_box_item* litehtml::line_box::last_content_item() const
+{
+    for(auto it = m_items.rbegin(); it != m_items.rend(); ++it)
+    {
+        const auto type = (*it)->get_type();
+        if(type == line_box_item::type_inline_start || type == line_box_item::type_inline_end ||
+           type == line_box_item::type_inline_continue)
+            continue;
+        if((*it)->get_el()->src_el()->is_white_space() && (*it)->width() <= 0_px)
+            continue;
+        return it->get();
+    }
+    return nullptr;
+}
+
+litehtml::pixel_t litehtml::line_box::ruby_overlap(const line_box_item* item) const
+{
+    // JLReq 3.3.8: a ruby longer than its base overhangs a kana next to it (rule 2) by up to one ruby character, never
+    // a kanji (rule 1) nor another ruby (rule 2, note), and no more than its annotation sticks out on that side; the
+    // rest of that side stays space before or after the base.
+    const line_box_item* prev = last_content_item();
+    if(!prev)
+        return 0_px;
+    ruby_sides r;
+    if(ruby_of(item, r))
+    {
+        // Laid out again before it is placed: its base where it was laid out.
+        const pixel_t before = r.single ? r.single->base_start : r.before;
+        ruby_sides    other;
+        if(ruby_of(prev, other) || !cjk::ruby_may_overhang(edge_of(prev, true)))
+            return 0_px;
+        return std::max(0_px, std::min(before, r.em));
+    }
+    if(ruby_of(prev, r) && cjk::ruby_may_overhang(edge_of(item, false)))
+        return std::max(0_px, std::min(r.after, r.em));
+    return 0_px;
+}
+
+litehtml::pixel_t litehtml::line_box::ruby_end_overlap(const line_box_item* item, pixel_t extra) const
+{
+    // JLReq 3.3.8 line-edge b: a ruby that ends a line has its base end with its annotation, which overhangs a kana
+    // before it by up to one ruby character: one that does not fit the line overhanging by its mid-line share may fit
+    // so. -1: it fits as it is, or not even so.
+    ruby_sides r;
+    if(!ruby_of(item, r) || !r.single)
+        return -1_px;
+    const pixel_t width = item->width();
+    if(m_left + m_width - ruby_overlap(item) + width + extra <= m_right)
+        return -1_px;
+    const line_box_item* prev = last_content_item();
+    ruby_sides           other;
+    if(!prev || ruby_of(prev, other) || !cjk::ruby_may_overhang(edge_of(prev, true)))
+        return -1_px;
+    const pixel_t excess = r.single->base_start + (r.single->pos().width - r.single->base_end);
+    const pixel_t overlap = std::max(0_px, std::min(excess, r.em));
+    return m_left + m_width - overlap + width + extra <= m_right ? overlap : -1_px;
+}
+
+uint8_t litehtml::line_box::start_position() const
+{
+    return m_paragraph_start ? cjk::line_start | cjk::paragraph_start : cjk::line_start;
+}
+
+bool litehtml::line_box::starts_with_opening(const std::shared_ptr<render_text>& part)
+{
+    auto text = std::dynamic_pointer_cast<el_text>(part->src_el());
+    if(!text)
+        return false;
+    const std::string& s = text->display_text();
+    if(s.empty())
+        return false;
+    const unsigned char c0 = s[0];
+    const size_t        n  = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+    char32_t            c  = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
+    for(size_t k = 1; k < n && k < s.size(); k++)
+        c = (c << 6) | (static_cast<unsigned char>(s[k]) & 0x3F);
+    return cjk::classify(c) & cjk::opening;
 }
 
 bool litehtml::line_box::first_text_part(std::list<std::unique_ptr<line_box_item>>::const_iterator at) const

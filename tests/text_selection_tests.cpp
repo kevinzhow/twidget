@@ -79,11 +79,12 @@ int main() {
         auto doc = document::createFromString(std::string("<html><body style=\"margin:0;font-size:16px;line-height:20px\">") + BODY + "</body></html>", &c);
         doc->render(300);
         text_selection ts(*doc);
-        // The line: あ 0-24, い 24-48, the pair 漢 (its annotation かん is 48 px: the pair 48-96), う。 96-144 (one word), えお。 144-216.
-        text_position a = ts.position_at(1, 30), b = ts.position_at(143, 30);
+        // The line: あ 0-24, い 24-48, the pair 漢 (its annotation かん is 48 px, 24 more than 漢: it overhangs い and う by
+        // one ruby character, 8 px, each, JLReq 3.3.8: the pair 40-88), う。 80-128 (one word), えお。 128-200.
+        text_position a = ts.position_at(1, 30), b = ts.position_at(127, 30);
         check(ts.text(a, b) == base, "horizontal: two points select the base text, the annotation left out (" + ts.text(a, b) + ")");
         auto rects = ts.rects(a, b);
-        check(rects.size() == 1 && float(rects[0].x) == 0 && float(rects[0].width) == 144, "horizontal: one rectangle for the line, over the ruby pair");
+        check(rects.size() == 1 && float(rects[0].x) == 0 && float(rects[0].width) == 128, "horizontal: one rectangle for the line, over the ruby pair");
         text_position s0, s1;
         check(ts.sentence(ts.position_at(170, 30), s0, s1) && ts.text(s0, s1) == sentence2, "horizontal: the sentence at a point");
         check(ts.sentence(ts.position_at(60, 30), s0, s1) && ts.text(s0, s1) == base, "horizontal: the sentence across a ruby");
@@ -95,10 +96,10 @@ int main() {
         check(doc->vertical(), "vertical-rl: the document is vertical");
         text_selection ts(*doc);
         // The first column is x 280-300; its characters go down: あ at y 0-24, い 24-48.
-        text_position a = ts.position_at(290, 1), b = ts.position_at(290, 143);
+        text_position a = ts.position_at(290, 1), b = ts.position_at(290, 127);
         check(ts.text(a, b) == base, "vertical: two points down the column select the base text (" + ts.text(a, b) + ")");
         auto rects = ts.rects(a, b);
-        check(rects.size() == 1 && float(rects[0].y) == 0 && float(rects[0].height) == 144 && float(rects[0].x) >= 280 &&
+        check(rects.size() == 1 && float(rects[0].y) == 0 && float(rects[0].height) == 128 && float(rects[0].x) >= 280 &&
                   float(rects[0].x) + float(rects[0].width) <= 300,
               "vertical: one rectangle down the first column, on the page");
         text_position s0, s1;

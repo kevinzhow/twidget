@@ -52,6 +52,16 @@ namespace litehtml
     class html_tag;
     class render_item;
 
+    /// Where an opening bracket that starts a paragraph is set (JLReq 3.1.5; a wrapped line's is always 天ツキ, flush):
+    /// ① its ink a full em from the line head (改行行頭 全角アキ, JIS X 4051), or ③ half an em (二分アキ, as novels
+    /// set dialogue). Only for a paragraph with less than an em of indent of its own in a book that indents its
+    /// paragraphs (line_box::set_paragraph_start).
+    enum class paragraph_brackets : uint8_t
+    {
+        full_em,  ///< ①
+        half_em,  ///< ③
+    };
+
     class document : public std::enable_shared_from_this<document>
     {
       public:
@@ -158,6 +168,7 @@ namespace litehtml
         litehtml::size                          m_size;
         bool                                    m_vertical = false;
         bool                                    m_cjk_segment_breaks = false;
+        paragraph_brackets                      m_paragraph_brackets = paragraph_brackets::full_em;
         bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
@@ -275,6 +286,9 @@ namespace litehtml
         /// (not Hangul) is removed instead of becoming a space, so that Japanese and Chinese text wrapped in the
         /// source has no gaps. Off by default: Chromium 156 keeps the space, and TwidgetCore matches Chromium.
         void                         set_cjk_segment_breaks(bool on) { m_cjk_segment_breaks = on; }
+        /// The paragraph-start bracket scheme (JLReq 3.1.5 ① or ③) this document is laid out with; ① by default.
+        void                         set_paragraph_brackets(paragraph_brackets scheme) { m_paragraph_brackets = scheme; }
+        paragraph_brackets           get_paragraph_brackets() const { return m_paragraph_brackets; }
         bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;
