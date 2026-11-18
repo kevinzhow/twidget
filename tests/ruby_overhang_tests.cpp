@@ -206,6 +206,10 @@ void run(bool vertical) {
            "line-edge b: a ruby that fits only with its whole excess over the kana before it ends the line there");
     expect(80, "あいう漢" + shun + "おか", "あ@0 い@16 う@32 漢@48 ^しゅん@0 | 旬@0 お@16 か@32",
            "line-edge b: after a kanji it does not fit, and starts the next line");
+    // JLReq's rules are for Japanese: a ruby over Latin text (IDPF hefty-water's 2H₂ under "hydrogen") stays as
+    // CSS lays it out, its base centred, also at a line's head and next to kana.
+    expect(400, r("ab", "abcdefgh") + "の", "^abcdefgh@0 a@8 b@40 の@64", "a ruby over Latin text: no line-edge alignment, no overhang");
+    expect(400, "の" + r("ab", "abcdefgh") + "の", "の@0 ^abcdefgh@16 a@24 b@56 の@80", "a ruby over Latin text after a kana: no overhang");
     expect(72, "あい漢" + shun + "えお", "あ@0 い@16 漢@32 ^しゅん@48 旬@56 | え@0 お@16",
            "line-edge b: at a wrapped line's end after a kanji, the space before 旬");
 }
