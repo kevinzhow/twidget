@@ -1,15 +1,19 @@
-// Heavy boxes (widget-sandbox v0.6.0: packages/core/src/shared/paint-policy.ts, docs/decisions.md "Heavy boxes"): the
-// paint limit every renderer enforces, since only the renderer knows the cascade. A box is heavy when its computed
-// style has a blurred box-shadow layer, a filter, a backdrop-filter or opacity below 1 (a disabled or pressed <button>'s
-// own dimming aside), or while an animation of one of them runs. At most twidget::kMaxHeavyBoxes at once, of which
-// twidget::kMaxBackdropBoxes with backdrop-filter; past either the renderer reports `limit` and the host stops the widget.
+// Heavy boxes (SPEC S10.4): the paint limit, which only the renderer can enforce since only it knows the cascade.
+// A box is heavy when its computed style has a blurred box-shadow layer, a filter, a backdrop-filter or opacity below
+// 1, or while an animation of one of those runs. At most twidget::kMaxHeavyBoxes at once, of which
+// twidget::kMaxBackdropBoxes with backdrop-filter (twidget/paint_limits.h); past either the renderer reports `limit`
+// and the host stops a strict card.
 //
-// The rules here take CSS text, as packages/core/tests/fixtures/paint-policy.json writes it; the renderer judges
-// litehtml's computed values by the same rules (Renderer::count_paint). The value counts, not the picture:
-// `opacity: 0.999` and `filter: brightness(1)` are heavy.
+// Decisions SPEC S10.4 leaves to us (recorded here and tested in tests/paint_policy_tests.cpp):
+// - the value counts, not the picture: `opacity: 0.999` and `filter: brightness(1)` are heavy;
+// - a <button>'s own dimming (disabled or pressed, from the client's button tokens, S11.3) is not heavy;
+// - ::before / ::after are boxes of their own when they have content; `display: contents` builds no box;
+// - an animation of box-shadow counts unless every keyframe's layers are unblurred and the first and last keyframes
+//   are given (the box's own value, unknown to the rule, could be blurred).
+// The rules take CSS text; the renderer judges litehtml's computed values by the same rules (Renderer::count_paint).
 #pragma once
 
-#include "twidget/renderer.h"
+#include "twidget/paint_limits.h"
 
 #include <cstdint>
 #include <optional>
@@ -63,7 +67,7 @@ private:
 };
 
 struct Verdict {
-    twidget::WidgetPaintLimit code = twidget::WidgetPaintLimit::Paint;
+    twidget::PaintLimit code = twidget::PaintLimit::Paint;
     int count = 0;
     bool operator==(const Verdict&) const = default;
 };
@@ -132,8 +136,8 @@ public:
     /// the backdrop count, and the same verdict from then on.
     std::optional<Verdict> check() {
         if (stopped_) return stopped_;
-        if (heavy_ > twidget::kMaxHeavyBoxes) stopped_ = Verdict{twidget::WidgetPaintLimit::Paint, heavy_};
-        else if (backdrop_ > twidget::kMaxBackdropBoxes) stopped_ = Verdict{twidget::WidgetPaintLimit::Backdrop, backdrop_};
+        if (heavy_ > twidget::kMaxHeavyBoxes) stopped_ = Verdict{twidget::PaintLimit::Paint, heavy_};
+        else if (backdrop_ > twidget::kMaxBackdropBoxes) stopped_ = Verdict{twidget::PaintLimit::Backdrop, backdrop_};
         return stopped_;
     }
 

@@ -793,19 +793,24 @@ std::optional<float> parse_opacity(std::string_view text) {
 
 namespace {
 
+// The 15 keys of Telegram Mini Apps `themeParams`, in the order SPEC S7.1 lists them.
 constexpr const char* THEME_KEYS[] = {
-    "bg_color", "text_color", "hint_color", "link_color", "button_color", "button_text_color",
-    "secondary_bg_color", "accent_text_color", "subtitle_text_color", "destructive_text_color",
-    "section_bg_color", "section_header_text_color", "section_separator_color", "header_bg_color", "bottom_bar_bg_color",
+    "bg_color", "text_color", "hint_color", "link_color", "button_color", "button_text_color", "secondary_bg_color",
+    "header_bg_color", "bottom_bar_bg_color", "accent_text_color", "section_bg_color", "section_header_text_color",
+    "section_separator_color", "subtitle_text_color", "destructive_text_color",
 };
 constexpr size_t THEME_KEY_COUNT = std::size(THEME_KEYS);
 
-// DEFAULT_THEME_PARAMS in sdk-policy.ts, light then dark, in THEME_KEYS order.
+// Our default palettes for keys the host leaves out (SPEC S7.1: "two palettes of our own choosing that look like a
+// Telegram light and dark bubble"), light then dark, in THEME_KEYS order. The Apple renderer uses the same values
+// (PLAN P14 item 5).
 constexpr const char* THEME_DEFAULTS[2][THEME_KEY_COUNT] = {
-    {"#ffffff", "#000000", "#707579", "#3390ec", "#3390ec", "#ffffff", "#f4f4f5", "#3390ec", "#707579", "#e53935",
-     "#ffffff", "#3390ec", "#e7e7e7", "#ffffff", "#ffffff"},
-    {"#212121", "#ffffff", "#aaaaaa", "#8774e1", "#8774e1", "#ffffff", "#181818", "#8774e1", "#aaaaaa", "#ff595a",
-     "#212121", "#8774e1", "#3d3d3d", "#212121", "#212121"},
+    // bg, text, hint, link, button, button text, secondary bg,
+    // header bg, bottom bar bg, accent text, section bg, section header text, section separator, subtitle, destructive
+    {"#ffffff", "#1b1d21", "#868c94", "#2481cc", "#2a8bd8", "#ffffff", "#f0f2f5",
+     "#f7f8fa", "#f7f8fa", "#2481cc", "#ffffff", "#4a8fcf", "#e2e5e9", "#80868e", "#d9443c"},
+    {"#1e2228", "#f3f4f6", "#9097a0", "#6ab3f3", "#5aa5e6", "#ffffff", "#15181c",
+     "#22272e", "#22272e", "#6ab3f3", "#1e2228", "#79b6ee", "#30353d", "#8a9099", "#ef6259"},
 };
 
 constexpr const char* BUTTON_VARS[][2] = {
@@ -818,7 +823,7 @@ constexpr const char* BUTTON_VARS[][2] = {
     {"pressedOpacity", "--tg-button-pressed-opacity"},
     {"disabledOpacity", "--tg-button-disabled-opacity"},
 };
-/// The text tokens and the reference set that stands for any the host leaves out (DEFAULT_TEXT_TOKENS).
+/// The text tokens and the values that stand for any the host leaves out (see QUESTIONS Q2: kept from the BSD base).
 constexpr const char* TEXT_VARS[][3] = {
     {"fontSize", "--tg-text-font-size", "15px"},
     {"lineHeight", "--tg-text-line-height", "1.35"},
