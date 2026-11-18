@@ -8,7 +8,6 @@ namespace litehtml
     class render_item_image : public render_item
     {
       protected:
-        pixel_t        calc_max_height(pixel_t image_height, pixel_t containing_block_height);
         rendered_width _render(pixel_t x, pixel_t y, const containing_block_context& containing_block_size,
                                formatting_context* fmt_ctx, bool second_pass) override;
 

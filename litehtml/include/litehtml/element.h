@@ -99,6 +99,8 @@ namespace litehtml
         virtual bool removeChild(const ptr& el);
         // Replaces the consecutive children `old` (in order) with `replacement`, keeping their position.
         bool         replace_children(const std::vector<ptr>& old, const elements_list& replacement);
+        // Puts `els` right after the child `after`; a loop over the children that is at `after` goes on to them.
+        bool         insert_after(const ptr& after, const elements_list& els);
         virtual void clearRecursive();
 
         virtual string_id   id() const;

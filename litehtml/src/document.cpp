@@ -3068,13 +3068,10 @@ namespace litehtml
             break;
         case GUMBO_NODE_WHITESPACE:
             {
-                std::string str = node->v.text.text;
-                for(size_t i = 0; i < str.length(); i++)
-                {
-                    auto space = std::make_shared<el_space>(str.substr(i, 1).c_str(), shared_from_this());
-                    space->set_source(static_cast<uint32_t>(node->v.text.start_pos.offset), static_cast<uint32_t>(i));
-                    elements.push_back(space);
-                }
+                // One element for the run: el_space::compute_styles splits it where white-space keeps its characters.
+                auto space = std::make_shared<el_space>(node->v.text.text, shared_from_this());
+                space->set_source(static_cast<uint32_t>(node->v.text.start_pos.offset), 0);
+                elements.push_back(space);
             }
             break;
         default:

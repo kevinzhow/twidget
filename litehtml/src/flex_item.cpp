@@ -365,11 +365,14 @@ void litehtml::flex_item_column_direction::direction_specific_init(const litehtm
                            self_size.height.type != containing_block_context::cbc_value_type_auto
                        ? el->render_offset_height()
                        : static_cast<pixel_t>(content_height);
+    } else if(render_item::percent_of_auto(el->css().get_min_height(), self_size.height))
+    {
+        min_size = el->render_offset_height();
     } else
     {
         min_size = el->css().get_min_height().calc_percent(self_size.height) + el->render_offset_height();
     }
-    if(!el->css().get_max_height().is_predefined())
+    if(!el->css().get_max_height().is_predefined() && !render_item::percent_of_auto(el->css().get_max_height(), self_size.height))
     {
         max_size = el->css().get_max_height().calc_percent(self_size.height) + el->render_offset_height();
     }
@@ -389,7 +392,8 @@ void litehtml::flex_item_column_direction::direction_specific_init(const litehtm
 
     if(flex_basis_predefined)
     {
-        if(predef == flex_basis_auto && el->css().get_height().is_predefined())
+        if(predef == flex_basis_auto &&
+           (el->css().get_height().is_predefined() || render_item::percent_of_auto(el->css().get_height(), self_size.height)))
         {
             predef = flex_basis_fit_content;
         }
