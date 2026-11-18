@@ -50,6 +50,21 @@ const std::string kPng2x3 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAC0l
 int main() {
     // ── URLs (S9.4) ──
     {
+        using twcard::urls::Link;
+        auto parsed = twcard::urls::parse("../café?q=1#mark", "https://EXAMPLE.ORG/s/a");
+        check(parsed && (*parsed)["href"].asString() == "https://example.org/caf%C3%A9?q=1#mark" &&
+              (*parsed)["origin"].asString() == "https://example.org", "WHATWG relative URL resolution");
+        const auto telegram = twcard::urls::navigation("https://TELEGRAM.ME/widget", Link::Follow);
+        check(telegram && telegram->kind == Link::Telegram && telegram->url == "https://telegram.me/widget" &&
+              !twcard::urls::navigation(telegram->url, Link::External), "Telegram links go to the Telegram action");
+        const auto idn = twcard::urls::navigation("https://bücher.example/a", Link::External);
+        check(idn && idn->url == "https://xn--bcher-kva.example/a", "IDN hosts use ASCII serialization");
+        check(!twcard::urls::navigation("https://example.org/a b", Link::External) &&
+              !twcard::urls::navigation("https://name@example.org", Link::External) &&
+              !twcard::urls::navigation("https://example.org/%zz", Link::External),
+              "links reject disallowed ASCII, credentials and malformed escapes");
+    }
+    {
         auto v = twcard::urls::check("data:image/png;base64," + kPng2x3);
         check(v.kind == twcard::urls::Kind::Image && v.url.rfind("data:image/png;base64,", 0) == 0, "a small data: PNG passes");
         check(twcard::urls::check("  DATA:IMAGE/PNG;BASE64," + kPng2x3 + " ").kind == twcard::urls::Kind::Image, "case and whitespace as WHATWG URL");

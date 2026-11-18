@@ -48,6 +48,30 @@ if(NOT TARGET twcard)
         target_compile_options(twcard_quickjs PRIVATE -w -funsigned-char)
     endif()
 
+    # Ada URL v3.2.9 (PLAN §1), without URLPattern.
+    set(TWIDGET_ADA_DIR "" CACHE PATH "local source for the pinned Ada URL library")
+    if(NOT TWIDGET_ADA_DIR AND DEFINED ENV{TWIDGET_ADA_DIR})
+        set(TWIDGET_ADA_DIR "$ENV{TWIDGET_ADA_DIR}")
+    endif()
+    if(TWIDGET_ADA_DIR)
+        set(TW_ADA_SRC "${TWIDGET_ADA_DIR}")
+    else()
+        include(FetchContent)
+        FetchContent_Declare(tw_ada_src
+            URL https://codeload.github.com/ada-url/ada/tar.gz/6b4612162c34e7ffcee08c03b107b449e07a5683
+            URL_HASH SHA256=a096e6c9f6c29b6c521cb9cabeb8f07ae12468d6aa7f432d03daa13e9854314d)
+        FetchContent_GetProperties(tw_ada_src)
+        if(NOT tw_ada_src_POPULATED)
+            FetchContent_Populate(tw_ada_src)
+        endif()
+        set(TW_ADA_SRC "${tw_ada_src_SOURCE_DIR}")
+    endif()
+    add_library(twcard_ada STATIC "${TW_ADA_SRC}/src/ada.cpp")
+    target_include_directories(twcard_ada SYSTEM PUBLIC "${TW_ADA_SRC}/include")
+    target_compile_definitions(twcard_ada PUBLIC ADA_INCLUDE_URL_PATTERN=0)
+    target_compile_features(twcard_ada PUBLIC cxx_std_20)
+    set_target_properties(twcard_ada PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
     add_library(twcard STATIC
         "${CMAKE_CURRENT_LIST_DIR}/src/throttle.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/src/engine.cpp"
@@ -61,7 +85,7 @@ if(NOT TARGET twcard)
     target_include_directories(twcard PUBLIC "${CMAKE_CURRENT_LIST_DIR}/include" PRIVATE "${CMAKE_CURRENT_LIST_DIR}/src")
     # The validator parses CSS with litehtml's own parser (SPEC S9.5) and reads image headers with twidget::display_list.
     include("${CMAKE_CURRENT_LIST_DIR}/../core/display_list.cmake")
-    target_link_libraries(twcard PUBLIC twidget::base PRIVATE twcard_quickjs litehtml twidget::display_list)
+    target_link_libraries(twcard PUBLIC twidget::base PRIVATE twcard_quickjs twcard_ada litehtml twidget::display_list)
     target_compile_features(twcard PUBLIC cxx_std_20)
     set_target_properties(twcard PROPERTIES POSITION_INDEPENDENT_CODE ON)
     if(MSVC)

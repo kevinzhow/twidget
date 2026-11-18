@@ -403,6 +403,14 @@ struct CardHost::Impl : EngineDelegate, std::enable_shared_from_this<Impl> {
                 post([](Impl& h) { h.action({}); });
         } else if (kind == "intl" && options.intl) {
             if (auto value = options.intl(arg)) return Result::string(std::move(*value));
+        } else if (kind == "url") {
+            const auto request = Json::parse(arg);
+            if (!request || !(*request)["input"].isString()) return Result::null();
+            const auto* base = request->find("base");
+            if (base && !base->isString()) return Result::null();
+            auto url = urls::parse((*request)["input"].asString(),
+                                   base ? std::optional<std::string_view>(base->asString()) : std::nullopt);
+            return url ? Result::string(url->dump()) : Result::null();
         }
         return {};
     }

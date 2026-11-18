@@ -30,6 +30,7 @@ twidget::base (`base/`) and twcard (`twcard/`) are built with these, fetched at 
 |---|---|---|
 | [yyjson](https://github.com/ibireme/yyjson) 0.13.0 | JSON parsing and writing under `twidget::Json` | MIT, Copyright (c) 2020 YaoYuan, see its `LICENSE` |
 | [QuickJS](https://github.com/TelegramMessenger/quickjs) (TelegramMessenger's fork of quickjs-ng) at b526a817 | the cards' JavaScript engine (twcard::Engine) | MIT, Copyright (c) 2017-2026 Fabrice Bellard, (c) 2017-2024 Charlie Gordon, (c) 2023-2026 Ben Noordhuis and the other authors its `LICENSE` names |
+| [Ada URL](https://github.com/ada-url/ada) 3.2.9 | WHATWG URL parsing for card URLs and links | MIT or Apache-2.0, Copyright 2023 Yagiz Nizipli and Daniel Lemire, see its `LICENSE-MIT` and `LICENSE-APACHE` |
 
 ## Phosphor Icons
 

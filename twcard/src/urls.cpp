@@ -6,6 +6,8 @@
 #include "png.h"  // twlite::image_dimensions: the image header reader of twidget::display_list
 #include "profile.h"
 
+#include <ada.h>
+
 namespace twcard::urls {
 
 const char* const kPlaceholderImage =
@@ -39,6 +41,40 @@ int hex(char c) {
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
+}
+
+// URL takes Web IDL USVString inputs. JSON preserves lone surrogates as WTF-8 before this conversion.
+std::string usvString(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (size_t offset = 0; offset < value.size(); ++offset) {
+        const auto byte = static_cast<unsigned char>(value[offset]);
+        if (byte == 0xed && offset + 2 < value.size() &&
+            static_cast<unsigned char>(value[offset + 1]) >= 0xa0) {
+            result += "\xEF\xBF\xBD";
+            offset += 2;
+        } else {
+            result += value[offset];
+        }
+    }
+    return result;
+}
+
+bool allowedLinkSpelling(std::string_view input) {
+    constexpr std::string_view punctuation = "-._~:/?#[]@!$&'()*+,;=";
+    for (size_t offset = 0; offset < input.size(); ++offset) {
+        const auto byte = static_cast<unsigned char>(input[offset]);
+        if (byte == 0xed && offset + 2 < input.size() &&
+            static_cast<unsigned char>(input[offset + 1]) >= 0xa0)
+            return false;
+        if (byte >= 0x80 || (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+            (byte >= '0' && byte <= '9') || punctuation.find(char(byte)) != std::string_view::npos)
+            continue;
+        if (byte != '%' || offset + 2 >= input.size() || hex(input[offset + 1]) < 0 || hex(input[offset + 2]) < 0)
+            return false;
+        offset += 2;
+    }
+    return true;
 }
 
 std::vector<uint8_t> percent_decode(std::string_view s) {
@@ -176,6 +212,35 @@ Verdict check(std::string_view raw) {
     if (!twlite::image_dimensions(d->body.data(), d->body.size(), w, h) || w == 0 || h == 0 || w > kMaxImageSide || h > kMaxImageSide)
         return {Kind::Placeholder, kPlaceholderImage};
     return {Kind::Image, "data:" + d->mime + ";base64," + base64_encode(d->body.data(), d->body.size())};
+}
+
+std::optional<twidget::Json> parse(std::string_view input, std::optional<std::string_view> base) {
+    const auto parseWithBase = [&] {
+        const auto text = usvString(input);
+        if (!base) return ada::parse(text);
+        auto parent = ada::parse(usvString(*base));
+        return parent ? ada::parse(text, &*parent) : std::move(parent);
+    };
+    auto url = parseWithBase();
+    if (!url) return std::nullopt;
+    return twidget::Json::object().set("href", url->get_href()).set("origin", url->get_origin())
+        .set("protocol", url->get_protocol()).set("username", url->get_username())
+        .set("password", url->get_password()).set("host", url->get_host()).set("hostname", url->get_hostname())
+        .set("port", url->get_port()).set("pathname", url->get_pathname())
+        .set("search", url->get_search()).set("hash", url->get_hash());
+}
+
+std::optional<Navigation> navigation(std::string_view input, Link kind) {
+    if (lower(input.substr(0, 8)) != "https://" || !allowedLinkSpelling(input)) return std::nullopt;
+    auto url = ada::parse(input);
+    if (!url || url->has_credentials() || url->has_empty_hostname()) return std::nullopt;
+    auto host = url->get_hostname();
+    if (host.ends_with('.')) host.remove_suffix(1);
+    const bool telegram = host == "t.me" || host == "telegram.me" || host == "telegram.dog";
+    const Link actual = telegram ? Link::Telegram : Link::External;
+    if ((kind != Link::Follow && kind != actual) || (!telegram && url->get_href().size() > 256))
+        return std::nullopt;
+    return Navigation{actual, std::string(url->get_href())};
 }
 
 } // namespace twcard::urls

@@ -2,6 +2,8 @@
 // (PNG, JPEG, GIF, WebP) within 1024×1024 pixels by their header. Everything else is removed or replaced.
 #pragma once
 
+#include "twidget/json.h"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -30,6 +32,17 @@ struct Verdict {
 /// A URL from markup (an attribute value) or CSS (a url() argument, escapes already decoded). Leading and trailing
 /// ASCII whitespace and C0 controls are ignored, and tab/newline anywhere, as the WHATWG URL parser does.
 Verdict check(std::string_view url);
+
+/// The WHATWG URL components exposed by S8.1.
+std::optional<twidget::Json> parse(std::string_view input, std::optional<std::string_view> base);
+
+enum class Link { External, Telegram, Follow };
+struct Navigation {
+    Link kind;
+    std::string url;
+};
+/// S7.3: validate the original spelling and normalize a URL before an app action.
+std::optional<Navigation> navigation(std::string_view input, Link kind);
 
 /// A `data:` URL parsed per the WHATWG Fetch "data: URL processor": the MIME type essence (lowercase) and the body.
 struct Data {
