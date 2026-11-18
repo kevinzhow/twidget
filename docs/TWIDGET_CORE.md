@@ -62,7 +62,7 @@ A batch of ops is serialised to HTML, which the fork patches into the live docum
   host lays its selection over them; the Telegram Android client does so. Each run carries the matrix it
   shows under (CSS transforms as last painted, its layer's track as of the call), so a host asks again
   after a paint or while a layer moves.
-- **The paint limit** (widget-sandbox v0.6.0, `paint-policy.ts`). Before every frame the renderer counts the
+- **The paint limit** (SPEC S10.4). Before every frame the renderer counts the
   boxes whose computed style blurs a shadow, filters, has a backdrop-filter or opacity below 1, or runs an
   animation of one; past 16 (2 with backdrop-filter) it sends `limit` with the code and the count, once, and
   paints from then on without blur, filters, backdrop or transparency, its animations stopped. A host passes
