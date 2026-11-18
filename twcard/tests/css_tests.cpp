@@ -97,6 +97,15 @@ int main() {
     eq(val("background", "-webkit-image-set(url(http://e) 1x)"), "<dropped>", "-webkit-image-set()");
     eq(val("background-image", "url(var(--u))"), "<dropped>", "var() inside url()");
     eq(val("background-image", "url(attr(data-u))"), "<dropped>", "attr() inside url()");
+    {
+        const auto blocked = g_diags["url-blocked"];
+        eq(val("--picture", R"("https://example.invalid/image")"), "<dropped>", "an external URL string in a custom property is dropped");
+        eq(val("--picture", R"(var(--fallback, " /\2f example.invalid/image"))"), "<dropped>", "a nested scheme-relative URL string is dropped");
+        eq(val("content", R"(attr(data-label, "ftp://example.invalid/asset"))"), "<dropped>", "an external URL string in an attr fallback is dropped");
+        check(g_diags["url-blocked"] == blocked + 3, "each blocked URL string emits url-blocked");
+        eq(val("--label", R"("Room 2: open")"), R"("Room 2: open")", "ordinary custom-property text is preserved");
+        eq(val("--picture", R"("#mark")"), R"("#mark")", "a fragment string is preserved");
+    }
     eq(val("background-image", "url(\"#frag\")"), "url(\"#frag\")", "url(#fragment) kept");
     {
         std::string v = val("background-image", "url(data:image/png;base64," + kPng2x3 + ")");

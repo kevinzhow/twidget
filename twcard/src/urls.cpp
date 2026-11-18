@@ -7,6 +7,7 @@
 #include "profile.h"
 
 #include <ada.h>
+#include <algorithm>
 
 namespace twcard::urls {
 
@@ -212,6 +213,23 @@ Verdict check(std::string_view raw) {
     if (!twlite::image_dimensions(d->body.data(), d->body.size(), w, h) || w == 0 || h == 0 || w > kMaxImageSide || h > kMaxImageSide)
         return {Kind::Placeholder, kPlaceholderImage};
     return {Kind::Image, "data:" + d->mime + ";base64," + base64_encode(d->body.data(), d->body.size())};
+}
+
+std::optional<std::string> css_string(std::string_view text) {
+    const auto input = url_input(text);
+    if (input.starts_with("//")) return std::nullopt;
+    const auto schemeEnd = input.find(':');
+    const auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+    const auto schemeChar = [&](char c) {
+        return letter(c) || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
+    };
+    // Recognize a WHATWG scheme even when the rest of the URL is malformed.
+    if (schemeEnd == std::string::npos || schemeEnd == 0 || !letter(input.front()) ||
+        !std::all_of(input.begin() + 1, input.begin() + schemeEnd, schemeChar))
+        return std::string(text);
+    auto url = check(input);
+    if (url.kind == Kind::Blocked) return std::nullopt;
+    return std::move(url.url);
 }
 
 std::optional<twidget::Json> parse(std::string_view input, std::optional<std::string_view> base) {

@@ -330,9 +330,13 @@ struct CssWork {
             case lh::HASH:
             case lh::NUMBER:
             case lh::PERCENTAGE: break;
-            case lh::STRING:
+            case lh::STRING: {
+                auto safe = urls::css_string(t.str());
+                if (!safe) return fail("url-blocked", t.str().substr(0, 64));
+                if (*safe != t.str()) t = css_token(lh::STRING, std::move(*safe));
                 if (counts) counts->stringUnits += utf16_units(t.str());
                 break;
+            }
             case lh::DIMENSION:
                 if (!profile::unit_allowed(lower(t.unit()))) return fail("profile", "unit " + t.unit());
                 break;
@@ -359,6 +363,7 @@ struct CssWork {
                         return fail("profile", "attr() of no data-* attribute");
                     for (size_t k = 1; k < args.size(); k++)
                         if (args[k].type != lh::COMMA && args[k].type != lh::STRING) return fail("profile", "attr() fallback");
+                    if (!values(t.value, rule, depth + 1)) return false;
                     break;
                 }
                 if (name == "var") {
@@ -552,11 +557,13 @@ struct CssWork {
         static const profile::PropertyRule kAnyFn{"--", profile::Value::Content};
         if (custom) {
             if (!values(v, kAnyFn, 0)) {
+                if (reasonKind == "url-blocked") return false;
                 // A custom property may hold transform/filter functions too.
                 reason.clear();
                 css_token_vector copy = v;
                 static const profile::PropertyRule kT{"--", profile::Value::Transform}, kF{"--", profile::Value::Filter};
                 if (!values(copy, kT, 0)) {
+                    if (reasonKind == "url-blocked") return false;
                     reason.clear();
                     copy = v;
                     if (!values(copy, kF, 0)) return false;

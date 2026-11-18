@@ -33,6 +33,9 @@ struct Verdict {
 /// ASCII whitespace and C0 controls are ignored, and tab/newline anywhere, as the WHATWG URL parser does.
 Verdict check(std::string_view url);
 
+/// Check CSS string tokens that can stand in for a URL after variable substitution (S9.4).
+std::optional<std::string> css_string(std::string_view text);
+
 /// The WHATWG URL components exposed by S8.1.
 std::optional<twidget::Json> parse(std::string_view input, std::optional<std::string_view> base);
 
