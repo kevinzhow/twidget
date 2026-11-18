@@ -6811,16 +6811,9 @@ void Renderer::stop_paint(const paint::Verdict& verdict) {
     paint_stopped_ = true;
     pending_events_.push_back(Json::object().set("type", "limit").set("code", twidget::paintLimitCode(verdict.code)).set("count", verdict.count));
     // From this frame on: no blurred shadows, filters, backdrop-filter or transparency, animations stopped where they
-    // are and the layers back in the document, so the stopped widget costs nothing to scroll. Running transitions are
-    // cancelled first, as widget-sandbox's renderer does (renderer-bundle 0.6.3, zn()): each property shows its end
-    // value, so a box fading out is hidden (opacity 0) instead of drawn opaque at the step it had reached.
-    animator_.cancel_transitions();
+    // are and the layers back in the document, so the stopped widget costs nothing to scroll.
     container_->set_no_effects();
-    double now = now_s();
-    update_composition(now);
-#ifdef TW_LITEHTML_TWIDGET
-    apply_overrides(animator_.sample(now));
-#endif
+    update_composition(now_s());
     stale_ = false;
     pending_moves_.clear();
     dirty_ = touched_all_ = true;
