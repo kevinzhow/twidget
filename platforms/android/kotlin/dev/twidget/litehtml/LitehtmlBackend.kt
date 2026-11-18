@@ -1,7 +1,7 @@
 // What TwidgetCore asks Android for (src/backend.h): fonts with metrics, text widths, decoded `data:`
 // images and canvas bitmaps — android.graphics has them, the NDK does not — and the painter of the display
 // lists it records. Coordinates are CSS px; the view scales its canvas by the density before painting.
-package org.telegram.widgetsandbox.litehtml
+package dev.twidget.litehtml
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory

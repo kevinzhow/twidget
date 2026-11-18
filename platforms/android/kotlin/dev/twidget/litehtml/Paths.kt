@@ -1,4 +1,4 @@
-package org.telegram.widgetsandbox.litehtml
+package dev.twidget.litehtml
 
 import android.graphics.BlendMode
 import android.graphics.Paint

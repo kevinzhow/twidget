@@ -1,5 +1,5 @@
 // Bitmaps for <canvas> elements, run from TwidgetCore's canvas op batches (src/canvas_ops.h, to_json).
-package org.telegram.widgetsandbox.litehtml
+package dev.twidget.litehtml
 
 import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter

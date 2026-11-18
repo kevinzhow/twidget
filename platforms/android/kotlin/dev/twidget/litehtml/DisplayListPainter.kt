@@ -1,5 +1,5 @@
 // Executes TwidgetCore display lists (src/display_list.h, to_json) on an android.graphics.Canvas.
-package org.telegram.widgetsandbox.litehtml
+package dev.twidget.litehtml
 
 import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter

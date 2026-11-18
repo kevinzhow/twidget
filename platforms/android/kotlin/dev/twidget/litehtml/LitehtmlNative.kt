@@ -1,4 +1,4 @@
-package org.telegram.widgetsandbox.litehtml
+package dev.twidget.litehtml
 
 /** JNI surface of platforms/android/jni.cpp. Every call on the main thread. */
 internal object LitehtmlNative {

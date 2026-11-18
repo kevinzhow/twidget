@@ -1,8 +1,0 @@
-# Known leftovers, each with its owner; the full-file names/denylist checks skip these paths. Empty this list.
-# A: rename the Kotlin package and the JNI names (asked in shared/ANSWERS.md, 2026-11-18)
-platforms/android/jni.cpp
-platforms/android/kotlin/org/telegram/widgetsandbox/litehtml/CanvasBitmaps.kt
-platforms/android/kotlin/org/telegram/widgetsandbox/litehtml/DisplayListPainter.kt
-platforms/android/kotlin/org/telegram/widgetsandbox/litehtml/LitehtmlBackend.kt
-platforms/android/kotlin/org/telegram/widgetsandbox/litehtml/LitehtmlNative.kt
-platforms/android/kotlin/org/telegram/widgetsandbox/litehtml/Paths.kt
