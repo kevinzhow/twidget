@@ -139,6 +139,33 @@ int main() {
     ])");
     check(find(batch.ops, "el", 4)["adopt"].asString() == "body", "canonical nodes may be built while detached");
 
+    Validator ruby({}, {});
+    document(ruby);
+    batch = ruby.ops(R"([
+        {"op":"el","id":5,"tag":"ruby","attrs":[]},
+        {"op":"el","id":6,"tag":"rb","attrs":[["lang","ja"],["href","https://example.org"]]},
+        {"op":"el","id":7,"tag":"rt","attrs":[]},
+        {"op":"el","id":8,"tag":"rp","attrs":[]},
+        {"op":"text","id":9,"data":"買"},
+        {"op":"text","id":10,"data":"か"},
+        {"op":"text","id":11,"data":"("},
+        {"op":"ins","id":9,"parent":6},
+        {"op":"ins","id":10,"parent":7},
+        {"op":"ins","id":11,"parent":8},
+        {"op":"ins","id":6,"parent":5},
+        {"op":"ins","id":8,"parent":5},
+        {"op":"ins","id":7,"parent":5},
+        {"op":"ins","id":5,"parent":4}
+    ])");
+    check(find(batch.ops, "el", 5)["tag"].asString() == "ruby" && find(batch.ops, "el", 6)["tag"].asString() == "rb" &&
+          find(batch.ops, "el", 7)["tag"].asString() == "rt" && find(batch.ops, "el", 8)["tag"].asString() == "rp",
+          "ruby and its children keep their elements");
+    check(find(batch.ops, "el", 6)["attrs"].dump() == R"([["lang","ja"]])", "ruby children allow global attributes");
+    check(find(batch.ops, "text", 9)["data"].asString() == "買" && find(batch.ops, "ins", 9)["parent"].asInt() == 6 &&
+          find(batch.ops, "text", 10)["data"].asString() == "か" && find(batch.ops, "ins", 10)["parent"].asInt() == 7 &&
+          find(batch.ops, "text", 11)["data"].asString() == "(" && find(batch.ops, "ins", 11)["parent"].asInt() == 8,
+          "ruby base, reading and fallback text keep their parents");
+
     Validator capped({}, {});
     document(capped);
     Json operations = Json::array();

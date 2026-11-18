@@ -27,6 +27,7 @@ bool starts_with(std::string_view s, std::string_view p) { return s.substr(0, p.
 //   decision: tables = table, caption, colgroup, col, thead, tbody, tfoot, tr, td, th.
 // "<img> with a data: PNG, JPEG, GIF or WebP, <canvas>, <button>." "Links: <a href=…>".
 // The document's own elements: html, head, body, style (CSS is in), plus svg (Inline SVG is in).
+// SPEC S9.1 also keeps ruby and its base, annotation and fallback elements.
 constexpr std::string_view kHtmlIn[] = {
     "html", "head", "body", "style",
     "div", "span", "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "header", "footer", "main", "nav", "section",
@@ -36,17 +37,18 @@ constexpr std::string_view kHtmlIn[] = {
     "ul", "ol", "li", "dl", "dt", "dd", "menu",
     "table", "caption", "colgroup", "col", "thead", "tbody", "tfoot", "tr", "td", "th",
     "details", "summary", "img", "canvas", "button", "a", "svg",
+    "ruby", "rt", "rp", "rb",
 };
 
 // Out, "removed with their content": "Form controls: input, select, textarea, option, fieldset, …" (decision: the rest
 // of HTML's form-associated elements: optgroup, legend, datalist, output, keygen); "progress, meter, dialog and
-// popovers, audio, video, iframe, object, embed, external <script src>, link, meta, template, math, ruby".
+// popovers, audio, video, iframe, object, embed, external <script src>, link, meta, template, math".
 //   decision: their companions go with them (source, track, picture, param, map, area, frame, frameset, noscript,
-//   applet, portal, rt, rp), and `base` (a URL).
+//   applet, portal), and `base` (a URL).
 constexpr std::string_view kHtmlDrop[] = {
     "input", "select", "textarea", "option", "optgroup", "fieldset", "legend", "datalist", "output", "keygen",
     "progress", "meter", "dialog", "audio", "video", "iframe", "object", "embed", "link", "meta", "template", "math",
-    "ruby", "rt", "rp", "source", "track", "picture", "param", "map", "area", "base", "noscript",
+    "source", "track", "picture", "param", "map", "area", "base", "noscript",
 };
 constexpr std::string_view kHtmlDropMore[] = {"frame", "frameset", "applet", "portal"};
 
