@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <set>
 #include <string>
 #include <thread>
@@ -4087,6 +4088,76 @@ int main() {
         // あ（abcd） in 96 px: あ | （abcd）; before, （a stayed on line 1 and bcd） went on.
         got = lines_of("width:96px;margin:0", "\xE3\x81\x82\xEF\xBC\x88" "abcd\xEF\xBC\x89");
         check(got == "\xE3\x81\x82|\xEF\xBC\x88" "abcd\xEF\xBC\x89|", "a bracketed Latin word is not broken after its first letter (" + got + ")");
+    }
+
+    // ── Punctuation compression with the backend's shaping: a 「 halved at a line's start takes its share of the
+    // shaped run and the font's half-width form (halt), as the reader does. Qt on Linux draws a lone 「 in a
+    // Mongolian font, 6 px where the run gives it 15: the card put え 6 px after 「 and a gap before 段. ──
+    {
+        struct Shaping : StubBackend {
+            std::map<int, std::string> features;
+            float lone_bracket = 6;  // a 「 or 」 measured alone (fallback font); in a run each character is 15 px
+            float halt_bracket = 6;  // the same in the font with halt (6: no half-width form)
+            int create_font(const std::string& families, float size, int weight, bool italic, const std::string& f, FontMetrics& out) override {
+                int h = StubBackend::create_font(families, size, weight, italic, f, out);
+                features[h] = f;
+                return h;
+            }
+            static size_t chars(const std::string& t) {
+                size_t n = 0;
+                for (unsigned char c : t) n += (c & 0xC0) != 0x80;
+                return n;
+            }
+            bool halt(int font) { return features[font].find("halt=1") != std::string::npos; }
+            float text_width(int font, const std::string& t) override {
+                if (t == "\xE3\x80\x8C" || t == "\xE3\x80\x8D") return halt(font) ? halt_bracket : lone_bracket;
+                return 15.0f * float(chars(t));
+            }
+            bool has_half_width_form(int, const std::string&, bool) override { return halt_bracket < lone_bracket; }
+            bool text_advances(int, const std::string& t, std::vector<float>& prefix) override {
+                prefix.assign(t.size() + 1, std::numeric_limits<float>::quiet_NaN());
+                float x = 0;
+                for (size_t i = 0; i < t.size(); i++) {
+                    if (((unsigned char)t[i] & 0xC0) != 0x80) prefix[i] = x, x += 15;
+                }
+                prefix[t.size()] = x;
+                return true;
+            }
+        };
+        // 在在在在 fills the 60 px line; 「え段」 is the next (即 does not fit after it), its 「 and 」 halved.
+        const std::string text = "\xE5\x9C\xA8\xE5\x9C\xA8\xE5\x9C\xA8\xE5\x9C\xA8\xE3\x80\x8C\xE3\x81\x88\xE6\xAE\xB5\xE3\x80\x8D\xE5\x8D\xB3";
+        std::string drawn;
+        auto draw = [&](Shaping& sb) {
+            Renderer d(300, 1, false, sb);
+            d.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+                {"op":"el","id":10,"tag":"p","attrs":[["style","margin:0;width:60px;font-size:15px;line-height:20px"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                {"op":"text","id":11,"data":")J" + text + R"J("},{"op":"ins","parent":10,"id":11,"before":null}]})J"));
+            std::map<std::string, std::pair<float, int>> at;  // text: x, font; "" every text drawn
+            std::string all;
+            for (const Command& c : d.paint())
+                if (c.kind == Cmd::Text) at[c.text] = {c.x, c.font}, all += c.text + "@" + std::to_string(c.x) + "," + std::to_string(int(c.y)) + " ";
+            at[""] = {0, 0};
+            drawn = all;
+            return at;
+        };
+        const std::string open = "\xE3\x80\x8C", e = "\xE3\x81\x88", dan = "\xE6\xAE\xB5", close = "\xE3\x80\x8D";
+        auto x_of = [](std::map<std::string, std::pair<float, int>>& at, const std::string& t) {
+            return at.count(t) ? std::to_string(at[t].first) : std::string("none");
+        };
+        Shaping lone;
+        auto at = draw(lone);
+        bool ok = at.count(open) && at.count(e) && at.count(dan) && at.count(close) && std::fabs(at[open].first + 7.5f) < 0.01f &&
+                  std::fabs(at[e].first - 7.5f) < 0.01f && std::fabs(at[dan].first - 22.5f) < 0.01f && std::fabs(at[close].first - 37.5f) < 0.01f;
+        check(ok, "a halved 「 at a line's start takes its share of the shaped run (15 px), not its width alone (6 px): 「@-7.5 え@7.5 段@22.5 」@37.5 (」 halved at the line's end) (got 「@" +
+                      x_of(at, open) + " え@" + x_of(at, e) + " 段@" + x_of(at, dan) + " 」@" + x_of(at, close) + "; " + drawn + ")");
+        Shaping half;
+        half.lone_bracket = 15;
+        half.halt_bracket = 7.5f;
+        at = draw(half);
+        ok = at.count(open) && half.halt(at[open].second) && std::fabs(at[open].first) < 0.01f && std::fabs(at[e].first - 7.5f) < 0.01f;
+        check(ok, "a halved 「 is drawn with the font's half-width form (halt) where it has one, at the line's start (got 「@" + x_of(at, open) +
+                      (at.count(open) && half.halt(at[open].second) ? " halt" : " no halt") + " え@" + x_of(at, e) + "; " + drawn + ")");
     }
 
     // ── Vertical text (writing-mode: vertical-rl on the root): the page turned, upright CJK turned back ──
