@@ -313,10 +313,12 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
             size_t      at_index = index;
             while(block_wraps && (is_piece(at) || is_ruby(at)) && m_trailing < self_size.render_width)
             {
+                // Starts of elements, and whole empty ones (<span/>), between the two pieces.
                 pixel_t starts = 0_px;
                 size_t  n      = next;
-                for(; n < events.size() && events[n].second == iterator_item_type_start_parent; n++)
-                    starts += lbi_start(events[n].first).width();
+                for(; n < events.size() && events[n].second != iterator_item_type_child; n++)
+                    starts += events[n].second == iterator_item_type_start_parent ? lbi_start(events[n].first).width()
+                                                                                 : lbi_end(events[n].first).width();
                 if(n >= events.size() || events[n].second != iterator_item_type_child)
                     break;
                 const auto& following = events[n].first;
