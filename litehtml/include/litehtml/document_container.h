@@ -49,12 +49,22 @@ namespace litehtml
         virtual std::shared_ptr<text_breaker> create_text_breaker(const std::string&, uint_ptr) { return nullptr; }
         /// `text` shaped as one run in `hFont`, as a browser shapes a text node before it breaks it into lines (font
         /// kerning between the pieces included): `prefix[b]` is the advance of the text before byte `b` (text.size() + 1
-        /// entries; meaningful at character boundaries). False when the container does not shape runs: each piece is
-        /// then measured alone (text_width).
+        /// entries; meaningful at character boundaries), NaN inside a cluster (between a ligature's characters): a piece
+        /// cut there is measured alone. False when the container does not shape runs: each piece is then measured
+        /// alone (text_width).
         virtual bool text_advances(const std::string& /*text*/, uint_ptr /*hFont*/, std::vector<pixel_t>& /*prefix*/) { return false; }
         /// The largest ascent and descent of the fonts `text` is drawn with in `hFont` when fallback fonts draw some of it
         /// and reach above or below `hFont`'s own; false when `hFont`'s metrics already cover it. A line of
         /// `line-height: normal` makes room for them (CSS Inline 3 §4.2), as Blink does.
+        /// Whether the font `text` (one character) is drawn with in `hFont` has a vertical form for it (OpenType vert or
+        /// vrt2). Without one, a character UAX #50 turns in vertical text (Tr: … ‥, brackets) is drawn sideways, as
+        /// Blink draws it: a Latin font's … upright is three dots across the column.
+        virtual bool has_vertical_form(const char* /*text*/, uint_ptr /*hFont*/) { return true; }
+        /// Whether the font `text` (one punctuation mark) is drawn with in `hFont` has a half-width form for it: OpenType
+        /// halt, or vhal for its upright vertical form when `vertical`. With one, a mark that punctuation compression
+        /// halves is drawn with that feature (css_properties::get_font_half); without, its full-width glyph is moved back
+        /// by the half it gives up.
+        virtual bool has_half_width_form(const char* /*text*/, uint_ptr /*hFont*/, bool /*vertical*/) { return false; }
         virtual bool text_used_extents(const char* /*text*/, uint_ptr /*hFont*/, pixel_t& /*ascent*/, pixel_t& /*descent*/) { return false; }
         virtual void               draw_text(litehtml::uint_ptr hdc, const char* text, litehtml::uint_ptr hFont,
                                              litehtml::web_color color, const litehtml::position& pos)              = 0;
@@ -105,6 +115,13 @@ namespace litehtml
         }
         virtual void split_text(const char* text, const std::function<void(const char*)>& on_word,
                                 const std::function<void(const char*)>& on_space);
+        /// hyphens: auto: where a line may break inside `word` (a piece split_text cut, punctuation and all) with a
+        /// hyphen, as byte offsets into it, ascending. `language` is its element's (the nearest lang or xml:lang; empty
+        /// when none says). None by default: the container has the hyphenation patterns, and knows their languages.
+        virtual void hyphenate(const std::string& /*word*/, const std::string& /*language*/, std::vector<size_t>& /*points*/) {}
+        /// Whether justified text is hyphenated as with hyphens: auto where the book declares no hyphens (a reader's
+        /// default, as Apple Books has it).
+        virtual bool hyphenate_justified() const { return false; }
         virtual void draw_box_shadow(litehtml::uint_ptr /*hdc*/, const position& /*box*/,
                                      const border_radiuses& /*radius*/, const shadow_paint& /*shadow*/)
         {

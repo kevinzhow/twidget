@@ -69,6 +69,11 @@ namespace litehtml
                              formatting_context* fmt_ctx);
         pixel_t new_box(const std::unique_ptr<line_box_item>& el, const containing_block_context& self_size,
                         formatting_context* fmt_ctx);
+        /// A word that does not fit on the line, placed in fragments broken at its hyphenation points
+        /// (el_text::hyphenation_points); false when it has none to break at, for place_inline to place it whole.
+        bool    place_hyphenated(const std::unique_ptr<line_box_item>& item, const std::shared_ptr<render_text>& text_item,
+                                 el_text& text, pixel_t minimum, const containing_block_context& self_size,
+                                 formatting_context* fmt_ctx);
         void    apply_vertical_align() override;
 
       public:

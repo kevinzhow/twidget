@@ -562,6 +562,18 @@ namespace litehtml
         text_combine_horizontal,
     };
 
+    // hyphens (CSS Text 3 §6.1); -webkit-hyphens and -epub-hyphens too. hyphens_initial: declared nowhere, which is
+    // manual, or auto in justified text where the container says so (document_container::hyphenate_justified).
+    inline constexpr auto hyphens_strings = split_css_values<3>("none;manual;auto");
+
+    enum hyphens
+    {
+        hyphens_none,
+        hyphens_manual,
+        hyphens_auto,
+        hyphens_initial,
+    };
+
     inline constexpr auto user_select_strings = split_css_values<3>("auto;text;none");
 
     enum user_select

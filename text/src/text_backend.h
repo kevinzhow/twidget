@@ -139,11 +139,18 @@ public:
     void delete_font(int font) override;
     float text_width(int font, const std::string& text) override;
     /// `text` shaped as one run in `font`, split by face as text_width splits it: `prefix[b]` is the advance before
-    /// byte `b` (text.size() + 1 entries). A glyph's advance goes to the first character of its HarfBuzz cluster.
+    /// byte `b` (text.size() + 1 entries), where a HarfBuzz cluster starts; NaN inside one (between a ligature's
+    /// characters: no advance can be put there).
     void text_advances(int font, const std::string& text, std::vector<float>& prefix);
     /// No images here: a host loads its own (a card backend overrides this).
     bool load_image(int, const std::string&, float&, float&) override { return false; }
 
+    /// Whether the face `text` (one character) is drawn with in `font` has a vertical form for it: OpenType vert gives
+    /// it another glyph (a CJK font's … is ︙; a Latin font has none).
+    bool has_vertical_form(int font, const std::string& text);
+    /// Whether the face `text` (one punctuation mark) is drawn with in `font` has a half-width form for it: OpenType halt
+    /// narrows its advance across, or (vertical) vhal its vertical form's advance down the column.
+    bool has_half_width_form(int font, const std::string& text, bool vertical);
     /// The faces `text` is measured with in `font`, in order (text_width shapes each segment with its face).
     std::vector<Segment> segments(int font, const std::string& text);
     /// The ascent and descent (CSS px, unrounded) of each face other than the font's own that `text` is measured with

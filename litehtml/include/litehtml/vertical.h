@@ -7,9 +7,11 @@ namespace litehtml
 {
     /// UAX #50 (Vertical_Orientation), simplified: true for the characters text-orientation: mixed sets upright in
     /// vertical text (U, Tu and Tr: CJK, kana, Hangul, fullwidth forms, CJK punctuation and brackets, most symbols);
-    /// false for the ones it turns sideways (R: Latin, digits, ASCII punctuation, dashes). Tr characters are drawn
-    /// upright with the font's vert forms, which every CJK font has for them.
+    /// false for the ones it turns sideways (R: Latin, digits, ASCII punctuation, dashes).
     bool upright_in_vertical(char32_t cp);
+    /// UAX #50's Tr characters (… ‥ ⸺ ⸻, brackets, ー): upright with the font's vertical form, sideways when the font
+    /// drawing them has none (a Latin font's …), as Blink draws them.
+    bool turned_in_vertical(char32_t cp);
 
     /// A vertical-rl layout is a horizontal one turned 90° clockwise: logical (x, y) is the page's (right - y, x).
     inline transform_matrix vertical_rl_matrix(float right, float top)

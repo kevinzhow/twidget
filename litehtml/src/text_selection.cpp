@@ -16,14 +16,6 @@ namespace litehtml
     namespace
     {
         bool continuation(const std::string& s, size_t i) { return i < s.size() && (uint8_t(s[i]) & 0xC0) == 0x80; }
-        size_t chars(const std::string& s, size_t bytes)
-        {
-            size_t n = 0;
-            for(size_t i = 0; i < bytes && i < s.size(); i++)
-                if(!continuation(s, i))
-                    n++;
-            return n;
-        }
     } // namespace
 
     text_selection::text_selection(document& doc) :
@@ -54,10 +46,10 @@ namespace litehtml
                     return;
                 position placed = ri->get_placement();
                 auto     item   = std::dynamic_pointer_cast<render_text>(ri);
-                auto add = [&](const std::string& shown, const position& box) {
+                auto add = [&](const std::string& shown, const position& box, pixel_t gap, const std::vector<char_trim>& trims) {
                     if(shown.empty())
                         return;
-                    m_runs.push_back({text, offset, shown, box, block, annotation});
+                    m_runs.push_back({text, offset, shown, box, block, annotation, gap, trims});
                     offset += shown.size();
                 };
                 if(item && !item->fragments.empty())
@@ -67,11 +59,11 @@ namespace litehtml
                         position box  = fragment->pos();
                         box.x        += placed.x - ri->pos().x;
                         box.y        += placed.y - ri->pos().y;
-                        add(fragment->fragment_text, box);
+                        add(fragment->fragment_text, box, fragment->justify_gap, {});
                     }
                 } else
                 {
-                    add(text->display_text(), placed);
+                    add(text->display_text(), placed, item ? item->justify_gap : 0_px, item ? item->trims : std::vector<char_trim>());
                 }
             });
         };
@@ -103,16 +95,14 @@ namespace litehtml
         ly = v.width - x;
     }
 
-    pixel_t text_selection::advance(const text_run& run, size_t bytes) const
+    pixel_t text_selection::advance(const text_run& run, size_t bytes, bool after_gap) const
     {
         if(bytes == 0)
             return 0_px;
         if(bytes >= run.shown.size())
             return run.box.width;
-        const auto& css = run.text->parent()->css();
-        if(css.is_vertical_rl() && css.get_text_orientation() == text_orientation_upright)
-            return css.get_font_metrics().font_size * pixel_t(float(chars(run.shown, bytes)));
-        return m_doc.container()->text_width(run.shown.substr(0, bytes).c_str(), css.get_font());
+        const pixel_t spread = justify_shift(run.shown, bytes, run.justify_gap, after_gap) - trim_shift(run.trims, bytes);
+        return run.text->advance_to(run.shown, bytes) + spread;
     }
 
     text_position text_selection::position_at(pixel_t x, pixel_t y) const
@@ -144,7 +134,8 @@ namespace litehtml
         {
             if(continuation(best->shown, i))
                 continue;
-            pixel_t a = advance(*best, i);
+            // A boundary at a justified gap is nearest in the middle of the gap.
+            pixel_t a = (advance(*best, i, false) + advance(*best, i, true)) / 2_px;
             if(a >= target)
             {
                 bytes = target - prev <= a - target ? bytes : i;
@@ -205,7 +196,8 @@ namespace litehtml
             size_t from = i == r0 ? o0 : 0, to = i == r1 ? o1 : r.shown.size();
             if(r.annotation || from >= to)
                 continue;
-            position part(r.box.x + advance(r, from), r.box.y, advance(r, to) - advance(r, from), r.box.height);
+            const pixel_t start = advance(r, from, true), end = advance(r, to, false);
+            position      part(r.box.x + start, r.box.y, end - start, r.box.height);
             // Runs of one line join: the same row (a ruby pair's centring leaves gaps between them).
             if(open && std::abs(float(part.y - line.y)) < float(line.height) / 2 && part.x >= line.x)
             {

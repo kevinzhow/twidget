@@ -1,0 +1,542 @@
+/*
+context.ts — レイアウトの設定と結果を保持するコンテキスト。Swift 版 STContext.swift に対応。
+*/
+
+import { FontManager, resolveFonts } from "./fonts.js";
+import { isBlankChar, isInseparablePair, isQuotationMark } from "./punctuation.js";
+import type {
+  Direction,
+  DirectionAlign,
+  FontMeasurer,
+  Point,
+  PunctuationMode,
+  Rect,
+  ResolvedFont,
+  Run,
+  Size,
+  StoneOptions,
+  TextAlign,
+  Token,
+} from "./types.js";
+import { notNeedsToClockwiseInTbRl } from "./unicode.js";
+
+/** StoneOptions の既定値。 */
+export const DEFAULT_OPTIONS: Required<Omit<StoneOptions, "fonts">> = {
+  fontSize: 17,
+  lineHeightScale: 1.0,
+  textAlign: "leading",
+  directionAlign: "start",
+  direction: "lrTb",
+  allowsTateChuYoko: true,
+  adjustsFontSizeToFitWidth: false,
+  minimumScaleFactor: 0,
+  punctuationMode: "stone",
+  kinsoku: true,
+  dividesByWords: true,
+  letterSpacing: 0,
+  textIndent: 0,
+  textIndentEachLine: true,
+};
+
+/** 列の 1em の箱と run の矩形の位置を比べるときの許容誤差（px）。 */
+const COLUMN_BOX_EPS = 1e-6;
+
+/** 長さのオプション（px）。数値でない値や非有限の値は 0 にする。 */
+function finiteLength(value: number | undefined, fallback: number): number {
+  const n = value ?? fallback;
+  return typeof n === "number" && Number.isFinite(n) ? n : 0;
+}
+
+export interface LineRange {
+  line: number;
+  /** この行の最初の run ID。 */
+  start: number;
+  /** この行の最後の run ID + 1。 */
+  end: number;
+}
+
+/** 点が矩形の内側（右端・下端は含まない）にあるかどうか。 */
+function rectContains(rect: Rect, point: Point): boolean {
+  return (
+    point.x >= rect.x &&
+    point.x < rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y < rect.y + rect.height
+  );
+}
+
+/** 矩形の中心と点の距離。 */
+function distance(rect: Rect, point: Point): number {
+  const dx = point.x - (rect.x + rect.width * 0.5);
+  const dy = point.y - (rect.y + rect.height * 0.5);
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/**
+ * レイアウトの入力（設定・フォント）と出力（runs / tokens / 行数 / 描画サイズ）をまとめたもの。
+ * layoutText() が返すのはこのオブジェクト。座標系は左上原点・y 下向き・px。
+ */
+export class StoneContext {
+  // Runs
+  runs: Run[] = [];
+  tokens: Token[] = [];
+  lineCount = 0;
+
+  // Font
+  readonly fonts: ResolvedFont[];
+  readonly fontManager: FontManager;
+
+  // Layout
+  fontSize: number;
+  lineHeightScale: number;
+  textAlign: TextAlign;
+  directionAlign: DirectionAlign;
+  direction: Direction;
+  allowsTateChuYoko: boolean;
+  adjustsFontSizeToFitWidth: boolean;
+  minimumScaleFactor: number;
+  /** 字間（縮小前の px）。各文字の後ろに足す。 */
+  letterSpacing: number;
+  /** 段落の 1 行目の字下げ（縮小前の px）。 */
+  textIndent: number;
+  /** 改行の直後の行にも字下げを入れるかどうか。false ならテキストの先頭の行だけ。 */
+  textIndentEachLine: boolean;
+
+  /** adjustsFontSizeToFitWidth で決まった縮小率。 */
+  adjustFontScale = 1;
+
+  // Features
+  punctuationMode: PunctuationMode;
+  kinsoku: boolean;
+  dividesByWords: boolean;
+
+  // Render
+  /** レイアウト対象の領域。無限（Infinity）なら折り返し／切り詰めなし。 */
+  renderSize: Size = { width: Infinity, height: Infinity };
+  /** 実際にテキストが占めるサイズ。 */
+  renderedSize: Size = { width: 0, height: 0 };
+
+  /** オプションと計測器からコンテキストを作る。省略されたオプションは DEFAULT_OPTIONS で埋める。 */
+  constructor(options: StoneOptions, measurer: FontMeasurer) {
+    this.fontSize = options.fontSize ?? DEFAULT_OPTIONS.fontSize;
+    this.lineHeightScale = options.lineHeightScale ?? DEFAULT_OPTIONS.lineHeightScale;
+    this.textAlign = options.textAlign ?? DEFAULT_OPTIONS.textAlign;
+    this.directionAlign = options.directionAlign ?? DEFAULT_OPTIONS.directionAlign;
+    this.direction = options.direction ?? DEFAULT_OPTIONS.direction;
+    this.allowsTateChuYoko = options.allowsTateChuYoko ?? DEFAULT_OPTIONS.allowsTateChuYoko;
+    this.adjustsFontSizeToFitWidth =
+      options.adjustsFontSizeToFitWidth ?? DEFAULT_OPTIONS.adjustsFontSizeToFitWidth;
+    this.minimumScaleFactor = options.minimumScaleFactor ?? DEFAULT_OPTIONS.minimumScaleFactor;
+    this.letterSpacing = finiteLength(options.letterSpacing, DEFAULT_OPTIONS.letterSpacing);
+    this.textIndent = finiteLength(options.textIndent, DEFAULT_OPTIONS.textIndent);
+    this.textIndentEachLine = options.textIndentEachLine ?? DEFAULT_OPTIONS.textIndentEachLine;
+    this.punctuationMode = options.punctuationMode ?? DEFAULT_OPTIONS.punctuationMode;
+    this.kinsoku = options.kinsoku ?? DEFAULT_OPTIONS.kinsoku;
+    this.dividesByWords = options.dividesByWords ?? DEFAULT_OPTIONS.dividesByWords;
+    this.fonts = resolveFonts(options.fonts);
+    this.fontManager = new FontManager(this.fonts, measurer);
+  }
+
+  /** 縮小前の行送り（px）。 */
+  get lineHeight(): number {
+    return this.fontSize * this.lineHeightScale;
+  }
+
+  /** 縮小前の行間（行送りからフォントサイズを引いたもの、px）。 */
+  get lineGapHeight(): number {
+    return this.fontSize * (this.lineHeightScale - 1);
+  }
+
+  /** 縮小適用後のフォントサイズ。 */
+  get adjustFontSize(): number {
+    return this.fontSize * this.adjustFontScale;
+  }
+
+  /** 縮小適用後の行送り。レイアウトはこの値で行を送る。 */
+  get adjustLineHeight(): number {
+    return this.adjustFontSize * this.lineHeightScale;
+  }
+
+  /** 縮小適用後の行間。 */
+  get adjustLineGapHeight(): number {
+    return this.adjustFontSize * (this.lineHeightScale - 1);
+  }
+
+  /** 縮小適用後の字間。フォントと同じ率で縮める。 */
+  get adjustLetterSpacing(): number {
+    return this.letterSpacing * this.adjustFontScale;
+  }
+
+  /** 縮小適用後の字下げ。フォントと同じ率で縮める。 */
+  get adjustTextIndent(): number {
+    return this.textIndent * this.adjustFontScale;
+  }
+
+  /** 元のテキスト。 */
+  get text(): string {
+    let s = "";
+    for (const run of this.runs) s += run.char;
+    return s;
+  }
+
+  //--------------------------------------------------------------//
+  // Advance
+  //--------------------------------------------------------------//
+
+  /** トークンに属する run の送り幅の合計。字間は含まない。 */
+  advanceOfToken(token: Token): number {
+    let total = 0;
+    for (let i = token.start; i < token.end; i++) total += this.runs[i].advance;
+    return total;
+  }
+
+  /**
+   * run の後ろに足す字間（px、縮小適用後）。レイアウトは、これを run の矩形（frame）の行方向の長さに含める。
+   * CSS の letter-spacing と同じく各文字の後ろに足す（行末の文字と空白の後ろにも足す）が、次のところには足さない。
+   * - 改行の run
+   * - 分離禁止文字の間（「……」「——」。点や線がつながって見えるように。均等配置で空けないのと同じ）
+   * 縦中横は横に並べた数字を 1 つのまとまりとして扱い、数字の間には足さずに、まとまりの後ろ（行方向）に足す。
+   * そのため縦中横の run は、どれもこの値を矩形の高さに含む（横に並ぶ幅には足さない）。
+   */
+  letterSpacingAfter(runId: number): number {
+    const spacing = this.adjustLetterSpacing;
+    if (spacing === 0) return 0;
+    const run = this.runs[runId];
+    if (!run || run.isNewline) return 0;
+    const next = this.runs[runId + 1];
+    if (next && isInseparablePair(run.char, next.char)) return 0;
+    return spacing;
+  }
+
+  //--------------------------------------------------------------//
+  // Token and run
+  //--------------------------------------------------------------//
+
+  /** run がトークンの最後の文字かどうか。 */
+  isLastInToken(run: Run): boolean {
+    const token = this.tokens[run.tokenId];
+    return run.tokenRunIndex >= token.end - token.start - 1;
+  }
+
+  /** 指定行に属する run ID の範囲 [start, end)。行に run が無ければ null。 */
+  runRangeOfLine(line: number): [number, number] | null {
+    let lower = -1;
+    let upper = -1;
+    for (let i = 0; i < this.runs.length; i++) {
+      const run = this.runs[i];
+      if (run.line === line) {
+        if (lower === -1) lower = i;
+        upper = i;
+      } else if (run.line > line) {
+        break;
+      }
+    }
+    if (lower === -1) return null;
+    return [lower, upper + 1];
+  }
+
+  /** 行ごとの run 範囲。空行は含まれない。 */
+  lineRanges(): LineRange[] {
+    const ranges: LineRange[] = [];
+    let current: LineRange | null = null;
+    for (let i = 0; i < this.runs.length; i++) {
+      const line = this.runs[i].line;
+      if (current && current.line === line) {
+        current.end = i + 1;
+      } else {
+        current = { line, start: i, end: i + 1 };
+        ranges.push(current);
+      }
+    }
+    return ranges;
+  }
+
+  /** run ID の行番号。末尾（runs.length 以上）は最後の run の行を返す。 */
+  lineOf(runId: number): number {
+    if (this.runs.length === 0) return 0;
+    if (runId < this.runs.length - 1) return this.runs[runId].line;
+    return this.runs[this.runs.length - 1].line;
+  }
+
+  /** run ID の位置が改行かどうか。末尾は最後の run で判定する。 */
+  isNewlineAt(runId: number): boolean {
+    if (this.runs.length === 0) return false;
+    if (runId < this.runs.length - 1) return this.runs[runId].isNewline;
+    return this.runs[this.runs.length - 1].isNewline;
+  }
+
+  /** トークンの文字列。存在しなければ null。 */
+  tokenString(tokenId: number): string | null {
+    const token = this.tokens[tokenId];
+    if (!token) return null;
+    let s = "";
+    for (let i = token.start; i < token.end; i++) s += this.runs[i].char;
+    return s;
+  }
+
+  //--------------------------------------------------------------//
+  // Geometry
+  //--------------------------------------------------------------//
+
+  /** 受け取った範囲を現在の runs の長さに収める。 */
+  private clampRange(range: [number, number] | null): [number, number] {
+    const [lo, hi] = range ?? [0, this.runs.length];
+    return [Math.max(0, lo), Math.min(hi, this.runs.length)];
+  }
+
+  /**
+   * レイアウタが行を行送り方向に寄せた量（px）。寄せていないときの行の位置（横書きは先頭の行の上端が 0、縦書きはいちばん左の
+   * 矩形の左端が 0）からのずれで、レイアウト後の run の矩形から求める。
+   * - 横書き: 高さを決めて directionAlign を middle / end にしたとき。先頭の行の run の矩形の上端の位置。
+   * - 縦書き: 幅を決めたとき。いちばん左の run の矩形の左端の位置（幅を決めると、directionAlign が start でも列は領域の
+   *   右端から並ぶ）。1em より狭い縦中横（1 桁の数字など）は、矩形ではなく列の 1em の箱の左端で見る。レイアウタが、列を寄せる
+   *   位置と renderedSize の幅を列の箱で決めるので（layout.ts の alignSpanTbRl）、数字だけの列がいちばん左にあるとき、
+   *   寄せていないレイアウトで 0 になるのは、数字の矩形の左端ではなく列の箱の左端。
+   *   正立の文字は、矩形の幅が 1em でなくても（半角カナ、送り幅が 1em でない絵文字など）、矩形の左端が列の箱の左端なので、矩形で見る。
+   * どの run も同じ量だけ寄せてあるので、領域に収まらずに隠れた行や、末尾の空行も含めて、どの行にも同じ値が使える。
+   * 寄せていないレイアウト（横書きの start と高さを決めないとき、縦書きの幅を決めないとき）と、run の無いテキストでは 0。
+   */
+  private lineShift(): number {
+    const runs = this.runs;
+    if (runs.length === 0) return 0;
+    let shift = Infinity;
+    if (this.direction === "lrTb") {
+      if (this.directionAlign === "start" || !Number.isFinite(this.renderSize.height)) return 0;
+      for (const run of runs) {
+        if (run.line !== 0) break;
+        shift = Math.min(shift, run.frame.y);
+      }
+    } else {
+      if (!Number.isFinite(this.renderSize.width)) return 0;
+      for (const run of runs) shift = Math.min(shift, run.frame.x);
+      // どの矩形よりも左まである列の箱があれば、その左端（箱は数字の位置から求め直すので、矩形と同じ位置なら矩形の値を使う）
+      const box = this.leftmostNarrowTateChuYokoBox();
+      if (box < shift - COLUMN_BOX_EPS) shift = box;
+    }
+    return Number.isFinite(shift) ? shift : 0;
+  }
+
+  /**
+   * 縦書きで、1em より狭い縦中横（1 桁の数字など）がある列の 1em の箱の左端のうち、いちばん左のもの。無ければ Infinity。
+   * 縦中横は列の中央に寄せてあるので、数字の並びの中央から求める。
+   */
+  private leftmostNarrowTateChuYokoBox(): number {
+    const em = this.adjustFontSize;
+    let left = Infinity;
+    for (const token of this.tokens) {
+      if (!this.isTateChuYokoToken(token)) continue;
+      const first = this.runs[token.start].frame;
+      const last = this.runs[token.end - 1].frame;
+      const right = last.x + last.width;
+      if (right - first.x < em - COLUMN_BOX_EPS) left = Math.min(left, (first.x + right - em) * 0.5);
+    }
+    return left;
+  }
+
+  /** 行送り方向に shift だけ寄せたレイアウトでの、行の先頭位置（firstRunFrame の本体）。 */
+  private lineFrame(line: number, shift: number): Rect {
+    const size = this.adjustFontSize;
+    const lineHeight = this.adjustLineHeight;
+    if (this.direction === "lrTb") {
+      return { x: 0, y: line * lineHeight + shift, width: 0, height: size };
+    }
+    return {
+      x: this.renderedSize.width - line * lineHeight - size + shift,
+      y: 0,
+      width: size,
+      height: 0,
+    };
+  }
+
+  /**
+   * 行の先頭位置（run が無い行のカーソル位置などに使う）。縮小後の寸法で計算する。
+   * 行送り方向の位置（横書きの y、縦書きの x）は、レイアウタが寄せたあとの位置（directionAlign の middle / end と、縦書きで幅を
+   * 決めたときの右端への寄せを含む）。行の中の位置（横書きの x、縦書きの y）は、textAlign や字下げにかかわらず 0。
+   */
+  firstRunFrame(line: number): Rect {
+    return this.lineFrame(line, this.lineShift());
+  }
+
+  /** 行間を含めた run の矩形（選択範囲の描画などに使う）。 */
+  runFrameWithLineGap(index: number): Rect {
+    const run = this.runs[index];
+    if (run.line === 0) return { ...run.frame };
+    const gap = this.adjustLineGapHeight;
+    if (this.direction === "lrTb") {
+      return {
+        x: run.frame.x,
+        y: run.frame.y - gap,
+        width: run.frame.width,
+        height: run.frame.height + gap,
+      };
+    }
+    return {
+      x: run.frame.x,
+      y: run.frame.y,
+      width: run.frame.width + gap,
+      height: run.frame.height,
+    };
+  }
+
+  /**
+   * 点に最も近い文字位置（run ID。文字の後半なら +1）。カーソル位置の決定に使う。
+   * 行送り方向で最も近い行を選び、その前後 1 行の文字の前半・後半（横書きなら左右、縦書きなら上下）から最も近いものを採る。
+   * Swift 版の closestRunIndexH / closestRunIndexV を、軸だけを入れ替える 1 つの実装にまとめたもの。
+   */
+  closestRunIndex(point: Point, range: [number, number] | null = null): number {
+    if (this.runs.length === 0) return 0;
+    const horizontal = this.direction === "lrTb";
+    const isAll = range === null;
+    const [lo, hi] = this.clampRange(range);
+
+    // 行送り方向での、点と行の中心の距離（行の位置は、行送り方向に寄せたあとの位置で見る）
+    const shift = this.lineShift();
+    const lineDistance = (line: number): number => {
+      const f = this.lineFrame(line, shift);
+      return horizontal ? Math.abs(point.y - (f.y + f.height * 0.5)) : Math.abs(point.x - (f.x + f.width * 0.5));
+    };
+
+    // 最も近い行
+    let minLineDistance = Infinity;
+    let line = -1;
+    for (let i = lo; i < hi; i++) {
+      if (this.runs[i].line === line) continue;
+      const d = lineDistance(this.runs[i].line);
+      if (d >= minLineDistance) continue;
+      minLineDistance = d;
+      line = this.runs[i].line;
+    }
+    if (line === -1) line = 0;
+
+    // 改行で終わっていれば、その後ろの空の最終行も候補にする
+    if (isAll && this.isNewlineAt(hi) && line < this.lineCount && lineDistance(this.lineCount - 1) < minLineDistance) {
+      line = this.lineCount - 1;
+    }
+
+    // 最も近い run
+    let minDistance = Infinity;
+    let index = 0;
+    for (let i = lo; i < hi; i++) {
+      const run = this.runs[i];
+      if (run.line < line - 1 || run.line > line + 1) continue;
+      const f = run.frame;
+      if (run.isNewline) {
+        const d = distance(f, point);
+        if (d < minDistance) {
+          minDistance = d;
+          index = i;
+        }
+        continue;
+      }
+      // 前半に近ければその文字の前、後半に近ければ後ろ
+      const [first, second]: [Rect, Rect] = horizontal
+        ? [
+            { x: f.x, y: f.y, width: f.width * 0.5, height: f.height },
+            { x: f.x + f.width * 0.5, y: f.y, width: f.width * 0.5, height: f.height },
+          ]
+        : [
+            { x: f.x, y: f.y, width: f.width, height: f.height * 0.5 },
+            { x: f.x, y: f.y + f.height * 0.5, width: f.width, height: f.height * 0.5 },
+          ];
+      const fd = distance(first, point);
+      if (fd < minDistance) {
+        minDistance = fd;
+        index = i;
+      }
+      const sd = distance(second, point);
+      if (sd < minDistance) {
+        minDistance = sd;
+        index = i + 1;
+      }
+    }
+    if (minDistance === Infinity) index = this.runs.length;
+    return index;
+  }
+
+  /** 点を含む run の ID。無ければ null。 */
+  hitRunIndex(point: Point, range: [number, number] | null = null): number | null {
+    const [lo, hi] = this.clampRange(range);
+    if (this.runs.length === 0) {
+      if (this.direction !== "lrTb") return null;
+      const runFrame = this.firstRunFrame(0);
+      const rect: Rect = { x: runFrame.x - 4, y: runFrame.y, width: 8, height: runFrame.height };
+      return rectContains(rect, point) ? 0 : null;
+    }
+    for (let i = lo; i < hi; i++) {
+      if (rectContains(this.runs[i].frame, point)) return i;
+    }
+    return null;
+  }
+
+  //--------------------------------------------------------------//
+  // Tate chu yoko
+  //--------------------------------------------------------------//
+
+  /** トークンが縦中横で組まれるかどうか（先頭の run で判定する。同じトークンの run は、どれも同じ結果になる）。 */
+  isTateChuYokoToken(token: Token): boolean {
+    if (token.start >= token.end || token.start >= this.runs.length) return false;
+    return this.isTateChuYoko(this.runs[token.start]);
+  }
+
+  /**
+   * 縦中横（縦書き中に正体で組む 2 桁以下の数字）の run かどうか。トークン単位で決まる。
+   * 縦中横にするのは、2 文字以下で、どの文字も回転する文字種（欧文フォント）の数字であるトークン。全角の数字のように正立する
+   * 文字種（和文・絵文字）の数字が 1 つでも混ざったトークン（「1２」「２1」「Ⅱ２」）は、どの run も縦中横にしない
+   * （半角の数字は回転する欧文、全角の数字は正立の和文として、3 桁以上の数字と同じように 1 文字ずつ送る）。
+   * レイアウトは「縦中横のトークンは、どの run も縦中横」として組むので、run ごとに文字種を見て半角の数字だけを縦中横にすると、
+   * 横に並べる位置の戻し忘れや、行揃えでの数え落としが起きる。
+   */
+  isTateChuYoko(run: Run): boolean {
+    if (!this.allowsTateChuYoko) return false;
+    if (this.direction !== "tbRl") return false;
+    const token = this.tokens[run.tokenId];
+    if (!token || token.end - token.start > 2) return false;
+    for (let i = token.start; i < token.end; i++) {
+      const member = this.runs[i];
+      if (!member.isNumber) return false;
+      if (notNeedsToClockwiseInTbRl(this.fontManager.script(member.fontId))) return false;
+    }
+    return true;
+  }
+
+  //--------------------------------------------------------------//
+  // Clockwise rotation
+  //--------------------------------------------------------------//
+
+  /** 縦書き時に 90 度時計回りに回転させる run（欧文など）かどうか。 */
+  isClockwise(run: Run): boolean {
+    if (notNeedsToClockwiseInTbRl(this.fontManager.script(run.fontId))) return false;
+    if (this.direction !== "tbRl") return false;
+    return !this.isTateChuYoko(run);
+  }
+
+  /** 縦書き時に縦組み用グリフ（vert）を使う run かどうか。 */
+  usesVerticalGlyph(run: Run): boolean {
+    return this.direction === "tbRl" && this.fontManager.script(run.fontId) === "japanese";
+  }
+
+  /**
+   * 全角の字形（fwid）で描く run かどうか。縦書きで和文として扱う引用符「“」「”」「‘」「’」は、和文フォントでは字幅の詰まった
+   * プロポーショナルな字形で縦組み用グリフがないため、全角の字形にして縦組み用グリフ（〝〟の形）で描く。送り幅は 1em になる。
+   */
+  usesFullWidthGlyph(run: Run): boolean {
+    return this.usesVerticalGlyph(run) && isQuotationMark(run.char);
+  }
+
+  //--------------------------------------------------------------//
+  // Adjust
+  //--------------------------------------------------------------//
+
+  /**
+   * 領域に収まらずに表示されない文字があるかどうか（省略記号になった run か、隠れた改行・空白以外の run があるか）。
+   * 末尾の空行のように改行・空白だけが隠れているときは false。adjustsFontSizeToFitWidth はこれが false になるまで縮小する。
+   */
+  get isTruncated(): boolean {
+    for (let i = this.runs.length - 1; i >= 0; i--) {
+      const run = this.runs[i];
+      if (run.visibility === "ellipsis") return true;
+      if (run.visibility === "invisible" && !isBlankChar(run.char)) return true;
+    }
+    return false;
+  }
+}

@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <tuple>
@@ -951,6 +952,7 @@ void TextBackend::text_advances(int font, const std::string& text, std::vector<f
     std::vector<uint32_t> cps = utf8(text);
     std::vector<Face*> faceOf = faces_of(f, cps, options_, optionsId_);
     std::vector<double> adv(cps.size(), 0.0);  // per character
+    std::vector<bool> starts(cps.size(), false);  // a character a cluster starts with
     for (size_t i = 0; i < cps.size();) {
         size_t j = i + 1;
         while (j < cps.size() && faceOf[j] == faceOf[i]) j++;
@@ -966,24 +968,71 @@ void TextBackend::text_advances(int font, const std::string& text, std::vector<f
         hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
         hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, &n);
         for (unsigned g = 0; g < n; g++)
-            if (info[g].cluster < cps.size()) adv[info[g].cluster] += pos[g].x_advance * k;
+            if (info[g].cluster < cps.size()) {
+                adv[info[g].cluster] += pos[g].x_advance * k;
+                starts[info[g].cluster] = true;
+            }
         hb_buffer_destroy(buf);
         i = j;
     }
-    // Characters to bytes: each character's advance is counted at its last byte, so prefix[b] at a character boundary
-    // is the advance of everything before it.
+    // Characters to bytes: prefix[b] at a cluster's first byte is the advance of everything before it; inside a
+    // cluster (a ligature's or a base's later characters, a character's later bytes) there is none.
     size_t c = 0;
     double sum = 0;
     for (size_t b = 0; b < text.size();) {
         const unsigned char lead = (unsigned char)text[b];
         size_t n = lead < 0x80 ? 1 : (lead >> 5) == 6 ? 2 : (lead >> 4) == 14 ? 3 : (lead >> 3) == 30 ? 4 : 1;
         if (b + n > text.size()) n = text.size() - b;
-        for (size_t x = 0; x < n; x++) prefix[b + x] = float(sum);
+        for (size_t x = 0; x < n; x++) prefix[b + x] = std::numeric_limits<float>::quiet_NaN();
+        if (c < adv.size() && starts[c]) prefix[b] = float(sum);
         if (c < adv.size()) sum += adv[c];
         c++;
         b += n;
     }
     prefix[text.size()] = float(sum);
+}
+
+bool TextBackend::has_vertical_form(int font, const std::string& text) {
+    const std::vector<Segment> faces = segments(font, text);
+    const std::vector<uint32_t> cps = utf8(text);
+    hb_codepoint_t nominal = 0;
+    if (faces.empty() || !faces.front().face || cps.empty() || !hb_font_get_nominal_glyph(faces.front().face->font, cps[0], &nominal))
+        return false;
+    hb_buffer_t* buf = hb_buffer_create();
+    hb_buffer_add_codepoints(buf, cps.data(), int(cps.size()), 0, int(cps.size()));
+    hb_buffer_guess_segment_properties(buf);
+    const hb_feature_t vert{HB_TAG('v', 'e', 'r', 't'), 1, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END};
+    hb_shape(faces.front().face->font, buf, &vert, 1);
+    unsigned n = 0;
+    const hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
+    const bool substituted = n > 0 && info[0].codepoint != nominal;
+    hb_buffer_destroy(buf);
+    return substituted;
+}
+
+bool TextBackend::has_half_width_form(int font, const std::string& text, bool vertical) {
+    const std::vector<Segment> faces = segments(font, text);
+    const std::vector<uint32_t> cps = utf8(text);
+    if (faces.empty() || !faces.front().face || cps.empty()) return false;
+    auto advance = [&](bool half) {
+        hb_buffer_t* buf = hb_buffer_create();
+        hb_buffer_add_codepoints(buf, cps.data(), int(cps.size()), 0, int(cps.size()));
+        hb_buffer_guess_segment_properties(buf);
+        if (vertical) hb_buffer_set_direction(buf, HB_DIRECTION_TTB);
+        const hb_feature_t features[] = {
+            {vertical ? HB_TAG('v', 'h', 'a', 'l') : HB_TAG('h', 'a', 'l', 't'), half ? 1u : 0u, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END},
+            {HB_TAG('v', 'e', 'r', 't'), 1, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END},
+        };
+        hb_shape(faces.front().face->font, buf, features, vertical ? 2 : 1);
+        unsigned n = 0;
+        const hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, &n);
+        int sum = 0;
+        for (unsigned i = 0; i < n; i++) sum += vertical ? -pos[i].y_advance : pos[i].x_advance;
+        hb_buffer_destroy(buf);
+        return sum;
+    };
+    const int half = advance(true);
+    return half > 0 && half < advance(false);
 }
 
 std::vector<TextBackend::Segment> TextBackend::segments(int font, const std::string& text) {

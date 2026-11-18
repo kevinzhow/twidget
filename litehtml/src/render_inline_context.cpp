@@ -6,7 +6,7 @@
 #include "el_text.h"
 #include "html_tag.h"
 #include "document_container.h"
-#include <string_view>
+#include "cjk_rules.h"
 
 namespace
 {
@@ -192,6 +192,57 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     inlines_iter.process(shared_from_this(), [&](const std::shared_ptr<render_item>& el, iterator_item_type item_type) {
         events.emplace_back(el, item_type);
     });
+    // Punctuation compression looks at the characters next to each text in the line's flow, across inline elements:
+    // a space is one; a run of white space with a segment break that the CJK rule removes is none (the texts meet); a
+    // <br>, an inline box (a ruby: its base text) or the block's edge ends the flow.
+    {
+        std::vector<size_t> kids;
+        for(size_t index = 0; index < events.size(); index++)
+            if(events[index].second == iterator_item_type_child)
+                kids.push_back(index);
+        std::vector<char32_t> first(kids.size()), last(kids.size());
+        std::vector<bool>     gone(kids.size(), false);
+        for(size_t k = 0; k < kids.size(); k++)
+        {
+            const auto& el = events[kids[k]].first->src_el();
+            first[k] = el->is_white_space() ? U' ' : edge_char(el, true);
+            last[k]  = el->is_white_space() ? U' ' : edge_char(el, false);
+        }
+        for(size_t k = 0; k < kids.size(); k++)
+        {
+            if(!cjk_breaks || !events[kids[k]].first->src_el()->is_white_space() || k == 0 || gone[k])
+                continue;
+            size_t end     = k;
+            bool   segment = false;
+            for(; end < kids.size() && events[kids[end]].first->src_el()->is_white_space(); end++)
+            {
+                std::string t;
+                events[kids[end]].first->src_el()->get_text(t);
+                segment = segment || t.find('\n') != std::string::npos;
+            }
+            if(segment && end < kids.size() && east_asian_wide(last[k - 1]) && east_asian_wide(first[end]))
+                for(size_t g = k; g < end; g++)
+                    gone[g] = true;
+        }
+        char32_t before = 0;
+        for(size_t k = 0; k < kids.size(); k++)
+        {
+            if(gone[k])
+                continue;
+            if(auto text = std::dynamic_pointer_cast<render_text>(events[kids[k]].first))
+            {
+                text->before = before;
+                text->after  = 0;
+                for(size_t n = k + 1; n < kids.size(); n++)
+                    if(!gone[n])
+                    {
+                        text->after = first[n];
+                        break;
+                    }
+            }
+            before = last[k];
+        }
+    }
     for(size_t index = 0; index < events.size(); index++)
     {
         const auto& el        = events[index].first;
@@ -202,16 +253,36 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
             size_t next = index + 1;
             for(; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
                 m_trailing += lbi_end(events[next].first).width();
-            if(next > index + 1 && next < events.size() && events[next].second == iterator_item_type_child &&
-               el->src_el()->is_text() && !el->src_el()->is_white_space() && !el->src_el()->is_break())
+            // The next element's text stays on this line when no line may break between the two (the CJK rule set).
+            pixel_t starts = 0_px;
+            for(; next < events.size() && events[next].second == iterator_item_type_start_parent; next++)
+                starts += lbi_start(events[next].first).width();
+            // A ruby counts by its base text, on either side: <ruby>仕切<rt>しき</rt></ruby>って keeps 切 with っ.
+            // Two texts next to each other are one text's words, which the container's split_text already broke.
+            auto is_ruby = [](const std::shared_ptr<render_item>& item) { return item->src_el()->tag() == _ruby_; };
+            const bool here_text = el->src_el()->is_text() && !el->src_el()->is_white_space() && !el->src_el()->is_break();
+            if(next < events.size() && events[next].second == iterator_item_type_child && (here_text || is_ruby(el)) &&
+               (next > index + 1 || is_ruby(el) || is_ruby(events[next].first)))
             {
-                auto text = std::dynamic_pointer_cast<el_text>(events[next].first->src_el());
-                if(text && !text->display_text().empty() &&
-                   std::string_view(",.;:!?%)]}").find(text->display_text().front()) != std::string_view::npos)
+                const auto& following = events[next].first;
+                auto text = std::dynamic_pointer_cast<el_text>(following->src_el());
+                if(((text && !text->is_white_space()) || is_ruby(following)) &&
+                   cjk::no_break_between(edge_char(el->src_el(), false), edge_char(following->src_el(), true)))
                 {
-                    size measured;
-                    events[next].first->src_el()->get_content_size(measured, self_size.render_width);
-                    m_trailing += measured.width;
+                    pixel_t width = 0_px;
+                    if(text)
+                    {
+                        size measured;
+                        following->src_el()->get_content_size(measured, self_size.render_width);
+                        width = measured.width;
+                    } else
+                    {
+                        // As place_inline measures an inline box: at its shrink-to-fit width, not the line's (render first: it
+                        // sets the width).
+                        const pixel_t natural = following->render(0_px, 0_px, self_size, fmt_ctx).natural_width;
+                        width = std::min(natural, following->width());
+                    }
+                    m_trailing += starts + width;
                     for(next++; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
                         m_trailing += lbi_end(events[next].first).width();
                 }
@@ -599,6 +670,77 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::render_item_inline
     return ret;
 }
 
+bool litehtml::render_item_inline_context::place_hyphenated(const std::unique_ptr<line_box_item>& item,
+                                                           const std::shared_ptr<render_text>& text_item, el_text& text,
+                                                           pixel_t minimum, const containing_block_context& self_size,
+                                                           formatting_context* fmt_ctx)
+{
+    const white_space ws = text_item->css().get_white_space();
+    if(!m_line_boxes.empty() && m_line_boxes.back()->can_hold(item, ws, m_trailing))
+        return false;
+    const std::vector<size_t>& points = text.hyphenation_points();
+    if(points.empty())
+        return false;
+    // As Blink: the line takes the word up to its last point where it fits with its hyphen, and the rest goes on to the
+    // next line (and so on, for a word longer than a line).
+    if(m_line_boxes.empty())
+        new_box(item, self_size, fmt_ctx);
+    const std::string& content  = text.display_text();
+    document_container* cont    = text.get_document()->container();
+    const uint_ptr     font     = text_item->css().get_font();
+    const pixel_t      trailing = m_trailing;
+    const pixel_t      height   = text_item->pos().height;
+    auto place = [&](size_t from, size_t to, bool hyphen) {
+        auto fragment = std::make_shared<render_text>(text_item->src_el());
+        fragment->parent(text_item->parent());
+        fragment->is_fragment   = true;
+        fragment->hyphen        = hyphen;
+        fragment->fragment_text = content.substr(from, to - from);
+        const std::string drawn = hyphen ? el_text::hyphenated(fragment->fragment_text) : fragment->fragment_text;
+        fragment->pos()         = size(cont->text_width(drawn.c_str(), font), height);
+        text_item->fragments.push_back(fragment);
+        m_trailing = hyphen ? 0_px : trailing;
+        place_inline(std::make_unique<wrapped_text_item>(fragment, minimum), self_size, fmt_ctx);
+    };
+    for(size_t start = 0;;)
+    {
+        const line_box& line = *m_line_boxes.back();
+        if(auto last = line.get_last_text_part(); last && last->src_el()->is_break() && last->css().get_clear() == clear_none)
+        {
+            new_box(item, self_size, fmt_ctx);  // after a <br>: a line of its own
+            continue;
+        }
+        const pixel_t room = line.line_right() - line.right();
+        const pixel_t rest = start == 0 ? text_item->pos().width : cont->text_width(content.c_str() + start, font);
+        size_t        cut  = 0;
+        if(rest + trailing > room)
+            for(size_t point : points)
+            {
+                if(point <= start || point >= content.size())
+                    continue;
+                if(cont->text_width(el_text::hyphenated(content.substr(start, point - start)).c_str(), font) > room)
+                    break;  // nor any longer part
+                cut = point;
+            }
+        if(cut)
+        {
+            place(start, cut, true);
+            new_box(item, self_size, fmt_ctx);
+            start = cut;
+        } else if(rest + trailing <= room || line.is_empty())
+        {
+            if(start == 0)
+                return false;  // whole: it fits, or not even its first part fits a line
+            place(start, content.size(), false);
+            break;
+        } else
+            new_box(item, self_size, fmt_ctx);
+    }
+    m_trailing = trailing;
+    m_fragmented_texts.push_back(text_item);
+    return true;
+}
+
 litehtml::pixel_t litehtml::render_item_inline_context::new_box(const std::unique_ptr<line_box_item>& el,
                                                                 const containing_block_context&       self_size,
                                                                 formatting_context*                   fmt_ctx)
@@ -686,13 +828,20 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
             if(text_item && !text_item->is_fragment)
             {
                 text_item->fragments.clear();
+                text_item->hyphen = false;
+                text_item->justify_gap = 0_px;
+                text_item->trims.clear();
                 litehtml::size sz;
                 item->get_el()->src_el()->get_content_size(sz, self_size.render_width);
                 item->get_el()->pos() = sz;
+                text_item->compress(cjk::line_middle, cjk::line_middle);
                 item->set_rendered_min_width(sz.width);
                 auto text = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el());
                 const auto wrapping = text_item->css().get_wrapping();
                 const auto whitespace = text_item->css().get_white_space();
+                if(text && !text->is_white_space() && !text->is_break() && whitespace != white_space_nowrap &&
+                   whitespace != white_space_pre && place_hyphenated(item, text_item, *text, sz.width, self_size, fmt_ctx))
+                    return;
                 if(text && !text->is_space() && !text->is_break() && wrapping != overflow_wrap_normal &&
                    whitespace != white_space_nowrap && whitespace != white_space_pre)
                 {
@@ -749,6 +898,8 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
                                 return;
                             }
                             text_item->pos() = sz;
+                            text_item->trims.clear();
+                            text_item->compress(cjk::line_middle, cjk::line_middle);
                         }
                     }
                 }

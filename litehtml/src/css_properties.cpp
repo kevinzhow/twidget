@@ -70,6 +70,7 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
         el->get_property<int>(_text_orientation_, true, text_orientation_mixed, offset(m_text_orientation)));
     m_text_combine = static_cast<text_combine>(
         el->get_property<int>(_text_combine_upright_, true, text_combine_none, offset(m_text_combine)));
+    m_hyphens = static_cast<hyphens>(el->get_property<int>(_hyphens_, true, hyphens_initial, offset(m_hyphens)));
     if(const char* dir = el->get_attr("dir"); dir && equal_i(dir, "auto"))
     {
         // dir=auto: the first strong character of the element's text decides.
@@ -708,6 +709,13 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
         upright.features         = merge_font_features(descr.features, "vert=1");
         font_metrics fm;
         m_font_upright = doc->get_font(upright, &fm);
+    }
+    {
+        // Half-width punctuation marks (punctuation compression) take the font's own forms: halt across, vhal upright.
+        font_description half = descr;
+        half.features          = merge_font_features(descr.features, is_vertical_rl() ? "vert=1,vhal=1" : "halt=1");
+        font_metrics fm;
+        m_font_half = doc->get_font(half, &fm);
     }
     m_font_emphasis = 0;
     if(!m_text_emphasis_style.empty() && m_text_emphasis_style != "none")

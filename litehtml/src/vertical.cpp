@@ -39,4 +39,18 @@ namespace litehtml
         }
         return false;
     }
+
+    bool turned_in_vertical(char32_t cp)
+    {
+        // Unicode 16's VerticalOrientation.txt, Tr.
+        static const char32_t tr[][2] = {
+            {0x2025, 0x2026}, {0x2329, 0x232A}, {0x2E3A, 0x2E3B}, {0x3008, 0x3011}, {0x3014, 0x301F}, {0x3030, 0x3030},
+            {0x30A0, 0x30A0}, {0x30FC, 0x30FC}, {0xFE59, 0xFE5E}, {0xFF08, 0xFF09}, {0xFF1A, 0xFF1B}, {0xFF3B, 0xFF3B},
+            {0xFF3D, 0xFF3D}, {0xFF3F, 0xFF3F}, {0xFF5B, 0xFF60}, {0xFFE3, 0xFFE3},
+        };
+        for(const auto& r : tr)
+            if(cp >= r[0] && cp <= r[1])
+                return true;
+        return false;
+    }
 } // namespace litehtml

@@ -1,0 +1,194 @@
+{
+  "upstream": [
+    {
+      "name": "stone_engine_js",
+      "repo": "https://github.com/non-standardworld/stone_engine_js",
+      "commit": "caae3076008dcc7abf9804c611b4bad8bd64d49f",
+      "paths": [
+        "src/punctuation.ts",
+        "src/unicode.ts"
+      ],
+      "licence": "MIT",
+      "use": "source: generate.py reads its tables from paths; litehtml mirrors the functions in mirrored by hand",
+      "sha256": {
+        "LICENSE": "0dca6458e84c98b704c33b252272a87195437601e01b83b1435767e222e383ac",
+        "src/context.ts": "5983f9a1a897675a7ecd19a77468524cf70dd1cd93bc1a0959b0ad7d2cf856e7",
+        "src/fonts.ts": "aa503d57b9ff1869e47b4535b7e4c5227e5ca8c75d9ca7bb9bc91b37ebc2acb8",
+        "src/layout.ts": "e57926efd1b77c83673d2eddd3e26637d162dc09769b7b5661fe17f5dd3f652e",
+        "src/parser.ts": "57c10a5237ef15a9e842ae0203a225d00fe97e51524b4c741de66e256c43fe7e",
+        "src/punctuation.ts": "a9888873793a77ad5f209ad1305dcb36d00788b6dc26cf11b517958f9f479ea9",
+        "src/unicode.ts": "106f313eaa5a99b6dc3d4295d3ce0879ccbe5e37915166b67f59aaa5b5e665cd"
+      },
+      "mirrored": [
+        {
+          "path": "src/layout.ts",
+          "name": "isJustifiableGap",
+          "in": "litehtml/src/cjk_rules.cpp cjk::justifiable_gap",
+          "sha256": "9451d9eb0749b9225f8e3fad6a8e954b28c2717c53a1e1cc8a455307798293c7"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "isJustifiableGapTbRl",
+          "in": "litehtml/src/line_box.cpp line_box::finish (no gap inside a tate-chu-yoko token: el_text::tate_chu_yoko)",
+          "sha256": "0f2b27c2435bf7e0d61c837ddee793c125a92666e25e26ecceb8bb1563de289a"
+        },
+        {
+          "path": "src/punctuation.ts",
+          "name": "isInseparablePair",
+          "in": "litehtml/src/cjk_rules.cpp cjk::justifiable_gap",
+          "sha256": "fd26f68aed05353c216dee0f4261dcdde68bcee618001a7da00ab61db91c53c6"
+        },
+        {
+          "path": "src/punctuation.ts",
+          "name": "isSpaceChar",
+          "in": "litehtml/src/cjk_rules.cpp is_space",
+          "sha256": "d632f58de9a683a46e8ae0c240c723f7cd26600d56c06372676298a5bb45468d"
+        },
+        {
+          "path": "src/punctuation.ts",
+          "name": "WHITESPACE_RE",
+          "in": "litehtml/src/cjk_rules.cpp is_space",
+          "sha256": "3d68ca3c8fa9cacc6572438c33b198e37ea3521bc007a20e9cf222d5e9ec6225"
+        },
+        {
+          "path": "src/unicode.ts",
+          "name": "scriptOfCodePoint",
+          "in": "tools/cjk_rules/generate.py scripts()",
+          "sha256": "f850ea8f7b251db71f59b1509ee595f5159cc7040cea51770fd151dd81c345ac"
+        },
+        {
+          "path": "src/fonts.ts",
+          "name": "fontIdForChar",
+          "in": "tools/cjk_rules/generate.py scripts() (no script: Latin)",
+          "sha256": "e88f3b0b3fe365e88ec5bdfdd2b5b00b38277dc62191a73b75379e6837a764f8"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "punctuationTrim",
+          "in": "litehtml/src/cjk_rules.cpp cjk::compression (\"stone\" mode only; whole and half are not used)",
+          "sha256": "91c88f80fdfbd0add978ae4737af1243924df051935c3adb42c41ae18ca66e74"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "halvesOpeningAfterPunctuation",
+          "in": "litehtml/src/cjk_rules.cpp cjk::compression",
+          "sha256": "de8e76888ba02fa467bb2848e946019e911ab6c46e08f9824ced2d3daa3e7ee4"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "halvesClosingBeforePunctuation",
+          "in": "litehtml/src/cjk_rules.cpp cjk::compression",
+          "sha256": "40c3ca114082d8d7b57183e1fc306dbc03dcaed49b21ed5e5c300217ee7d0898"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "TRIM_FIRST_HALF",
+          "in": "litehtml/src/cjk_rules.cpp cjk::compression (trim::end 0.5)",
+          "sha256": "301b8ba3e8b141c0423e0bbb8de9b289b6356ff927fa2516e8d77e81d568ba30"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "TRIM_SECOND_HALF",
+          "in": "litehtml/src/cjk_rules.cpp cjk::compression (trim::start 0.5); el_text.cpp draw_justified / draw_vertical draw the glyph moved back by it, or with halt/vhal",
+          "sha256": "efb33bdc355bc4fa113d1befc8b8324853d63e7835762624a19dcac8870a8673"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "inlineExtentOfRun",
+          "in": "litehtml/src/render_inline_context.cpp place_inline (a piece's width with its mid-line trims, which line_box::can_hold fits)",
+          "sha256": "4bbd138fd5cb5ae14f107752af6f8c21aa6a118aaad3175e5b9f790fe10eee65"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "columnExtentOfRun",
+          "in": "litehtml/src/render_inline_context.cpp place_inline (as inlineExtentOfRun, in vertical text); el_text.cpp vertical_advance (a tate-chu-yoko token one em)",
+          "sha256": "c7e6a07fcc4ce5be4b1b421d4d149e18bf8586062c3ba576156f5a3cae4c7909"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "layoutRunLrTb",
+          "in": "litehtml/src/line_box.cpp line_box::add_item (a line's first character at line_start)",
+          "sha256": "3eb4868f15a77ea627af8fc06c5774641a8279d95a43fe74f91694f57cbb87e8"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "layoutRunTbRl",
+          "in": "litehtml/src/line_box.cpp line_box::add_item (as layoutRunLrTb, in vertical text)",
+          "sha256": "fea3bde241a3f52efe6aac20ed6b257b82553672b7499b723eaac7ef9e7f16ca"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "goNextLineLrTb",
+          "in": "litehtml/src/line_box.cpp line_box::finish (line_end, only on a line that wraps)",
+          "sha256": "8029d2023795602d34e8714dedc8a0a4a25e36bb88451704d14beedf4df6e9bd"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "goNextLineTbRl",
+          "in": "litehtml/src/line_box.cpp line_box::finish (as goNextLineLrTb, in vertical text)",
+          "sha256": "130ed8b2093fbec9cb4d29091041aae638485839d83fea271fe34af7520a368e"
+        },
+        {
+          "path": "src/context.ts",
+          "name": "isTateChuYoko",
+          "in": "litehtml/src/cjk_rules.cpp cjk::tate_chu_yoko (of stone's numbers, \\p{N} the Latin font sets, the ASCII digits; at most 2)",
+          "sha256": "d1d111332f7bdb832f37599f8836260f7c578607640e79cb99369cac92114815"
+        },
+        {
+          "path": "src/context.ts",
+          "name": "isTateChuYokoToken",
+          "in": "litehtml/src/cjk_rules.cpp cjk::tate_chu_yoko (a token is all tate-chu-yoko or none of it)",
+          "sha256": "cb4644e6a9c04385e77418e88e74b103ee12acef6bc853b700b7b04186124b97"
+        },
+        {
+          "path": "src/punctuation.ts",
+          "name": "isNumberChar",
+          "in": "litehtml/src/cjk_rules.cpp cjk::tate_chu_yoko (the ASCII digits only)",
+          "sha256": "85d5d95b7f50f68e367faa970ce2225e34259aa6d2e26d74617c8f451cbff3ef"
+        },
+        {
+          "path": "src/punctuation.ts",
+          "name": "NUMBER_RE",
+          "in": "litehtml/src/cjk_rules.cpp cjk::tate_chu_yoko (the ASCII digits only)",
+          "sha256": "e44d5aa94484a46c1af4ffd7453095ca63bf7d38b16f0acf30e6c97b55e4ca4b"
+        },
+        {
+          "path": "src/parser.ts",
+          "name": "splitWords",
+          "in": "litehtml/src/cjk_rules.cpp joins_number / word_char (a token's ends: UAX #29 word boundaries around a number, as Intl.Segmenter(\"ja\") draws them)",
+          "sha256": "fcf4feddad40d5aea8383c78460de84e7ac80f29b6c1bafa3c1a371e9a94e4ea"
+        },
+        {
+          "path": "src/context.ts",
+          "name": "isClockwise",
+          "in": "litehtml/src/el_text.cpp draw_vertical (a tate-chu-yoko token is drawn upright, not turned)",
+          "sha256": "559fdb2970d3f42f3d4aac11ff78b6a6bccb43c5008834f438908dee99c8c190"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "applyTateChuYokoTbRl",
+          "in": "litehtml/src/el_text.cpp draw_vertical (centred in its em of the column; wider than the em, squeezed across it where stone lets it overhang)",
+          "sha256": "20e709c0bd3bd482c82dd3a3a6e4fb2a6d415a5dd77564ad51a3f6354464de56"
+        },
+        {
+          "path": "src/layout.ts",
+          "name": "minLineEndRunId",
+          "in": "litehtml/src/el_text.cpp (a token lies inside one piece, which a line never breaks: document_container::split_text keeps a number and !? together)",
+          "sha256": "f1a2cb7dfd73dd1f8559d07ae63c7966b30b90a4ea839717d546385ecc947b3d"
+        }
+      ]
+    },
+    {
+      "name": "stone_engine",
+      "repo": "https://github.com/ndc-stone/stone_engine",
+      "commit": "f8b2dc5d64c2022bc730275d287124561b406fef",
+      "path": "Sources/stone_engine/context/STObject.swift",
+      "licence": "MIT",
+      "use": "reference: the Swift original (STPunctuation, STKinsoku); the JS port fixed its sets and says how in src/punctuation.ts and src/layout.ts",
+      "sha256": {
+        "LICENSE": "0dca6458e84c98b704c33b252272a87195437601e01b83b1435767e222e383ac",
+        "Sources/stone_engine/context/STObject.swift": "6fbc726ab6787f9be0bfc1f76934bd89261048b15852d8f75a63771c0d1802ed"
+      }
+    }
+  ]
+}

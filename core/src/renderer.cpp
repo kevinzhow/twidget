@@ -7263,9 +7263,14 @@ const std::vector<Renderer::TextRun>& Renderer::text_runs() const {
         }
         return false;
     };
-    auto add = [&](int64_t owner, int block, std::string text, const litehtml::position* box, uintptr_t font, bool can) {
+    auto add = [&](int64_t owner, int block, std::string text, const litehtml::position* box, uintptr_t font, bool can,
+                   float gap = 0, const std::vector<litehtml::char_trim>* trims = nullptr) {
         if (text.empty()) return;
         TextRun r;
+        r.justify_gap = gap;
+        if (trims)
+            for (const auto& t : *trims)
+                if (t.at < text.size()) r.trims.push_back({t.at, float(t.start + t.end)});
         r.owner = owner;
         r.offset = lengths[owner];
         r.block = block;
@@ -7304,10 +7309,11 @@ const std::vector<Renderer::TextRun>& Renderer::text_runs() const {
                     litehtml::position box = fragment->pos();
                     box.x += placed.x - ri->pos().x;
                     box.y += placed.y - ri->pos().y;
-                    add(owner, block, fragment->fragment_text, &box, font, can);
+                    add(owner, block, fragment->fragment_text, &box, font, can, float(fragment->justify_gap));
                 }
             } else {
-                add(owner, block, item && item->cut >= 0 ? shown.substr(0, size_t(item->cut)) : shown, &placed, font, can);
+                add(owner, block, item && item->cut >= 0 ? shown.substr(0, size_t(item->cut)) : shown, &placed, font, can,
+                    item ? float(item->justify_gap) : 0.0f, item ? &item->trims : nullptr);
             }
         });
     };
@@ -7318,7 +7324,7 @@ const std::vector<Renderer::TextRun>& Renderer::text_runs() const {
         for (size_t i = 0; i < runs.size(); i++) {
             TextRun& r = runs[i];
             TextRun& old = before[i];
-            if (r.owner != old.owner || r.offset != old.offset || r.font != old.font || r.text != old.text || std::memcmp(&r.box, &old.box, sizeof(Rect)) != 0) continue;
+            if (r.owner != old.owner || r.offset != old.offset || r.font != old.font || r.text != old.text || r.justify_gap != old.justify_gap || r.trims != old.trims || std::memcmp(&r.box, &old.box, sizeof(Rect)) != 0) continue;
             r.shown = old.shown;
             r.layer = old.layer;
             r.drawn = old.drawn;
@@ -7387,7 +7393,10 @@ float Renderer::run_advance(const TextRun& run, size_t bytes) const {
     if (bytes >= run.text.size()) return run.box.w;
     if (run.text.size() > MAX_MEASURED_RUN) return run.box.w * float(bytes) / float(run.text.size());
     if (auto it = run.advances.find(bytes); it != run.advances.end()) return it->second;
-    float w = float(container_->text_width(run.text.substr(0, bytes).c_str(), litehtml::uint_ptr(run.font)));
+    float w = float(container_->text_width(run.text.substr(0, bytes).c_str(), litehtml::uint_ptr(run.font)) +
+                    litehtml::justify_shift(run.text, bytes, litehtml::pixel_t(run.justify_gap)));
+    for (const auto& [at, trimmed] : run.trims)
+        if (at < bytes) w -= trimmed;
     run.advances.emplace(bytes, w);
     return w;
 }

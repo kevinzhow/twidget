@@ -4,8 +4,11 @@
 #include "render_item.h"
 #include "document.h"
 #include "el_text.h"
+#include "render_inline.h"
 #include "document_container.h"
 #include "types.h"
+#include "cjk_rules.h"
+#include "utf8_strings.h"
 #include <algorithm>
 #include <cmath>
 
@@ -198,6 +201,14 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
         add = true;
         break;
     }
+    if(add && item->get_type() == line_box_item::type_text_part)
+    {
+        // Punctuation compression: the line's first character is at a line's start (an opening bracket gives up its
+        // first half), after the text indent too.
+        auto part = std::dynamic_pointer_cast<render_text>(item->get_el());
+        if(part && !part->is_fragment && first_text_part(m_items.end()))
+            part->compress(cjk::line_start, cjk::line_middle);
+    }
     if(add)
     {
         item->place_to(m_left + m_width, m_top);
@@ -322,6 +333,50 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         return ret_items;
     }
 
+    // Punctuation compression: a line that wraps (not before <br>, not the paragraph's last) ends at a line's end, where
+    // a closing bracket or 、。 gives up its second half; what follows it (inline ends) moves back with it.
+    if(!last_box && !finished_with_break)
+    {
+        for(auto it = m_items.rbegin(); it != m_items.rend(); ++it)
+        {
+            if((*it)->get_type() != line_box_item::type_text_part)
+                continue;
+            auto part = std::dynamic_pointer_cast<render_text>((*it)->get_el());
+            if(part && !part->is_fragment)
+            {
+                const pixel_t was = part->pos().width;
+                part->compress(first_text_part(std::next(it).base()) ? cjk::line_start : cjk::line_middle, cjk::line_end);
+                const pixel_t less = was - part->pos().width;
+                m_width -= less;
+                for(auto after = m_items.rbegin(); after != it; ++after)
+                    (*after)->pos().x -= less;
+            }
+            break;
+        }
+    }
+
+    // A line broken at a soft hyphen ends with a hyphen, which can_hold made room for (el_text::line_end_extra).
+    if(!last_box)
+    {
+        for(auto it = m_items.rbegin(); it != m_items.rend(); ++it)
+        {
+            if((*it)->get_type() != line_box_item::type_text_part)
+                continue;
+            auto part = std::dynamic_pointer_cast<render_text>((*it)->get_el());
+            auto text = part && !part->is_fragment ? dynamic_cast<const el_text*>(part->src_el().get()) : nullptr;
+            if(text && text->ends_with_soft_hyphen())
+            {
+                const pixel_t extra = text->line_end_extra();
+                part->hyphen = true;
+                part->pos().width += extra;
+                m_width += extra;
+                for(auto after = m_items.rbegin(); after != it; ++after)
+                    (*after)->pos().x += extra;
+            }
+            break;
+        }
+    }
+
     pixel_t spacing_x = 0_px; // Number of pixels to distribute between elements
     pixel_t shift_x   = 0_px; // Shift elements by X to apply the text-align
 
@@ -363,8 +418,59 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         shift_x = 0_px;
     }
 
+    // Justified, the space goes into the gaps between characters that the CJK rule set lets widen
+    // (cjk::justifiable_gap), as stone_engine does: between two texts' characters and inside a text (its
+    // render_text::justify_gap at each), never inside a Latin word or number, nor inside …… or ――. An inline box (an
+    // image, an inline-block, a ruby) has a gap each side. Inline starts and ends take none: the gap after a text goes
+    // after the ends that follow it.
+    std::vector<int> gaps_before(m_items.size(), 0), gaps_inside(m_items.size(), 0);
+    int              gaps = 0;
+    if(spacing_x != 0_px)
+    {
+        enum { nothing, text, box } before = nothing;  // what came last: a text, an inline box, or neither yet
+        char32_t last = 0;                             // the last text's last character
+        int      slot = -1;                            // the item the gap after it goes before
+        size_t i = 0;
+        for(auto it = m_items.begin(); it != m_items.end(); ++it, ++i)
+        {
+            const auto type = (*it)->get_type();
+            if(type != line_box_item::type_text_part)
+            {
+                if(slot < 0 && type != line_box_item::type_inline_end)
+                    slot = int(i);
+                continue;
+            }
+            auto part = std::dynamic_pointer_cast<render_text>((*it)->get_el());
+            auto src  = part ? dynamic_cast<const el_text*>(part->src_el().get()) : nullptr;
+            const std::u32string chars =
+                src ? std::u32string(utf8_to_utf32(part->is_fragment ? part->fragment_text : src->display_text())) : U"";
+            if(src && chars.empty())
+                continue;
+            if(slot < 0)
+                slot = int(i);
+            if(before != nothing && (before == box || !src || cjk::justifiable_gap(last, chars.front())))
+            {
+                gaps_before[slot]++;
+                gaps++;
+            }
+            before = src ? text : box;
+            slot   = -1;
+            if(!src)
+                continue;
+            last = chars.back();
+            // stone's isJustifiableGapTbRl: none inside a tate-chu-yoko token, its characters set together in one em.
+            for(size_t gap : cjk::justifiable_gaps(part->is_fragment ? part->fragment_text : src->display_text()))
+                if(part->is_fragment || std::none_of(src->tate_chu_yoko().begin(), src->tate_chu_yoko().end(),
+                                                     [&](const cjk::span& t) { return t.from < gap && gap < t.to; }))
+                    gaps_inside[i]++;
+            gaps += gaps_inside[i];
+        }
+        if(gaps == 0)
+            spacing_x = 0_px;  // nowhere to put the space: one word, or one 縦中横
+    }
+
     int   counter = 0;
-    float offj    = static_cast<float>(spacing_x) / std::max(1.f, static_cast<float>(m_items.size()) - 1.f);
+    float offj    = static_cast<float>(spacing_x) / std::max(1.f, static_cast<float>(gaps));
     float cixx    = 0.0f;
 
     std::optional<pixel_t> line_height;
@@ -421,14 +527,17 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         // Apply text-align-justify
         m_rendered_width.natural_width += lbi->get_rendered_natural_width();
         m_rendered_width.min_width      = std::max(m_rendered_width.min_width, lbi->get_rendered_min_width());
-        if(spacing_x != 0_px && counter)
+        if(spacing_x != 0_px)
         {
-            cixx += offj;
-            if((counter + 1) == static_cast<int>(m_items.size()))
-            {
-                cixx += 0.99f;
-            }
+            cixx         += offj * float(gaps_before[counter]);
             lbi->pos().x += pixel_t(cixx);
+            if(gaps_inside[counter])
+            {
+                auto part          = std::static_pointer_cast<render_text>(lbi->get_el());
+                part->justify_gap  = pixel_t(offj);
+                part->pos().width += pixel_t(offj * float(gaps_inside[counter]));
+                cixx              += offj * float(gaps_inside[counter]);
+            }
         }
         counter++;
         if((align == text_align_right || spacing_x != 0_px) && counter == static_cast<int>(m_items.size()))
@@ -923,7 +1032,8 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
         // Shaped as one run, a piece ending the line is shaped again without its kerning with the next piece (as
         // Blink reshapes a line's end): it must fit with that width.
         pixel_t end_extra = 0_px;
-        if(trailing <= 0_px)
+        auto    part      = std::dynamic_pointer_cast<render_text>(item->get_el());
+        if(trailing <= 0_px && !(part && part->is_fragment))
             if(auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get()))
                 end_extra = text->line_end_extra();
         if(m_left + m_width + item->width() + end_extra - hang + trailing > m_right)
@@ -932,6 +1042,14 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
         }
     }
 
+    return true;
+}
+
+bool litehtml::line_box::first_text_part(std::list<std::unique_ptr<line_box_item>>::const_iterator at) const
+{
+    for(auto it = m_items.begin(); it != at; ++it)
+        if((*it)->get_type() == line_box_item::type_text_part)
+            return false;
     return true;
 }
 
