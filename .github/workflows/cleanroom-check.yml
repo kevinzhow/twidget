@@ -1,0 +1,35 @@
+name: Clean-room check
+
+# CLEANROOM §3 automated items, without the old runtime's sources: tools/cleanroom/check.py compares against the hashes in
+# tools/cleanroom/. Pull requests: added lines, commit messages and changed files. Pushes: the pushed range; a new branch or a
+# manual run: a full audit.
+on:
+  pull_request:
+    branches: [main, 'cleanroom/**']
+  push:
+    branches: [main, 'cleanroom/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Clean-room check
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          base=""
+          if [ "$EVENT" = pull_request ]; then
+            base="$PR_BASE"
+          elif [ "$EVENT" = push ] && [ -n "$PUSH_BEFORE" ] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            base="$PUSH_BEFORE"
+          fi
+          if [ -n "$base" ]; then python3 tools/cleanroom/check.py --base "$base"; else python3 tools/cleanroom/check.py --all; fi
