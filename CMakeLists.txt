@@ -24,6 +24,13 @@ else()
     set(TW_TEXT_DEFAULT OFF)
 endif()
 option(TWIDGET_TEXT "Build twidget::text, fonts and text measurement on HarfBuzz" ${TW_TEXT_DEFAULT})
+# twcard (twcard/): the card runtime's trusted host (QuickJS engine, validator, CardHost), for POSIX hosts.
+if(NOT EMSCRIPTEN AND NOT WIN32)
+    set(TW_TWCARD_DEFAULT ON)
+else()
+    set(TW_TWCARD_DEFAULT OFF)
+endif()
+option(TWIDGET_TWCARD "Build twcard, the card runtime's host" ${TW_TWCARD_DEFAULT})
 # Only litehtml, twidget::base, twidget::text and the display-list encoding, without TwidgetCore (hosts that draw
 # documents only).
 # ON until P0's renderer.cpp edits land (gesture policy call sites, paint-limit code, release message; QUESTIONS Q1).
@@ -45,6 +52,11 @@ if(TWIDGET_LITEHTML_ONLY)
     endif()
     if(TWIDGET_BUILD_TESTS)
         enable_testing()
+    endif()
+    if(TWIDGET_TWCARD)
+        include("${CMAKE_CURRENT_SOURCE_DIR}/twcard/twcard.cmake")
+    endif()
+    if(TWIDGET_BUILD_TESTS)
         add_executable(twidget_json_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/json_tests.cpp")
         target_link_libraries(twidget_json_tests PRIVATE twidget::base)
         add_test(NAME twidget_json COMMAND twidget_json_tests)
@@ -200,6 +212,13 @@ endif()
 # Fonts and text measurement on HarfBuzz (text/), which twidget_flutter's cards and other hosts build on.
 if(TWIDGET_TEXT)
     add_subdirectory(text)
+endif()
+
+if(TWIDGET_BUILD_TESTS)
+    enable_testing()
+endif()
+if(TWIDGET_TWCARD)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/twcard/twcard.cmake")
 endif()
 
 # Qt hosts (Telegram Desktop) on any desktop OS: fonts, images, canvases and the painter on QPainter.
