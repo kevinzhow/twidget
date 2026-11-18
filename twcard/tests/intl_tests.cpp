@@ -88,6 +88,7 @@ int main() {
 #ifdef TWCARD_ICU4X
     const auto& icu = twcard::defaultIntlProvider();
     check(icu, R"({"kind":"number","locale":"de-DE","value":1234.5})", "1.234,5");
+    check(icu, R"({"kind":"number","locale":"de-DE-u-ca-gregory-nu-latn","value":1234.5})", "1.234,5");
     check(icu, R"({"kind":"number","locale":"de-DE","options":{"style":"percent"},"value":0.125})", "13 %");
     check(icu, R"({"kind":"number","locale":"de-DE","options":{"style":"currency","currency":"EUR"},"value":1234.5})", "1.234,50 €");
     check(icu, R"({"kind":"numberParts","locale":"de-DE","value":1234.5})",

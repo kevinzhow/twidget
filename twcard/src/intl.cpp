@@ -450,8 +450,8 @@ public:
 
     std::optional<std::string> format(const Json& request) const override {
         const auto& kind = request["kind"].asString();
-        const auto& requested = request["locale"].asString();
-        const std::string_view locale = requested.empty() ? "en-US" : requested;
+        std::string_view locale = request["locale"].asString();
+        if (locale.empty()) locale = "en-US";
         const auto& value = request["value"];
         const auto& options = request["options"];
         auto resolvedOptions = resolved(kind, options, *rules_);
