@@ -5,16 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
-#include <chrono>
 #include <cmath>
 #include <ctime>
 #include <limits>
 #include <string_view>
 #include <vector>
-
-#ifdef __ANDROID__
-#include <sys/system_properties.h>
-#endif
 
 namespace twcard {
 namespace {
@@ -135,59 +130,44 @@ Parts fallbackNumber(double value, const Json& options) {
     return parts;
 }
 
-std::string deviceTimeZone() {
-#if defined(__ANDROID__)
-    // Bionic's localtime uses the device's persist.sys.timezone setting.
-    char zone[PROP_VALUE_MAX]{};
-    if (__system_property_get("persist.sys.timezone", zone) > 0) return zone;
-#elif defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
-    try {
-        return std::string(std::chrono::current_zone()->name());
-    } catch (const std::runtime_error&) {
-    }
-#endif
-    return "UTC";
-}
-
-std::string timeZone(const Json& options) {
-    const auto& zone = options["timeZone"].asString();
-    if (zone.empty()) return deviceTimeZone();
+std::string timeZone(const Json& options, const ZoneRules& rules) {
+    const auto zone = options.find("timeZone") ? options["timeZone"].asString() : rules.deviceZone();
     if (zone == "GMT" || zone == "Etc/UTC" || zone == "Etc/GMT") return "UTC";
     return zone;
 }
 
-std::optional<std::tm> localizedDate(double milliseconds, const Json& options) {
+struct LocalDate {
+    std::tm time;
+    std::string zone;
+    int64_t offsetMs;
+};
+
+std::optional<LocalDate> localizedDate(double milliseconds, const Json& options, const ZoneRules& rules) {
     // ECMA-262 TimeClip and the S8.2 IANA time zone.
     if (!std::isfinite(milliseconds) || std::trunc(milliseconds) != milliseconds || std::abs(milliseconds) > 8.64e15)
         return std::nullopt;
-    int64_t local = static_cast<int64_t>(std::floor(milliseconds / 1000));
-    const auto zone = timeZone(options);
-    if (zone != "UTC") {
-#ifdef __ANDROID__
-        if (zone != deviceTimeZone() || local < std::numeric_limits<time_t>::min() ||
-            local > std::numeric_limits<time_t>::max()) return std::nullopt;
-        const time_t seconds = static_cast<time_t>(local);
-        std::tm result{};
-        return localtime_r(&seconds, &result) ? std::optional(result) : std::nullopt;
-#elif defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
-        using namespace std::chrono;
-        try {
-            local = locate_zone(zone)->to_local(sys_seconds(seconds(local))).time_since_epoch().count();
-        } catch (const std::runtime_error&) {
-            return std::nullopt;
-        }
-#else
-        return std::nullopt;
-#endif
-    }
+    auto zone = timeZone(options, rules);
+    const auto offset = rules.offset(zone, static_cast<int64_t>(milliseconds));
+    if (!offset) return std::nullopt;
+    const auto local = static_cast<int64_t>(std::floor((milliseconds + double(offset->offsetMs)) / 1000));
     if (local < std::numeric_limits<time_t>::min() || local > std::numeric_limits<time_t>::max()) return std::nullopt;
     const time_t seconds = static_cast<time_t>(local);
     std::tm result{};
     if (!gmtime_r(&seconds, &result)) return std::nullopt;
+    return LocalDate{result, std::move(zone), offset->offsetMs};
+}
+
+std::string gmtOffset(int64_t offsetMs) {
+    if (offsetMs == 0) return "GMT";
+    const auto minutes = std::abs(offsetMs / 60000);
+    auto result = std::string(offsetMs < 0 ? "GMT-" : "GMT+") + std::to_string(minutes / 60);
+    if (const auto remainder = minutes % 60)
+        result += (remainder < 10 ? ":0" : ":") + std::to_string(remainder);
     return result;
 }
 
-Parts fallbackDate(const std::tm& date, const Json& options) {
+Parts fallbackDate(const LocalDate& local, const Json& options) {
+    const auto& date = local.time;
     constexpr std::array months{"January", "February", "March", "April", "May", "June",
                                 "July", "August", "September", "October", "November", "December"};
     constexpr std::array weekdays{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
@@ -265,10 +245,14 @@ Parts fallbackDate(const std::tm& date, const Json& options) {
             add(parts, "literal", " ");
             add(parts, "dayPeriod", date.tm_hour < 12 ? "AM" : "PM");
         }
-        if (options.find("timeZoneName") || timeStyle == "long" || timeStyle == "full") {
-            add(parts, "literal", " ");
-            add(parts, "timeZoneName", timeStyle == "full" ? "Coordinated Universal Time" : "UTC");
-        }
+    }
+    if (options.find("timeZoneName") || timeStyle == "long" || timeStyle == "full") {
+        const auto& zoneStyle = options["timeZoneName"].asString();
+        const bool longName = zoneStyle == "long" || timeStyle == "full";
+        const bool offsetName = zoneStyle == "shortOffset" || zoneStyle == "longOffset";
+        add(parts, "literal", " ");
+        add(parts, "timeZoneName", local.zone == "UTC" && !offsetName
+            ? (longName ? "Coordinated Universal Time" : "UTC") : gmtOffset(local.offsetMs));
     }
     return parts;
 }
@@ -295,7 +279,7 @@ std::string latinCase(const std::string& text, bool upper) {
 
 bool isParts(std::string_view kind) { return kind == "numberParts" || kind == "dateParts"; }
 
-std::optional<Json> resolved(std::string_view kind, const Json& opts) {
+std::optional<Json> resolved(std::string_view kind, const Json& opts, const ZoneRules& rules) {
     if (kind == "numberOptions") {
         const auto options = numberOptions(opts);
         const auto& s = opts["style"].asString();
@@ -312,8 +296,11 @@ std::optional<Json> resolved(std::string_view kind, const Json& opts) {
         return out;
     }
     if (kind == "dateOptions") {
+        const auto zone = timeZone(opts, rules);
+        if (zone.empty() || !rules.offset(zone, 0))
+            return Json::object().set("error", "RangeError");
         auto out = Json::object().set("locale", "en-US").set("calendar", "gregory").set("numberingSystem", "latn")
-            .set("timeZone", timeZone(opts));
+            .set("timeZone", zone);
         constexpr std::array fields{"weekday", "era", "year", "month", "day", "hour", "minute", "second",
                                     "timeZoneName", "dateStyle", "timeStyle", "hour12", "hourCycle"};
         for (auto field : fields)
@@ -326,11 +313,13 @@ std::optional<Json> resolved(std::string_view kind, const Json& opts) {
 
 class Fallback final : public IntlProvider {
 public:
+    explicit Fallback(std::shared_ptr<const ZoneRules> rules) : rules_(std::move(rules)) {}
+
     std::optional<std::string> format(const Json& request) const override {
         const auto& kind = request["kind"].asString();
         const auto& options = request["options"];
         const auto& value = request["value"];
-        if (auto result = resolved(kind, options)) return result->dump();
+        if (auto result = resolved(kind, options, *rules_)) return result->dump();
         if (kind == "number" || kind == "numberParts") {
             if (value.isString()) {
                 const auto& text = value.asString();
@@ -367,7 +356,7 @@ public:
         }
         if (kind == "date" || kind == "dateParts") {
             if (!value.isNumber()) return std::nullopt;
-            auto date = localizedDate(value.asNumber(), options);
+            auto date = localizedDate(value.asNumber(), options, *rules_);
             return date ? std::optional(join(fallbackDate(*date, options), isParts(kind))) : std::nullopt;
         }
         if (kind == "plural") {
@@ -426,6 +415,9 @@ public:
         }
         return std::nullopt;
     }
+
+private:
+    std::shared_ptr<const ZoneRules> rules_;
 };
 
 #ifdef TWCARD_ICU4X
@@ -446,18 +438,24 @@ struct IcuRequest {
     size_t optionCount;
     double number;
     int32_t local[7];
+    IcuText zone;
+    int64_t offsetMs;
 };
 
 extern "C" bool twcard_icu4x_format(const IcuRequest*, void (*)(void*, IcuText, IcuText), void*);
 
 class Icu final : public IntlProvider {
 public:
+    explicit Icu(std::shared_ptr<const ZoneRules> rules) : rules_(std::move(rules)), fallback_(rules_) {}
+
     std::optional<std::string> format(const Json& request) const override {
         const auto& kind = request["kind"].asString();
         const auto& requested = request["locale"].asString();
         const std::string_view locale = requested.empty() ? "en-US" : requested;
         const auto& value = request["value"];
         const auto& options = request["options"];
+        auto resolvedOptions = resolved(kind, options, *rules_);
+        if (resolvedOptions && resolvedOptions->find("error")) return resolvedOptions->dump();
         if ((kind == "number" || kind == "numberParts" || kind == "plural") && !value.isNumber() && !value.isString())
             return std::nullopt;
         if (kind == "list" && !value.isArray()) return std::nullopt;
@@ -483,15 +481,19 @@ public:
         std::vector<IcuOption> settings;
         for (const auto& [name, setting] : entries) settings.push_back({IcuText(name), IcuText(setting)});
         IcuRequest input{IcuText(kind), IcuText(locale), args.data(), args.size(), settings.data(),
-                         settings.size(), number, {}};
+                         settings.size(), number, {}, IcuText(std::string_view{}), 0};
+        std::optional<LocalDate> date;
         if (kind == "date" || kind == "dateParts") {
             if (!value.isNumber()) return std::nullopt;
-            auto date = localizedDate(input.number, options);
+            date = localizedDate(input.number, options, *rules_);
             if (!date) return std::nullopt;
+            input.zone = IcuText(date->zone);
+            input.offsetMs = date->offsetMs;
             const int milliseconds = int64_t(input.number) % 1000;
             const int nanoseconds = (milliseconds < 0 ? milliseconds + 1000 : milliseconds) * 1000000;
-            const int32_t fields[]{date->tm_year + 1900, date->tm_mon + 1, date->tm_mday,
-                                   date->tm_hour, date->tm_min, date->tm_sec, nanoseconds};
+            const auto& time = date->time;
+            const int32_t fields[]{time.tm_year + 1900, time.tm_mon + 1, time.tm_mday,
+                                   time.tm_hour, time.tm_min, time.tm_sec, nanoseconds};
             std::copy(std::begin(fields), std::end(fields), std::begin(input.local));
         }
         struct Output { Parts parts; bool failed = false; } output;
@@ -505,30 +507,38 @@ public:
             }
         };
         if (twcard_icu4x_format(&input, append, &output) && !output.failed) {
-            if (auto result = resolved(kind, options)) {
-                for (const auto& part : output.parts) result->set(part.type, part.text);
-                return result->dump();
+            if (resolvedOptions) {
+                for (const auto& part : output.parts) resolvedOptions->set(part.type, part.text);
+                return resolvedOptions->dump();
             }
             return join(output.parts, isParts(kind));
         }
-        return fallbackIntlProvider().format(request);
+        return resolvedOptions ? std::optional(resolvedOptions->dump()) : fallback_.format(request);
     }
+
+private:
+    std::shared_ptr<const ZoneRules> rules_;
+    Fallback fallback_;
 };
 #endif
 
 } // namespace
 
 const IntlProvider& fallbackIntlProvider() {
-    static const Fallback provider;
+    static const Fallback provider(platformZoneRules());
     return provider;
 }
 
 const IntlProvider& defaultIntlProvider() {
+    static const auto provider = makeIntlProvider(platformZoneRules());
+    return *provider;
+}
+
+std::shared_ptr<const IntlProvider> makeIntlProvider(std::shared_ptr<const ZoneRules> rules) {
 #ifdef TWCARD_ICU4X
-    static const Icu provider;
-    return provider;
+    return std::make_shared<Icu>(std::move(rules));
 #else
-    return fallbackIntlProvider();
+    return std::make_shared<Fallback>(std::move(rules));
 #endif
 }
 

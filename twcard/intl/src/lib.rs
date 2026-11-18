@@ -4,8 +4,8 @@ use icu::casemap::CaseMapper;
 use icu::collator::{Collator, options::CollatorOptions, options::Strength};
 use icu::datetime::{
     DateTimeFormatter, DateTimeFormatterPreferences,
-    fieldsets::{self, builder::{DateFields, FieldSetBuilder}},
-    input::{Date, DateTime, Time},
+    fieldsets::{self, builder::{DateFields, FieldSetBuilder, ZoneStyle}},
+    input::{Date, DateTime, Time, UtcOffset, ZonedDateTime},
     options::{Alignment, Length, SubsecondDigits, TimePrecision, YearStyle},
     preferences::HourCycle,
 };
@@ -21,6 +21,7 @@ use icu::experimental::relativetime::{
 use icu::list::{ListFormatter, options::{ListFormatterOptions, ListLength}};
 use icu::locale::{Locale, LocaleCanonicalizer, LocaleExpander, extensions::unicode::Value};
 use icu::plurals::{PluralCategory, PluralRules, PluralRuleType, PluralRulesOptions};
+use icu::time::zone::IanaParser;
 use icu_provider::prelude::*;
 use std::{any::TypeId, cell::RefCell, cmp::Ordering, ffi::c_void, fmt, slice, str};
 use writeable::{Part, PartsWrite, Writeable};
@@ -61,6 +62,8 @@ pub struct Request {
     option_count: usize,
     number: f64,
     local: [i32; 7],
+    zone: Text,
+    offset_ms: i64,
 }
 
 type Emit = extern "C" fn(*mut c_void, Text, Text);
@@ -91,6 +94,7 @@ fn ecma_part(part: Part) -> &'static str {
         "fractionalSecond" | "fractional_second" => "fractionalSecond",
         "dayPeriod" | "day_period" => "dayPeriod",
         "era" => "era",
+        "timeZoneName" => "timeZoneName",
         _ => "literal",
     }
 }
@@ -190,6 +194,8 @@ fn format_date<'options>(
     prefs: DateTimeFormatterPreferences,
     option: impl Fn(&str) -> Option<&'options str>,
     local: &[i32; 7],
+    zone: &str,
+    offset_ms: i64,
 ) -> Option<Output> {
     let date = Date::try_new_iso(local[0], local[1].try_into().ok()?, local[2].try_into().ok()?).ok()?;
     let time = Time::try_new(
@@ -254,6 +260,26 @@ fn format_date<'options>(
             _ if has_minute || time_style == Some("short") => TimePrecision::Minute,
             _ => TimePrecision::Hour,
         });
+    }
+    fields.zone_style = match option("timeZoneName") {
+        Some("short") => Some(ZoneStyle::SpecificShort),
+        Some("long") => Some(ZoneStyle::SpecificLong),
+        Some("shortOffset") => Some(ZoneStyle::LocalizedOffsetShort),
+        Some("longOffset") => Some(ZoneStyle::LocalizedOffsetLong),
+        Some("shortGeneric") => Some(ZoneStyle::GenericShort),
+        Some("longGeneric") => Some(ZoneStyle::GenericLong),
+        _ if time_style == Some("full") => Some(ZoneStyle::SpecificLong),
+        _ if time_style == Some("long") => Some(ZoneStyle::SpecificShort),
+        _ => None,
+    };
+    if fields.zone_style.is_some() {
+        let offset = UtcOffset::try_from_seconds((offset_ms / 1000).try_into().ok()?).ok()?;
+        let zone = IanaParser::new().parse(zone).with_offset(Some(offset)).at_date_time_iso(datetime);
+        let zoned = ZonedDateTime { date, time, zone };
+        let fmt = DateTimeFormatter::try_new(prefs, fields.build_composite().ok()?).ok()?;
+        return Output::write(fmt.format(&zoned));
+    }
+    if has_time {
         if fields.date_fields.is_none() {
             let fmt = DateTimeFormatter::try_new(prefs, fields.build_time().ok()?).ok()?;
             return Output::write(fmt.format(&datetime.time));
@@ -283,9 +309,9 @@ fn format<'options>(
     locale: &Locale,
     args: &[&str],
     option: impl Fn(&str) -> Option<&'options str>,
-    number: f64,
-    local: &[i32; 7],
+    request: &Request,
 ) -> Option<Output> {
+    let number = request.number;
     let style = option("style").unwrap_or("long");
     let mut decimal_prefs: DecimalFormatterPreferences = locale.into();
     if let Some(numbering) = option("numberingSystem").and_then(|s| s.parse::<Value>().ok()) {
@@ -362,7 +388,9 @@ fn format<'options>(
             }
             Some(result)
         }
-        "date" | "dateParts" => format_date(date_prefs, option, local),
+        "date" | "dateParts" => format_date(
+            date_prefs, option, &request.local, unsafe { request.zone.read() }?, request.offset_ms,
+        ),
         "plural" => {
             let mut options = PluralRulesOptions::default();
             options.rule_type = Some(if option("type") == Some("ordinal") {
@@ -463,7 +491,7 @@ pub unsafe extern "C" fn twcard_icu4x_format(request: &Request, emit: Emit, opaq
         let option = |query: &str| options.iter().find_map(|entry| {
             if unsafe { entry.name.read() }? == query { unsafe { entry.value.read() } } else { None }
         });
-        format(kind, &locale, &values, option, request.number, &request.local)
+        format(kind, &locale, &values, option, request)
     })();
     let Some(result) = output else { return false; };
     for (kind, text) in result.parts {

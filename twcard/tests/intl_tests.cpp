@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -11,6 +12,16 @@ using twidget::Json;
 namespace {
 
 int failures = 0;
+
+class TestZones final : public twcard::ZoneRules {
+public:
+    std::optional<Offset> offset(std::string_view zone, int64_t) const override {
+        if (zone == "Asia/Kathmandu") return Offset{20700000, std::numeric_limits<int64_t>::max()};
+        return std::nullopt;
+    }
+
+    std::string deviceZone() const override { return "Asia/Kathmandu"; }
+};
 
 void check(const IntlProvider& provider, std::string_view request, std::string_view expected) {
     const auto value = provider.format(Json::parse(request).value());
@@ -30,6 +41,18 @@ void checkOption(const IntlProvider& provider, std::string_view request,
     ++failures;
 }
 
+void checkPart(const IntlProvider& provider, std::string_view request, std::string_view type, std::string_view expected) {
+    const auto reply = provider.format(Json::parse(request).value());
+    const auto value = reply ? Json::parse(*reply) : std::nullopt;
+    if (value) {
+        for (const auto& part : value->arr())
+            if (part["type"].asString() == type && part["value"].asString() == expected) return;
+    }
+    std::fprintf(stderr, "FAIL: %s, got %s, missing %.*s %.*s\n", std::string(request).c_str(),
+                 reply.value_or("(no parts)").c_str(), int(type.size()), type.data(), int(expected.size()), expected.data());
+    ++failures;
+}
+
 } // namespace
 
 int main() {
@@ -43,6 +66,25 @@ int main() {
     check(fallback, R"({"kind":"plural","value":1})", "one");
     check(fallback, R"({"kind":"list","value":["red","green","blue"]})", "red, green, and blue");
     checkOption(fallback, R"({"kind":"dateOptions","locale":"de-DE","options":{"timeZone":"GMT"}})", "timeZone", "UTC");
+    const auto injected = twcard::makeIntlProvider(std::make_shared<TestZones>());
+    checkOption(*injected, R"({"kind":"dateOptions"})", "timeZone", "Asia/Kathmandu");
+    check(*injected, R"({"kind":"dateOptions","options":{"timeZone":"No/Such_Zone"}})", R"({"error":"RangeError"})");
+    check(*injected, R"({"kind":"date","locale":"en-GB","options":{"hour12":false,"timeStyle":"short"},"value":1704200400000})", "18:45");
+    checkPart(*injected, R"({"kind":"dateParts","locale":"en-US","options":{"hour":"numeric","timeZoneName":"shortOffset"},"value":1704200400000})",
+              "timeZoneName", "GMT+5:45");
+#if defined(__linux__) && !defined(__ANDROID__) && defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
+    {
+        const auto zoneRules = twcard::platformZoneRules();
+        constexpr int64_t transition = 1710054000000;  // New York spring transition, 2024-03-10T07:00:00Z.
+        const auto before = zoneRules->offset("America/New_York", transition - 1);
+        const auto after = zoneRules->offset("America/New_York", transition);
+        if (!before || !after || before->offsetMs != -18000000 || before->untilMs != transition ||
+            after->offsetMs != -14400000 || after->untilMs <= transition) {
+            std::fprintf(stderr, "FAIL: the platform offset changes at the DST transition\n");
+            ++failures;
+        }
+    }
+#endif
 #ifdef TWCARD_ICU4X
     const auto& icu = twcard::defaultIntlProvider();
     check(icu, R"({"kind":"number","locale":"de-DE","value":1234.5})", "1.234,5");
@@ -64,6 +106,10 @@ int main() {
 #if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
     check(icu, R"({"kind":"date","locale":"en-GB","options":{"timeZone":"America/New_York","timeStyle":"short"},"value":1704200400000})",
           "08:00");
+    checkPart(icu, R"({"kind":"dateParts","locale":"en-US","options":{"timeZone":"America/New_York","hour":"numeric","timeZoneName":"short"},"value":1704200400000})",
+              "timeZoneName", "EST");
+    checkPart(icu, R"({"kind":"dateParts","locale":"en-US","options":{"timeZone":"America/New_York","hour":"numeric","timeZoneName":"short"},"value":1720008000000})",
+              "timeZoneName", "EDT");
 #endif
     checkOption(icu, R"({"kind":"numberOptions","locale":"ar-EG"})", "numberingSystem", "arab");
     checkOption(icu, R"({"kind":"dateOptions","locale":"th-TH","options":{"timeZone":"UTC"}})", "calendar", "buddhist");

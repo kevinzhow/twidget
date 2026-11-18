@@ -81,12 +81,17 @@ if(NOT TARGET twcard)
         "${CMAKE_CURRENT_LIST_DIR}/src/validation.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/src/validator.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/src/card_host.cpp"
-        "${CMAKE_CURRENT_LIST_DIR}/src/intl.cpp")
+        "${CMAKE_CURRENT_LIST_DIR}/src/intl.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/src/zone_rules.cpp")
     add_library(twidget::twcard ALIAS twcard)
     target_include_directories(twcard PUBLIC "${CMAKE_CURRENT_LIST_DIR}/include" PRIVATE "${CMAKE_CURRENT_LIST_DIR}/src")
     # The validator parses CSS with litehtml's own parser (SPEC S9.5) and reads image headers with twidget::display_list.
     include("${CMAKE_CURRENT_LIST_DIR}/../core/display_list.cmake")
     target_link_libraries(twcard PUBLIC twidget::base PRIVATE twcard_quickjs twcard_ada litehtml twidget::display_list)
+    if(APPLE)
+        find_library(TWCARD_COREFOUNDATION CoreFoundation REQUIRED)
+        target_link_libraries(twcard PRIVATE "${TWCARD_COREFOUNDATION}")
+    endif()
     option(TWIDGET_ICU4X "Build the compiled ICU4X provider for cards" ON)
     if(TWIDGET_ICU4X)
         include("${CMAKE_CURRENT_LIST_DIR}/intl/icu4x.cmake")

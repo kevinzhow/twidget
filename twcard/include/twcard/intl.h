@@ -1,6 +1,7 @@
 #pragma once
 
 #include "twidget/json.h"
+#include "twcard/zone_rules.h"
 
 #include <optional>
 #include <string>
@@ -16,5 +17,6 @@ public:
 
 const IntlProvider& fallbackIntlProvider();
 const IntlProvider& defaultIntlProvider();
+std::shared_ptr<const IntlProvider> makeIntlProvider(std::shared_ptr<const ZoneRules> rules);
 
 } // namespace twcard
