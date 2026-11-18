@@ -27,6 +27,8 @@ public:
     int create_font(const std::string& families, float size_px, int weight, bool italic, const std::string& features, FontMetrics& out) override;
     void delete_font(int font) override;
     float text_width(int font, const std::string& text) override;
+    bool text_advances(int font, const std::string& text, std::vector<float>& prefix) override;
+    bool has_half_width_form(int font, const std::string& text, bool vertical) override;
     bool load_image(int id, const std::string& url, float& w, float& h) override;
     void canvas_run(int id, int w, int h, const std::vector<CanvasOp>& ops) override;
     bool canvas_read(int id, int x, int y, int w, int h, std::vector<uint8_t>& rgba) override;
