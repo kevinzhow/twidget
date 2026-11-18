@@ -94,6 +94,10 @@ int main() {
         Json s = Json::object().set("t", std::string("x\xed\xa0\x80y"));
         eq(s.dump(), R"({"t":"x\ud800y"})", "a WTF-8 string from C++ dumps as an escape");
         rejects("[\"\\ud800\\u12\"]", "a broken escape after a surrogate");
+        auto raw = Json::parse("[\"a\xed\xa0\x80\"]");
+        check(raw && (*raw)[size_t(0)].asString() == "a\xed\xa0\x80", "raw WTF-8 surrogates in the text are kept (QuickJS's strings)");
+        rejects("[\"a\xff\"]", "other invalid UTF-8 is refused");
+        rejects("[\"a\xed\xa0\"]", "a truncated sequence is refused");
         Json bad = Json::object().set("t", std::string("a\xff" "b"));
         auto back = Json::parse(bad.dump());
         check(back && (*back)["t"].isString(), "invalid UTF-8 from C++ still dumps as valid JSON");

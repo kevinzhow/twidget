@@ -355,7 +355,12 @@ std::string Json::dump() const {
 std::optional<Json> Json::parse(std::string_view text) {
     std::optional<std::string> rewritten = rewrite_lone_surrogates(text);
     std::string_view input = rewritten ? std::string_view(*rewritten) : text;
-    yyjson_read_flag flags = rewritten ? YYJSON_READ_ALLOW_INVALID_UNICODE : 0;
+    // Raw WTF-8 surrogates (ED A0..BF): QuickJS's UTF-8 of a string with a lone surrogate. Strings are then checked
+    // to be WTF-8 (from_yyjson), so no other invalid UTF-8 gets through.
+    bool raw_surrogates = false;
+    for (size_t i = input.find('\xED'); i != std::string_view::npos && !raw_surrogates; i = input.find('\xED', i + 1))
+        raw_surrogates = i + 1 < input.size() && (unsigned char)input[i + 1] >= 0xA0 && (unsigned char)input[i + 1] <= 0xBF;
+    yyjson_read_flag flags = rewritten || raw_surrogates ? YYJSON_READ_ALLOW_INVALID_UNICODE : 0;
     yyjson_read_err err;
     yyjson_doc* doc = yyjson_read_opts(const_cast<char*>(input.data()), input.size(), flags, nullptr, &err);
     if (!doc) return std::nullopt;
