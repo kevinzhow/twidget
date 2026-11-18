@@ -3093,6 +3093,40 @@ int main() {
         check(!s.wants_tick() && run(s, page(heavy)).empty(), "and takes no more ops or frames");
     }
 
+    // S1.9: freeze keeps the transition's current position and draws the stopped state outside card CSS.
+    {
+        Renderer::set_test_clock(10);
+        Renderer stopped(300, 1, false, backend);
+        stopped.set_compositing(true);
+        stopped.receive(parse(R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":5,"tag":"div","attrs":[["style","position:relative;left:0;width:20px;height:20px;transition:left 1s linear; background:red"]]},
+            {"op":"ins","id":5,"parent":4}
+        ]})"));
+        stopped.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":5,"name":"left","value":"80px"}]})"));
+        stopped.tick();
+        Renderer::set_test_clock(10.5);
+        stopped.tick();
+        stopped.receive(parse(R"({"type":"frozen","reason":"Widget stopped","fatal":true})"));
+        const auto position = [&] {
+            for (const auto& message : stopped.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":5}})")))
+                if (message["type"].asString() == "result") return message["result"]["x"].asNumber();
+            return -1.0;
+        };
+        const double atStop = position();
+        Renderer::set_test_clock(11.5);
+        stopped.tick();
+        stopped.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":5,"name":"left","value":"0px"}]})"));
+        check(atStop > 0 && atStop < 80 && position() == atStop,
+              "freeze holds the sampled transition position and refuses later ops");
+        const auto display = stopped.paint();
+        check(std::any_of(display.begin(), display.end(), [](const auto& item) {
+            return item.kind == Cmd::Text && item.text == "Widget stopped";
+        }) && stopped.last_html().find("Widget stopped") == std::string::npos, "the renderer paints the stopped label outside card CSS");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
+    }
+
     // ── a long flush in parts ──
     {
         StubBackend pb;

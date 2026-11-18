@@ -541,6 +541,8 @@ private:
     /// Rule 5: the running animations into the ledger; true when one that was counted ended.
     bool sync_motion(double now);
     void stop_paint(const paint::Verdict& verdict);
+    void hold_animation_frame();
+    void paint_stop_label(DisplayList& list);
     /// Past the layout budget (Container::layout), whatever the host's policy: a violation for the host's log, and the
     /// renderer freezes (fatal) with the badge alone, the widget's document laid out no more.
     void stop_layout(uint64_t boxes);

@@ -3053,8 +3053,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     std::vector<Json> out;
     const std::string& type = msg["type"].asString();
     if (type == "ops") {
-        // Past the paint limit the host stops the widget: what its task still sent is not drawn.
-        if (paint_stopped_) return out;
+        if (still()) return out;  // SPEC S1.9 and S10.4
         const auto& ops = msg["ops"].arr();
         std::vector<int64_t> scripted;
         bool fast = scripted_only(ops, scripted);
@@ -3651,30 +3650,14 @@ void Renderer::write_style(const Node* n, std::string& out) const {
     escape_attr(plain, out);
 }
 
-namespace {
-const char* const kFrozenBadgeCss =
-    "[data-tw-frozen=fatal] body{opacity:.85}[data-tw-badge]{position:fixed;right:6px;bottom:6px;z-index:2147483647;"
-    "font:11px/1.3 -apple-system,system-ui,sans-serif;color:#fff;background:rgba(60,60,60,.75);padding:2px 7px;"
-    "border-radius:9px}";
-}
-
 std::string Renderer::serialize() const {
     std::string out;
     out.reserve(4096);
     out += "<!DOCTYPE html>";
-    if (layout_stopped_) {
-        // Past the layout budget nothing of the widget's is laid out again, its stylesheets neither: the badge alone.
-        out += "<html data-tw-frozen=\"fatal\"><head><style>" + std::string(kFrozenBadgeCss) +
-               "</style></head><body><div data-tw-badge=\"fatal\">";
-        escape_text(frozen_reason_, out);
-        out += "</div></body></html>";
-        return out;
-    }
-    // the frozen chrome: html attribute, badge style in head, badge in body (renderer elements, never in the widget's table)
+    if (layout_stopped_) return out + "<html><head></head><body></body></html>";
     const Node* html = html_node_.get();
     out += "<html";
     if (html->id) out += " data-twid=\"" + std::to_string(html->id) + "\"";
-    if (frozen_) out += frozen_fatal_ ? " data-tw-frozen=\"fatal\"" : " data-tw-frozen=\"paused\"";
     bool styled = !html->styles.empty() || !theme_vars_.empty() || overrides_.count(html->id);
     for (const auto& [name, value] : html->attrs) {
         if (name == "style") { styled = true; continue; }
@@ -3689,29 +3672,7 @@ std::string Renderer::serialize() const {
         out.push_back('"');
     }
     out.push_back('>');
-    for (const Node* c : html->children) {
-        if (c == body_node_.get() && frozen_) {
-            // badge before the body's own children would shift them; append it inside instead
-            std::string body;
-            serialize_node(c, body);
-            size_t close = body.rfind("</body>");
-            if (close != std::string::npos) {
-                std::string badge = "<div data-tw-badge=\"" + std::string(frozen_fatal_ ? "fatal" : "paused") + "\">";
-                escape_text(frozen_reason_, badge);
-                badge += "</div>";
-                body.insert(close, badge);
-            }
-            out += body;
-        } else if (c == head_node_.get() && frozen_) {
-            std::string head;
-            serialize_node(c, head);
-            size_t close = head.rfind("</head>");
-            if (close != std::string::npos) head.insert(close, std::string("<style>") + kFrozenBadgeCss + "</style>");
-            out += head;
-        } else {
-            serialize_node(c, out);
-        }
-    }
+    for (const Node* child : html->children) serialize_node(child, out);
     out += "</html>";
     return out;
 }
@@ -5545,6 +5506,7 @@ DisplayList Renderer::paint() {
     DisplayList list = paint_document();
     drop_inert_clips(list);
     paint_selection(list, 0, true);
+    if (frozen_) paint_stop_label(list);
     // What changed against the last paint, for a platform to repaint only that.
     PaintSummary summary = summarize(list);
     damage_valid_ = painted_valid_ && painted_size_ == std::make_pair(px_width(), px_height()) &&
@@ -6684,6 +6646,51 @@ void Renderer::freeze(const std::string& reason, bool fatal) {
     touches_.clear();
     pending_moves_.clear();
     hover_ = 0;
+    arbiter_.cancel();
+    arbiter_pointer_ = -1;
+    if (!layout_stopped_ && !paint_stopped_) hold_animation_frame();
+}
+
+void Renderer::hold_animation_frame() {
+    // S1.9: sample once, including properties that had been painted in a compositor layer.
+    const double now = now_s();
+    overrides_ = animator_.sample(now);
+    update_composition(now);
+    patch_log_.valid = false;
+    stale_ = true;
+}
+
+void Renderer::paint_stop_label(DisplayList& list) {
+    // S1.9: the host's label is painted outside the card's markup and cascade.
+    if (frozen_reason_.empty()) return;
+    FontMetrics metrics;
+    const int font = canvas_font("12px system-ui", metrics);
+    if (!font) return;
+    const float width = float(width_);
+    const float height = float(vp_height_);
+    constexpr float horizontalPadding = 8, verticalPadding = 3, inset = 6;
+    const float labelWidth = std::min(width, canvas_text_width(font, frozen_reason_) + 2 * horizontalPadding);
+    const float labelHeight = std::min(height, metrics.height + 2 * verticalPadding);
+    const float x = std::max(0.0f, width - labelWidth - inset);
+    const float y = std::max(0.0f, height - labelHeight - inset);
+
+    Command background;
+    background.rect = {x, y, labelWidth, labelHeight};
+    background.radii = {4, 4, 4, 4, 4, 4, 4, 4};
+    background.color = frozen_fatal_ ? Color{51, 39, 42, 255} : Color{39, 44, 52, 255};
+    list.push_back(background);
+
+    Command label;
+    label.kind = Cmd::Text;
+    label.rect = background.rect;
+    label.font = font;
+    label.text = frozen_reason_;
+    label.color = {255, 255, 255, 255};
+    label.has_clip = true;
+    label.clip = background.rect;
+    label.x = x + horizontalPadding;
+    label.y = y + verticalPadding + metrics.ascent;
+    list.push_back(std::move(label));
 }
 
 // ───────────────────────── heavy boxes ─────────────────────────
@@ -6814,11 +6821,9 @@ void Renderer::stop_paint(const paint::Verdict& verdict) {
     // Reported before the frame is drawn; the host stops the widget and freezes the renderer with its own label.
     paint_stopped_ = true;
     pending_events_.push_back(Json::object().set("type", "limit").set("code", twidget::paint_limit_code(verdict.code)).set("count", verdict.count));
-    // From this frame on: no blurred shadows, filters, backdrop-filter or transparency, animations stopped where they
-    // are and the layers back in the document, so the stopped widget costs nothing to scroll.
+    // S10.4 and the public guide's Limits table: the last frame keeps its geometry with expensive effects removed.
+    hold_animation_frame();
     container_->set_no_effects();
-    update_composition(now_s());
-    stale_ = false;
     pending_moves_.clear();
     dirty_ = touched_all_ = true;
     composition_only_ = false;
