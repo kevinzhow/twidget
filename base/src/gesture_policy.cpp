@@ -81,7 +81,7 @@ Verdict Arbiter::decide(Press& p, Owner owner, Gesture gesture, std::optional<Bu
 Verdict Arbiter::down(double t, double x, double y, Claim claim, Device device, int button) {
     const bool mouse = device == Device::Mouse;
     Press p{t, x, y, claim, device, false, {}};
-    if (!mouse && x <= kEdgeStripPx) {
+    if (!mouse && x < kEdgeStripPx) {
         p.claim = {};
         p.verdict.edge = true;
     }
@@ -128,10 +128,11 @@ void Arbiter::apply_move(Press& p, double x, double y) {
 }
 
 namespace {
-/// The verdict to report after a step: `cancel` set when this step handed the press to the bubble.
+/// SPEC S11.2: cancellation and widget events belong to the step that decides the gesture.
 Verdict report(const Verdict& before, const Verdict& now) {
     Verdict v = now;
     v.cancel = now.owner == Owner::Bubble && before.owner != Owner::Bubble;
+    if (now.event == before.event) v.event.reset();
     return v;
 }
 } // namespace

@@ -289,7 +289,7 @@ struct CssWork {
     std::string reason;       // why the declaration is dropped
     std::string reasonKind;   // its diagnostic kind
 
-    static constexpr int kMaxDepth = 64;
+    static constexpr int kMaxDepth = 64;  // SPEC S9.5 and S9 conformance: bound nested component walks.
 
     bool fail(std::string_view kind, std::string why) {
         if (reason.empty()) {

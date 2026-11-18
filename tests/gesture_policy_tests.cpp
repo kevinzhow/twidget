@@ -98,6 +98,8 @@ int main() {
         {{'d', 0, 10, 50, "pending/press edge"}, {'m', 10, 60, 52, "bubble/drag-x cancel action=back edge"}, {'u', 20, 80, 52, "bubble/drag-x action=back edge"}});
     run("edge strip: vertical is scroll", kXHold, Device::Touch, 0,
         {{'d', 0, 19, 50, "pending/press edge"}, {'m', 10, 20, 90, "bubble/drag-y cancel action=scroll edge"}});
+    run("exactly 20 px is outside the edge strip", kXHold, Device::Touch, 0,
+        {{'d', 0, 20, 50, "pending/press"}, {'m', 10, 60, 50, "widget/drag-x"}});
     run("edge strip: a hold is the bubble's menu (no claim)", kXHold, Device::Pen, 0,
         {{'d', 0, 5, 50, "pending/press edge"}, {'t', 600, 0, 0, "bubble/hold cancel action=menu edge"}});
     run("edge strip does not apply to a mouse", kX, Device::Mouse, 0,
@@ -106,13 +108,13 @@ int main() {
         {{'d', 0, 100, 50, "pending/press"}, {'m', 10, 107, 57, "pending/press"}, {'m', 20, 100, 41, "pending/press"}, {'u', 30, 100, 41, "widget/tap"}});
     run("claimed hold: contextmenu", kXHold, Device::Touch, 0,
         {{'d', 0, 100, 50, "pending/press"}, {'t', 499, 0, 0, "pending/press"}, {'t', 500, 0, 0, "widget/hold event=contextmenu"},
-         {'t', 900, 0, 0, "widget/hold event=contextmenu"}, {'u', 1000, 100, 50, "widget/hold event=contextmenu"}});
+         {'t', 900, 0, 0, "widget/hold"}, {'u', 1000, 100, 50, "widget/hold"}});
     run("unclaimed hold: the bubble's menu", kX, Device::Touch, 0,
         {{'d', 0, 100, 50, "pending/press"}, {'t', 520, 0, 0, "bubble/hold cancel action=menu"}, {'u', 700, 100, 50, "bubble/hold action=menu"}});
     run("a move decides a due hold first", kXHold, Device::Touch, 0,
         {{'d', 0, 100, 50, "pending/press"}, {'m', 600, 101, 51, "widget/hold event=contextmenu"}});
     run("a won hold stays the widget's on a horizontal move", kXHold, Device::Touch, 0,
-        {{'d', 0, 100, 50, "pending/press"}, {'t', 500, 0, 0, "widget/hold event=contextmenu"}, {'m', 600, 140, 52, "widget/hold event=contextmenu"}});
+        {{'d', 0, 100, 50, "pending/press"}, {'t', 500, 0, 0, "widget/hold event=contextmenu"}, {'m', 600, 140, 52, "widget/hold"}});
     run("a won hold becomes the bubble's scroll on a vertical move", kXHold, Device::Touch, 0,
         {{'d', 0, 100, 50, "pending/press"}, {'t', 500, 0, 0, "widget/hold event=contextmenu"}, {'m', 600, 101, 90, "bubble/drag-y cancel action=scroll"},
          {'m', 610, 101, 99, "bubble/drag-y action=scroll"}});
@@ -121,7 +123,7 @@ int main() {
     run("a mouse drag is the widget's either way", kNone, Device::Mouse, 0,
         {{'d', 0, 100, 50, "pending/press"}, {'m', 10, 102, 90, "widget/drag-y"}, {'u', 20, 102, 99, "widget/drag-y"}});
     run("mouse secondary button with a hold claim: the widget's menu click", kXHold, Device::Mouse, 2,
-        {{'d', 0, 100, 50, "widget/menu-click event=contextmenu"}, {'m', 10, 150, 50, "widget/menu-click event=contextmenu"}, {'u', 20, 150, 50, "widget/menu-click event=contextmenu"}});
+        {{'d', 0, 100, 50, "widget/menu-click event=contextmenu"}, {'m', 10, 150, 50, "widget/menu-click"}, {'u', 20, 150, 50, "widget/menu-click"}});
     run("mouse secondary button without: the bubble's menu", kX, Device::Mouse, 2,
         {{'d', 0, 100, 50, "bubble/menu-click cancel action=menu"}, {'u', 20, 100, 50, "bubble/menu-click action=menu"}});
     run("up applies the final move", kNone, Device::Touch, 0,

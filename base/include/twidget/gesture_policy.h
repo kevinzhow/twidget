@@ -54,7 +54,7 @@ struct Verdict {
     /// cancelled then).
     bool cancel = false;
     std::optional<BubbleAction> action;  // what the bubble does, when it owns the press
-    std::optional<WidgetEvent> event;    // the event the card gets for this gesture
+    std::optional<WidgetEvent> event;    // the card event, present only in the deciding verdict (SPEC S11.2)
     bool edge = false;                   // the press began in the leading-edge strip
     bool operator==(const Verdict&) const = default;
 };

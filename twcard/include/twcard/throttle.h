@@ -54,7 +54,7 @@ private:
         double freeAt(double now) const;
 
     private:
-        static constexpr int kBuckets = 10;
+        static constexpr int kBuckets = 10;  // SPEC S1.7
         int64_t index(double t) const;
         double quota_, bucketMs_;
         std::array<double, kBuckets> cost_{};
