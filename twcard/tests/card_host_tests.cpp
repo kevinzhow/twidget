@@ -150,6 +150,24 @@ int main() {
     check(renderer->destroyed && std::chrono::steady_clock::now() - before < 500ms,
           "destroy wakes a blocked query without waiting for its timeout");
 
+    CardHost busy(R"(
+        testBridge('ready', {});
+        const started = performance.now();
+        while (performance.now() - started < 400) {}
+    )", {}, 400, {}, resources, [&](const Theme&, double) {
+        auto fixture = std::make_unique<RendererFixture>();
+        renderer = fixture.get();
+        return fixture;
+    });
+    bool running = false;
+    busy.onAction = [&](const Action&) { running = true; };
+    busy.start();
+    check(renderer->until([&] { return running; }), "the long-running script has started");
+    const auto busyAt = std::chrono::steady_clock::now();
+    busy.destroy();
+    check(renderer->destroyed && std::chrono::steady_clock::now() - busyAt < 300ms,
+          "destroy interrupts a long-running script");
+
     Options options;
     options.context.canQuery = true;
     CardHost requests(R"(
