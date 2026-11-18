@@ -108,6 +108,15 @@ int main() {
     check(validator.query(R"({"q":"canvasCall","id":11,"method":"getLineDash","args":[]})", error).has_value() &&
           !validator.query(R"({"q":"canvasCall","id":10,"method":"getLineDash","args":[]})", error),
           "canvas queries require a rendered canvas");
+    batch = validator.ops(R"([{"op":"ins","id":11,"parent":5}])");
+    check(find(batch.ops, "ins", 11)["parent"].asNumber(-1) == 0 && find(batch.ops, "rm", 11).isNull() &&
+          !validator.renderedElement(11), "a canvas moved below a dropped node keeps its detached renderer state");
+    batch = validator.ops(R"([{"op":"ins","id":11,"parent":4}])");
+    check(find(batch.ops, "ins", 11)["parent"].asInt() == 4 && find(batch.ops, "el", 11).isNull(),
+          "reattaching a surviving canvas preserves its renderer identity");
+    const size_t known = validator.trackedNodes();
+    batch = validator.ops(R"([{"op":"el","id":12,"tag":"span","attrs":[]}])");
+    check(batch.ops.empty() && validator.trackedNodes() == known, "a detached creation cannot outlive its batch");
 
     auto animation = validator.anim(R"([{
         "aid":1,"target":10,"keyframes":[{"offset":0,"easing":"linear","composite":"auto",

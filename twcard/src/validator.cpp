@@ -75,6 +75,8 @@ struct Node {
     std::string adopt;
     bool svg = false;
     bool shown = false;
+    bool materialized = false;
+    Id rendererParent = 0;
     std::map<std::string, Attribute, std::less<>> attributes;
     std::map<std::string, Declaration, std::less<>> declarations;
     std::string data;
@@ -126,8 +128,14 @@ struct Validator::Impl {
     size_t taskChanges = 0;
     size_t documentCount = 0;
     size_t shapedText = 0;
+    unsigned protocolViolations = 0;
 
-    void violation(std::string_view detail) const { css.diag("protocol-violation", detail); }
+    void violation(std::string_view detail) {
+        if (protocolViolations < 20) {
+            ++protocolViolations;
+            css.diag("protocol-violation", detail);
+        }
+    }
 
     void setAttribute(Batch& out, Id id, Node& node, std::string name,
                       std::optional<Attribute> value, bool replace = false) {
@@ -135,10 +143,10 @@ struct Validator::Impl {
         if (!value) {
             if (old == node.attributes.end() && !replace) return;
             if (old != node.attributes.end()) node.attributes.erase(old);
-            if (node.shown) out.ops.push(operation("rattr", id).set("name", name));
+            if (node.materialized) out.ops.push(operation("rattr", id).set("name", name));
             return;
         }
-        if (node.shown && (replace || old == node.attributes.end() || old->second.value != value->value))
+        if (node.materialized && (replace || old == node.attributes.end() || old->second.value != value->value))
             out.ops.push(operation("attr", id).set("name", name).set("value", value->value));
         node.attributes.insert_or_assign(std::move(name), std::move(*value));
     }
@@ -207,7 +215,6 @@ struct Validator::Impl {
 
     void create(Batch& out, Id id, const Json& input, std::string_view op) {
         if (nodes.contains(id)) return violation("create: duplicate id");
-        if (nodes.size() - 1 >= caps.trackedNodes) return violation("create: tracked node capacity");
         if (op != "el") {
             if (!input["data"].isString()) return violation("create: missing data");
             auto& node = nodes[id];
@@ -269,8 +276,9 @@ struct Validator::Impl {
             .set("important", declaration.important);
     }
 
-    void sendInsert(Batch& out, Id id, Id parent, Id before) const {
+    void sendInsert(Batch& out, Id id, Id parent, Id before) {
         out.ops.push(operation("ins", id).set("parent", parent).set("before", before ? Json(before) : Json()));
+        nodes.at(id).rendererParent = parent;
     }
 
     Id nextShown(Id id) const {
@@ -295,8 +303,8 @@ struct Validator::Impl {
                     continue;
                 }
                 shapedText += node.size.shaped;
-                out.ops.push(operation("text", current).set("data", node.data));
-            } else {
+                if (!node.materialized) out.ops.push(operation("text", current).set("data", node.data));
+            } else if (!node.materialized) {
                 Json attrs = Json::array();
                 for (const auto& [name, attr] : node.attributes)
                     attrs.push(Json::array().push(name).push(attr.value));
@@ -308,6 +316,7 @@ struct Validator::Impl {
                     out.ops.push(styleOp(current, name, declaration));
             }
             node.shown = true;
+            node.materialized = true;
             sendInsert(out, current, node.parent, current == id ? before : 0);
             if (node.stylesheet()) dirtySheets.insert(current);
             else pending.insert(pending.end(), node.children.rbegin(), node.children.rend());
@@ -324,12 +333,35 @@ struct Validator::Impl {
     }
 
     void hide(Batch& out, Id id) {
-        if (!nodes.at(id).shown) return;
-        out.ops.push(operation("rm", id));
+        auto& root = nodes.at(id);
+        if (root.materialized && root.rendererParent) sendInsert(out, id, 0, 0);
+        if (!root.shown) return;
         for (const Id child : subtree(id)) {
             auto& node = nodes.at(child);
             if (node.shown && node.kind == Kind::Text) shapedText -= node.size.shaped;
             node.shown = false;
+        }
+    }
+
+    void remove(Batch& out, Id id, Node& root) {
+        unlink(id, root);
+        for (const Id child : subtree(id)) {
+            const auto& node = nodes.at(child);
+            if (node.materialized && (child == id || node.rendererParent == 0))
+                out.ops.push(operation("rm", child));
+            if (node.shown && node.kind == Kind::Text) shapedText -= node.size.shaped;
+            nodes.erase(child);
+        }
+    }
+
+    void dropDetached(Batch& out) {
+        // SPEC S9.2: a detached creation may exist within one batch only.
+        std::vector<Id> detached;
+        for (const auto& [id, node] : nodes)
+            if (id != documentId && !node.parent) detached.push_back(id);
+        for (const Id id : detached) {
+            violation("op: node left detached");
+            remove(out, id, nodes.at(id));
         }
     }
 
@@ -379,8 +411,8 @@ struct Validator::Impl {
         node.data = value.asString();
         node.size = size;
         markSheet(node.parent);
-        if (node.shown) out.ops.push(operation("data", id).set("data", node.data));
-        else if (node.parent && canShow(node, nodes.at(node.parent))) show(out, id, nextShown(id));
+        if (node.materialized) out.ops.push(operation("data", id).set("data", node.data));
+        if (!node.shown && node.parent && canShow(node, nodes.at(node.parent))) show(out, id, nextShown(id));
     }
 
     void style(Batch& out, Id id, Node& node, const Json& input) {
@@ -406,7 +438,7 @@ struct Validator::Impl {
         // Keep deletion overrides when there is an initial style attribute, for subtree replay.
         if (declaration.value.empty() && !node.attributes.contains("style")) node.declarations.erase(name);
         else node.declarations.insert_or_assign(name, declaration);
-        if (node.shown) out.ops.push(styleOp(id, name, declaration));
+        if (node.materialized) out.ops.push(styleOp(id, name, declaration));
     }
 
     size_t largestAttribute(const Json& input, std::string_view op) const {
@@ -452,9 +484,7 @@ struct Validator::Impl {
                 violation("rm: cannot remove a document element");
                 return std::nullopt;
             }
-            hide(out, id);
-            unlink(id, node);
-            for (const Id child : subtree(id)) nodes.erase(child);
+            remove(out, id, node);
         } else if (op == "data") data(out, id, node, input["data"]);
         else if (node.kind != Kind::Element) violation("op: expected an element");
         else if (op == "attr" || op == "rattr") {
@@ -473,7 +503,7 @@ struct Validator::Impl {
                 const auto reason = capReason("canvas-commands", commands.size(), caps.canvasCommands);
                 if (caps.stops) return reason;
                 css.diag("limit", reason);
-            } else if (node.shown) {
+            } else if (node.materialized) {
                 const auto imageSource = [this](Id source) {
                     const auto it = nodes.find(source);
                     return it != nodes.end() && it->second.shown && !it->second.svg &&
@@ -587,6 +617,7 @@ Validator::Batch Validator::ops(std::string_view batchJson) {
 
     for (const auto& input : batch->arr())
         if (auto reason = impl_->apply(out, input)) return stop(std::move(*reason));
+    impl_->dropDetached(out);
     impl_->flushStyles(out);
     if (auto reason = impl_->documentCaps()) return stop(std::move(*reason));
     return out;

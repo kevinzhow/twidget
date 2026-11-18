@@ -86,7 +86,6 @@ public:
         uint64_t canvasPixels = 2048ull * 2048ull;
         size_t complexText = 8192;         // UTF-16 units of complex-script text per document (refused, not stopped)
         size_t liveAnimations = 64;        // script animations (S9.7)
-        size_t trackedNodes = 50000;       // ours: what the validator keeps of detached nodes, see validator.cpp
         bool stops = true;
     };
     const Caps& caps() const { return caps_; }
