@@ -2636,6 +2636,12 @@ namespace litehtml
                     master_cache.emplace(master_styles, m_master_css);
                 }
             }
+            else
+            {
+                container()->trusted_styles(true);
+                m_master_css.register_font_faces(*container());
+                container()->trusted_styles(false);
+            }
         }
         if(user_styles != "")
         {
@@ -2662,7 +2668,8 @@ namespace litehtml
             // <style> text share one parse. Media and imports register per-document state while parsing (media
             // lists; an import's text comes from the container), so sheets that use them are parsed every time,
             // unless the container gives a stylesheet cache scope: then they are shared within it, keyed by the
-            // media features as well, with the media lists the parse registered.
+            // media features as well, with the media lists the parse registered. A globally cached parse replays
+            // @font-face rules for the new container, whose font URLs can refer to different resources.
             const uint64_t scope            = container()->stylesheet_cache_scope();
             std::string    styles_key;
             bool           styles_cacheable = !m_css.empty();
@@ -2741,6 +2748,10 @@ namespace litehtml
                         cache.clear();
                     cache.emplace(std::move(styles_key), std::move(entry));
                 }
+            }
+            else if(!scoped)
+            {
+                m_styles.register_font_faces(*container());
             }
 
             // Apply media features.
@@ -3068,13 +3079,10 @@ namespace litehtml
             break;
         case GUMBO_NODE_WHITESPACE:
             {
-                std::string str = node->v.text.text;
-                for(size_t i = 0; i < str.length(); i++)
-                {
-                    auto space = std::make_shared<el_space>(str.substr(i, 1).c_str(), shared_from_this());
-                    space->set_source(static_cast<uint32_t>(node->v.text.start_pos.offset), static_cast<uint32_t>(i));
-                    elements.push_back(space);
-                }
+                // One element for the run: el_space::compute_styles splits it where white-space keeps its characters.
+                auto space = std::make_shared<el_space>(node->v.text.text, shared_from_this());
+                space->set_source(static_cast<uint32_t>(node->v.text.start_pos.offset), 0);
+                elements.push_back(space);
             }
             break;
         default:

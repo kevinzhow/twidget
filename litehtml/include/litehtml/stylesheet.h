@@ -11,6 +11,7 @@
 
 namespace litehtml
 {
+    class document_container;
 
     // https://www.w3.org/TR/cssom-1/#css-declarations
     struct raw_declaration
@@ -87,6 +88,8 @@ namespace litehtml
                                   const media_query_list_list::ptr& media = nullptr, bool top_level = true);
 
         void sort_selectors();
+        /// Replay @font-face declarations when this parsed stylesheet is used by another container.
+        void register_font_faces(document_container& container) const;
 
       private:
         bool parse_style_rule(const raw_rule::ptr& rule, const std::string& baseurl,
@@ -97,6 +100,7 @@ namespace litehtml
 
         int m_layer_depth = 0;  // inside an @layer block
         selector_index m_index;
+        std::vector<std::pair<std::string, std::string>> m_font_faces;  // declarations and base URL
     };
 
     inline void css::add_selector(const css_selector::ptr& selector)

@@ -604,6 +604,18 @@ namespace litehtml
         return true;
     }
 
+    bool element::insert_after(const ptr& after, const elements_list& els)
+    {
+        auto at = std::find(m_children.begin(), m_children.end(), after);
+        if(at == m_children.end())
+            return false;
+        auto self = shared_from_this();
+        for(const auto& el : els)
+            el->parent(self);
+        m_children.insert(std::next(at), els.begin(), els.end());
+        return true;
+    }
+
     bool element::appendChild(const ptr& /*el*/) LITEHTML_RETURN_FUNC(false);
     bool element::removeChild(const ptr& /*el*/) LITEHTML_RETURN_FUNC(false);
     void element::clearRecursive() LITEHTML_EMPTY_FUNC;

@@ -157,6 +157,9 @@ namespace litehtml
         }
 
       public:
+        /// A % height against a containing block of auto height computes to auto (CSS 2.1 10.5): a min-height to 0,
+        /// a max-height to none.
+        static bool percent_of_auto(const css_length& len, const containing_block_context::typed_pixel& base);
         /// Sides a collapsed-border table cell leaves to its neighbour or the table, which win the
         /// conflict (CSS 2.1 17.6.2.1): 1 left, 2 top, 4 right, 8 bottom.
         uint8_t collapse_skip = 0;
