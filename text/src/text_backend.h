@@ -121,6 +121,7 @@ public:
         Face* face = nullptr;
         std::vector<Face*> bookFaces;        // the book's faces named by the list, in its order, before the system's
         std::vector<hb_feature_t>* hbFeatures = nullptr;
+        bool vertical = false;               // vert on: upright glyphs of vertical text, in their vertical forms
         std::unordered_map<std::string, float> widths;
     };
     /// A shaped run: glyphs of one face, positions in CSS px from the run's origin (y down).
@@ -145,8 +146,9 @@ public:
     /// No images here: a host loads its own (a card backend overrides this).
     bool load_image(int, const std::string&, float&, float&) override { return false; }
 
-    /// Whether the face `text` (one character) is drawn with in `font` has a vertical form for it: OpenType vert gives
-    /// it another glyph (a CJK font's … is ︙; a Latin font has none).
+    /// Whether `text` (one character) has a vertical form in `font`: OpenType vert gives it another glyph (a CJK font's
+    /// … is ︙; a Latin font has none) in the face it is drawn with, or in the font's CJK face (the one 一 is drawn
+    /// with), which a font with vert then draws it in (Noto Serif's … before Noto Serif CJK's).
     bool has_vertical_form(int font, const std::string& text);
     /// Whether the face `text` (one punctuation mark) is drawn with in `font` has a half-width form for it: OpenType halt
     /// narrows its advance across, or (vertical) vhal its vertical form's advance down the column.

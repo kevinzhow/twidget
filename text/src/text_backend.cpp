@@ -773,6 +773,8 @@ int TextBackend::create_font_uncached(const std::string& families, float size, i
         hb_feature_t feat;
         if (hb_feature_from_string(entry.c_str(), int(entry.size()), &feat)) f.hbFeatures->push_back(feat);
     }
+    for (const hb_feature_t& feat : *f.hbFeatures)
+        if (feat.tag == HB_TAG('v', 'e', 'r', 't')) f.vertical = feat.value != 0;
     fontsVersion_++;
     return id;
 }
@@ -841,7 +843,7 @@ bool extends(uint32_t c) {
 /// when that has it (unless U+FE0E asks for text), as Flutter's own text stack and browsers fall back for emoji, else
 /// to the system's fallback for it; an emoji sequence (U+FE0F, a modifier, a joined sequence, a keycap) goes to the
 /// colour emoji font even when the face has its first character.
-std::vector<Face*> faces_of(const TextBackend::Font& f, const std::vector<uint32_t>& cps, const TextOptions& o, int oid) {
+std::vector<Face*> faces_of_text(const TextBackend::Font& f, const std::vector<uint32_t>& cps, const TextOptions& o, int oid) {
     std::vector<Face*> faceOf(cps.size(), f.face);
     for (size_t i = 0; i < cps.size();) {
         size_t j = i + 1;
@@ -915,6 +917,51 @@ std::vector<Face*> faces_of(const TextBackend::Font& f, const std::vector<uint32
         }
         for (size_t k = i; k < j; k++) faceOf[k] = face;
         i = j;
+    }
+    return faceOf;
+}
+
+/// Whether OpenType vert gives `cp` another glyph in `face` (it has the character, and a vertical form for it).
+bool has_vertical_glyph(Face* face, uint32_t cp) {
+    static std::mutex m;
+    static std::map<std::pair<int, uint32_t>, bool> known;  // by FaceInfo::id: an id is never given to another face
+    if (!face) return false;
+    std::lock_guard l(m);
+    auto it = known.find({face->info.id, cp});
+    if (it != known.end()) return it->second;
+    hb_codepoint_t nominal = 0;
+    bool substituted = false;
+    if (hb_font_get_nominal_glyph(face->font, cp, &nominal)) {
+        hb_buffer_t* buf = hb_buffer_create();
+        hb_buffer_add_codepoints(buf, &cp, 1, 0, 1);
+        hb_buffer_guess_segment_properties(buf);
+        const hb_feature_t vert{HB_TAG('v', 'e', 'r', 't'), 1, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END};
+        hb_shape(face->font, buf, &vert, 1);
+        unsigned n = 0;
+        const hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
+        substituted = n > 0 && info[0].codepoint != nominal;
+        hb_buffer_destroy(buf);
+    }
+    return known.emplace(std::make_pair(face->info.id, cp), substituted).first->second;
+}
+
+/// The font's CJK face: the one it draws 一 with (the Japanese font of `serif` on Android, after Noto Serif).
+Face* cjk_face(const TextBackend::Font& f, const TextOptions& o, int oid) {
+    return faces_of_text(f, {0x4E00}, o, oid).front();
+}
+
+/// The face each character of `cps` is drawn with in `f`. With vert (upright glyphs of vertical text), a character
+/// its face has no vertical form for takes the CJK face's when that has one: … in Noto Serif (Latin, first in
+/// `serif`) is drawn as Noto Serif CJK's ︙, centred in the column, as a Japanese browser font would draw it.
+std::vector<Face*> faces_of(const TextBackend::Font& f, const std::vector<uint32_t>& cps, const TextOptions& o, int oid) {
+    std::vector<Face*> faceOf = faces_of_text(f, cps, o, oid);
+    if (!f.vertical) return faceOf;
+    Face* cjk = nullptr;
+    for (size_t i = 0; i < cps.size(); i++) {
+        // Alone in its cluster (nothing extends it), so that a cluster stays in one face.
+        if (extends(cps[i]) || (i + 1 < cps.size() && (extends(cps[i + 1]) || cps[i + 1] == 0x200D)) || cps[i] == 0x200D) continue;
+        if (!cjk) cjk = cjk_face(f, o, oid);
+        if (faceOf[i] != cjk && !has_vertical_glyph(faceOf[i], cps[i]) && has_vertical_glyph(cjk, cps[i])) faceOf[i] = cjk;
     }
     return faceOf;
 }
@@ -993,21 +1040,13 @@ void TextBackend::text_advances(int font, const std::string& text, std::vector<f
 }
 
 bool TextBackend::has_vertical_form(int font, const std::string& text) {
-    const std::vector<Segment> faces = segments(font, text);
+    auto it = fonts_.find(font);
     const std::vector<uint32_t> cps = utf8(text);
-    hb_codepoint_t nominal = 0;
-    if (faces.empty() || !faces.front().face || cps.empty() || !hb_font_get_nominal_glyph(faces.front().face->font, cps[0], &nominal))
-        return false;
-    hb_buffer_t* buf = hb_buffer_create();
-    hb_buffer_add_codepoints(buf, cps.data(), int(cps.size()), 0, int(cps.size()));
-    hb_buffer_guess_segment_properties(buf);
-    const hb_feature_t vert{HB_TAG('v', 'e', 'r', 't'), 1, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END};
-    hb_shape(faces.front().face->font, buf, &vert, 1);
-    unsigned n = 0;
-    const hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &n);
-    const bool substituted = n > 0 && info[0].codepoint != nominal;
-    hb_buffer_destroy(buf);
-    return substituted;
+    if (it == fonts_.end() || cps.empty()) return false;
+    const std::vector<Face*> faces = faces_of_text(it->second, {cps[0]}, options_, optionsId_);
+    if (has_vertical_glyph(faces.front(), cps[0])) return true;
+    Face* cjk = cjk_face(it->second, options_, optionsId_);
+    return cjk != faces.front() && has_vertical_glyph(cjk, cps[0]);
 }
 
 bool TextBackend::has_half_width_form(int font, const std::string& text, bool vertical) {

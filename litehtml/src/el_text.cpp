@@ -123,7 +123,8 @@ namespace
     }
 
     litehtml::pixel_t vertical_advance(litehtml::document_container* container, const std::string& text, size_t end,
-                                       litehtml::text_orientation orientation, litehtml::uint_ptr font, litehtml::pixel_t em,
+                                       litehtml::text_orientation orientation, litehtml::uint_ptr font,
+                                       litehtml::uint_ptr upright, litehtml::pixel_t em,
                                        const std::vector<litehtml::cjk::span>& tcy);
 
     // Draws a mark over (or under) each character of the run, centred on it along the line; in vertical text the
@@ -167,8 +168,12 @@ namespace
                 pixel_t x0, w;
                 if(vertical)
                 {
-                    x0 = vertical_advance(container, text, i, css.get_text_orientation(), css.get_font(), fm.font_size, tcy);
-                    w  = em_each || token != tcy.end() ? fm.font_size : container->text_width(text.substr(i, n).c_str(), css.get_font());
+                    x0 = vertical_advance(container, text, i, css.get_text_orientation(), css.get_font(),
+                                          css.get_font_upright(), fm.font_size, tcy);
+                    w  = em_each || token != tcy.end()
+                             ? fm.font_size
+                             : vertical_advance(container, text, i + n, css.get_text_orientation(), css.get_font(),
+                                                css.get_font_upright(), fm.font_size, tcy) - x0;
                 } else
                 {
                     x0 = i ? container->text_width(text.substr(0, i).c_str(), css.get_font()) : 0_px;
@@ -219,10 +224,12 @@ namespace
 
     // The advance of text[0, end) along a vertical line: a tate-chu-yoko token an em (a boundary inside one, its share
     // of the em by characters); with text-orientation: upright, each other character an em; else each upright character
-    // measured alone, as Blink shapes vertical text top to bottom with no pair kerning between them, and each run of
-    // sideways characters as one horizontal run.
+    // measured alone in the font it is drawn with (`upright`: vert, its vertical form, maybe from another face than the
+    // font's: twidget::text's CJK face for a Latin font's …), as Blink shapes vertical text top to bottom with no pair
+    // kerning between them, and each run of sideways characters as one horizontal run.
     litehtml::pixel_t vertical_advance(litehtml::document_container* container, const std::string& text, size_t end,
-                                       litehtml::text_orientation orientation, litehtml::uint_ptr font, litehtml::pixel_t em,
+                                       litehtml::text_orientation orientation, litehtml::uint_ptr font,
+                                       litehtml::uint_ptr upright, litehtml::pixel_t em,
                                        const std::vector<litehtml::cjk::span>& tcy)
     {
         using namespace litehtml;
@@ -252,7 +259,7 @@ namespace
             if(orientation != text_orientation_upright && !drawn_upright(container, orientation, cp, glyph, font))
                 continue;
             sideways(i);
-            advance += orientation == text_orientation_upright ? em : container->text_width(glyph.c_str(), font);
+            advance += orientation == text_orientation_upright ? em : container->text_width(glyph.c_str(), upright ? upright : font);
             run = i + n;
         }
         sideways(end);
@@ -297,7 +304,7 @@ namespace
         // nearer by what the marks before them give up (render_text::trims).
         const std::vector<size_t> parts = cuts(text, gap, trims);
         auto advance = [&](size_t end) {
-            return vertical_advance(container, text, end, orientation, font, em, tcy) + justify_shift(text, end, gap) -
+            return vertical_advance(container, text, end, orientation, font, upright, em, tcy) + justify_shift(text, end, gap) -
                    trim_shift(trims, end);
         };
         // A sideways run is drawn a piece between two gaps (or around a trimmed mark: full width, moved back by the
@@ -355,7 +362,7 @@ namespace
                 else
                     back = t->start;
             }
-            const pixel_t     w     = container->text_width(glyph.c_str(), font);
+            const pixel_t     w     = container->text_width(glyph.c_str(), upright);
             const pixel_t     cx    = pos.x + advance(i) - back + (all_upright ? em : w) / 2_px;
             paint_group       group;
             group.matrix = upright_matrix(float(cx), float(cy));
@@ -576,8 +583,8 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
                 const std::string& measured = m_use_transformed ? m_transformed_text : m_text;
                 m_size.width = el_parent->css().is_vertical_rl()
                                    ? vertical_advance(get_document()->container(), measured, measured.size(),
-                                                      el_parent->css().get_text_orientation(), font, fm.font_size,
-                                                      m_tate_chu_yoko)
+                                                      el_parent->css().get_text_orientation(), font,
+                                                      el_parent->css().get_font_upright(), fm.font_size, m_tate_chu_yoko)
                                    : get_document()->container()->text_width(measured.c_str(), font);
             }
             if(ends_with_soft_hyphen() && !el_parent->css().is_vertical_rl())
@@ -736,7 +743,7 @@ litehtml::pixel_t litehtml::el_text::advance_to(const std::string& shown, size_t
         static const std::vector<cjk::span> no_tokens;
         const css_properties& css = el_parent->css();
         return vertical_advance(get_document()->container(), shown, bytes, css.get_text_orientation(), font,
-                                css.get_font_metrics().font_size, shown == display_text() ? m_tate_chu_yoko : no_tokens);
+                                css.get_font_upright(), css.get_font_metrics().font_size, shown == display_text() ? m_tate_chu_yoko : no_tokens);
     }
     if(!m_use_transformed && m_run && bytes <= shown.size() && m_run_end - m_run_begin == shown.size() && shown == m_text)
         for(const auto& entry : m_run->advances)
