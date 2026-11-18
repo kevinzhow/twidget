@@ -33,8 +33,7 @@ endif()
 option(TWIDGET_TWCARD "Build twcard, the card runtime's host" ${TW_TWCARD_DEFAULT})
 # Only litehtml, twidget::base, twidget::text and the display-list encoding, without TwidgetCore (hosts that draw
 # documents only).
-# ON until P0's renderer.cpp edits land (gesture policy call sites, paint-limit code, release message; QUESTIONS Q1).
-option(TWIDGET_LITEHTML_ONLY "Build litehtml and the shared parts only, without TwidgetCore" ON)
+option(TWIDGET_LITEHTML_ONLY "Build litehtml and the shared parts only, without TwidgetCore" OFF)
 if(TWIDGET_LITEHTML_ONLY)
     set(TW_LITEHTML "${CMAKE_CURRENT_SOURCE_DIR}/litehtml")
     file(GLOB TW_GUMBO_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/gumbo/*.c")

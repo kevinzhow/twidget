@@ -133,6 +133,29 @@ int main() {
     }
     check(dbl && detail == 2 && types(second).find("click:12 dblclick:12") != std::string::npos, "two quick clicks: click detail 2, then dblclick (got " + types(second) + ")");
     check(types(second).find("touch") == std::string::npos, "a mouse sends no touch events");
+
+    // S11.4: the host observes the end of each primary press without DOM listeners.
+    {
+        Renderer release(300, 1, false, backend);
+        release.receive(parse(PAGE));
+        auto releases = [](const std::vector<Json>& messages) {
+            return std::count_if(messages.begin(), messages.end(), [](const Json& message) {
+                return message["type"].asString() == "release";
+            });
+        };
+        release.touch(0, 40, 20, 0, true);
+        release.touch(0, 45, 20, 1, false);
+        check(releases(release.touch(3, 45, 20, 1, false)) == 0, "secondary cancel does not end the primary press");
+        check(releases(release.touch(2, 40, 20, 0, true)) == 1, "primary pointerup sends one release");
+        release.touch(0, 40, 20, 0, true);
+        check(releases(release.touch(3, 40, 20, 0, true)) == 1, "primary pointercancel sends one release");
+        check(releases(release.touch(2, 40, 20, 0, true)) == 0, "cancelled presses do not release again");
+
+        release.receive(parse(R"({"type":"arbitrate","bubble":true})"));
+        release.touch(0, 40, 20, 0, true);
+        check(releases(release.touch(1, 40, 45, 0, true)) == 1, "a press taken by the bubble sends a release");
+        check(releases(release.touch(2, 40, 45, 0, true)) == 0, "a press taken by the bubble releases once");
+    }
     r.touch(0, 10, 10, 0, true, true, 0);
     out = r.touch(2, 150, 10, 0, true, true, 0);
     check(types(out).find("click") == std::string::npos, "press on A1, release on B: no click");
@@ -1537,7 +1560,7 @@ int main() {
             "button":{"bg":"#ff0000","radius":"12px","font":"14px Arial","padding":"8px  14px","pressedOpacity":0.6,"disabledOpacity":"2"}}})"));
         std::string html = t.last_html();
         auto has = [&](const char* s) { return html.find(s) != std::string::npos; };
-        check(has("--tg-theme-bg-color:#12ab34 !important") && has("--tg-theme-text-color:#000000 !important") && has("--tg-color-scheme:light !important"),
+        check(has("--tg-theme-bg-color:#12ab34 !important") && has("--tg-theme-text-color:#1b1d21 !important") && has("--tg-color-scheme:light !important"),
               "the palette goes on the root, lowercased, a bad value replaced by the scheme's default");
         check(has("--tg-button-bg:#ff0000") && has("--tg-button-radius:12px") && has("--tg-button-pressed-opacity:0.6") && !has("--tg-button-font") &&
                   !has("--tg-button-padding") && !has("--tg-button-disabled-opacity"),
@@ -1561,7 +1584,7 @@ int main() {
                   var("--tg-button-pressed-opacity") == ".5" && var("--tg-button-disabled-opacity") == "1.0" && var("--tg-button-height") == "0" &&
                   var("--tg-button-text") == "#abcdef",
               "button tokens within their grammar pass as given, colours lowercased");
-        check(var("--tg-color-scheme") == "dark" && var("--tg-theme-bg-color") == "#212121" && var("--tg-button-bg") == "-",
+        check(var("--tg-color-scheme") == "dark" && var("--tg-theme-bg-color") == "#1e2228" && var("--tg-button-bg") == "-",
               "a dark theme without a palette takes the dark defaults; a missing token sets no variable");
         check(var("--tg-text-font-size") == "15px" && var("--tg-text-line-height") == "1.35" && var("--tg-text-padding") == "8px 12px",
               "without text tokens the reference set stands in");
@@ -1696,7 +1719,7 @@ int main() {
         check(t.selected_text() == "ll", "the ends snap to the nearest character boundaries (got '" + t.selected_text() + "')");
         DisplayList list = t.paint();
         bool tint = std::any_of(list.begin(), list.end(), [](const Command& c) {
-            return c.kind == Cmd::FillRect && c.color.r == 51 && c.color.g == 144 && c.color.b == 236 && c.color.a == 77 && c.rect.x == 16 && c.rect.w == 16;
+            return c.kind == Cmd::FillRect && c.color.r == 36 && c.color.g == 129 && c.color.b == 204 && c.color.a == 77 && c.rect.x == 16 && c.rect.w == 16;
         });
         check(tint, "the selection paints in the link colour over its characters");
 
@@ -2097,7 +2120,7 @@ int main() {
         check(cs(30, "display") == "inline", "display: initial is inline (got " + cs(30, "display") + ")");
         check(cs(32, "color") == "rgb(0, 0, 140)", "color: unset inherits (got " + cs(32, "color") + ")");
         check(cs(33, "display") == "block", "display: revert is the UA's block (got " + cs(33, "display") + ")");
-        check(cs(34, "margin-top") == "15px", "margin: revert brings back litehtml's 1em, past the profile's layer (got " + cs(34, "margin-top") + ")");
+        check(cs(34, "margin-top") == "7.5px", "margin: revert restores the UA paragraph margin (got " + cs(34, "margin-top") + ")");
         check(cs(35, "color") == "rgb(102, 51, 153)", "rebeccapurple is a colour (got " + cs(35, "color") + ")");
         double natural = 0;
         for (const Json& ev : events(loaded))
@@ -2294,7 +2317,7 @@ int main() {
               "fill and stroke inherit, currentColor resolved (got " + cs["fill"].asString() + ", " + cs["stroke"].asString() + ")");
         check(ask(Json::object().set("q", "cs").set("id", 11))["stroke"].asString() == "none", "no stroke is none");
         Json link = ask(Json::object().set("q", "cs").set("id", 22));
-        check(link["color"].asString() == "rgb(51, 144, 236)" && link["text-decoration-line"].asString() == "none",
+        check(link["color"].asString() == "rgb(36, 129, 204)" && link["text-decoration-line"].asString() == "none",
               "a link is --tg-theme-link-color, not underlined (got " + link["color"].asString() + ", " + link["text-decoration-line"].asString() + ")");
     }
 

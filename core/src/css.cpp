@@ -823,7 +823,7 @@ constexpr const char* BUTTON_VARS[][2] = {
     {"pressedOpacity", "--tg-button-pressed-opacity"},
     {"disabledOpacity", "--tg-button-disabled-opacity"},
 };
-/// The text tokens and the values that stand for any the host leaves out (see QUESTIONS Q2: kept from the BSD base).
+/// Text tokens and their defaults (SPEC S7.1).
 constexpr const char* TEXT_VARS[][3] = {
     {"fontSize", "--tg-text-font-size", "15px"},
     {"lineHeight", "--tg-text-line-height", "1.35"},
@@ -1061,7 +1061,7 @@ std::string substitute_variables(std::string_view css, const std::vector<std::pa
         out.append(css.substr(i, at - i));
         auto var = std::find_if(vars.begin(), vars.end(), [&](const auto& v) { return v.first == name; });
         if (var != vars.end()) out += var->second;
-        else if (comma != std::string_view::npos) out.append(trim(css.substr(comma + 1, end - 2 - comma)));
+        else if (comma != std::string_view::npos) out += substitute_variables(trim(css.substr(comma + 1, end - 2 - comma)), vars);
         else out.append(css.substr(at, end - at));
         i = end;
     }

@@ -306,7 +306,7 @@ private:
         bool mouse;
         int modifiers;
         int button = 0;
-        bool held = false;  // the widget took a hold: the release is no click
+        bool held = false;  // the widget already received this press's contextmenu
         int64_t capture = 0;  // setPointerCapture: pointer events go here instead
         double sent_x = x0, sent_y = y0;  // where the widget last heard the pointer was, for movementX/Y
         bool finger = false;  // a real finger or pen, not a mouse playing one: the chat may still scroll its press
@@ -365,16 +365,16 @@ private:
     bool match_media(const std::string& query) const;
     int64_t widget_id_at(double x, double y, Rect* placement) const;
     /// What the widget claims of a press on `target`: the `touch-action` of it and its ancestors, and its
-    /// preventDefault on pointerdown or touchstart.
-    twidget::WidgetGestureClaim gesture_claim(int64_t target) const;
+    /// learned pointerdown prevention (SPEC S11.2).
+    twidget::gesture::Claim gesture_claim(int64_t target) const;
     /// The arbiter's x: from the client's leading edge.
     double arbiter_x(double x) const { return rtl_ ? width_ - x : x; }
     std::optional<double> hold_deadline() const;
     void check_hold(std::vector<twidget::Json>& out);
     /// Acts on a verdict once the event that produced it has gone to the widget.
-    void settle_gesture(const twidget::GestureVerdict& v, int pointer, std::vector<twidget::Json>& out);
+    void settle_gesture(const twidget::gesture::Verdict& v, int pointer, std::vector<twidget::Json>& out);
     /// Playing the bubble: the press ends for the widget with pointercancel, and the host hears what the bubble does.
-    void bubble_takes(int pointer, const twidget::GestureVerdict& v, std::vector<twidget::Json>& out);
+    void bubble_takes(int pointer, const twidget::gesture::Verdict& v, std::vector<twidget::Json>& out);
     void set_capture(Touch& t, int64_t id, std::vector<twidget::Json>& out);
     /// The border box of element `id`, empty when it is not laid out.
     Rect box_of(int64_t id) const;
@@ -707,8 +707,8 @@ private:
     int64_t hover_ = 0;
     double hover_x_ = 0, hover_y_ = 0;
     int click_count_ = 0;
-    // Who gets each primary press (widget-sandbox's gesture policy): the widget's own dblclick and contextmenu.
-    twidget::GestureArbiter arbiter_;
+    // Who gets each primary press, and the widget's own dblclick and contextmenu (SPEC S11.2).
+    twidget::gesture::Arbiter arbiter_;
     int arbiter_pointer_ = -1;
     // `arbitrate`: the renderer plays the bubble (`bubble_`), a mouse's main button as a finger (`bubble_touch_`).
     bool bubble_ = false, bubble_touch_ = false, rtl_ = false;

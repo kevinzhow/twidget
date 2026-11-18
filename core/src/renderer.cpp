@@ -135,8 +135,7 @@ constexpr double SCRIPT_FOCUS_S = 1;
 /// visible box: litehtml has no controls of its own (the container would own them), so they are
 /// bordered inline blocks here, with the value as text where the shadow tree knows it.
 ///
-/// The profile's UA layer (TW_UA_STYLESHEET, `tables.uaStylesheet` in widget-sandbox's profile.json) comes
-/// after these: the root, the text elements and `<button>` on the theme's variables, as every renderer draws them.
+/// The card defaults in ua.css follow these platform rules (SPEC S11.3).
 const char* const UA_EXTRA = R"css(
 button,input,select,textarea,meter,progress{box-sizing:border-box}
 input,select,textarea{display:inline-block;border:1px solid #8f8f8f;border-radius:3px;background:#fff;color:#000;padding:2px 6px;font:13.333px -apple-system,system-ui,sans-serif;min-height:1.8em;min-width:2em;vertical-align:middle}
@@ -3021,7 +3020,7 @@ void Renderer::apply_root_variables() {
     // The layer with the theme's values in place of its var(), since the fork applies a var() in a shorthand
     // after the cascade (`margin: var(…)` from the master CSS would beat the widget's own `margin: 0`), and
     // without :where() (css.h, unwrap_where).
-    container_->set_master(std::string(litehtml::master_css) + UA_EXTRA + css::unwrap_where(css::substitute_variables(TW_UA_STYLESHEET, theme_vars_)));
+    container_->set_master(std::string(litehtml::master_css) + UA_EXTRA + css::substitute_variables(TW_UA_STYLESHEET, theme_vars_));
 }
 
 const std::string& Renderer::master_css() const { return container_->master(); }
@@ -6065,15 +6064,18 @@ bool Renderer::layer_shown(int64_t id, double now, Affine& shown, float& opacity
 
 // ───────────────────────── events ─────────────────────────
 
-twidget::WidgetGestureClaim Renderer::gesture_claim(int64_t target) const {
-    bool prevented = prevent_.count(std::to_string(target) + ":pointerdown") || prevent_.count(std::to_string(target) + ":touchstart");
-    std::vector<std::string> values;
-    // Up to the widget's <html> itself: touch-action on an ancestor covers its descendants, as in CSS.
+twidget::gesture::Claim Renderer::gesture_claim(int64_t target) const {
+    twidget::gesture::Claim claim;
+    claim.horizontal = prevent_.contains(std::to_string(target) + ":pointerdown");
+    // SPEC S11.2: combine the declarations on the target and its ancestors through the root.
     for (const Node* n = target ? node(target) : html_node_.get(); n; n = n->parent) {
-        // From any stylesheet: the fork keeps the declaration as written, which is all this needs.
-        if (auto el = n->id ? container_->element(n->id) : nullptr) values.push_back(computed_touch_action(el));
+        if (auto el = n->id ? container_->element(n->id) : nullptr) {
+            const auto local = twidget::gesture::claim_for_touch_action(computed_touch_action(el));
+            claim.horizontal |= local.horizontal;
+            claim.hold |= local.hold;
+        }
     }
-    return twidget::gesture::claimOf(values, prevented);
+    return claim;
 }
 
 std::optional<double> Renderer::hold_deadline() const {
@@ -6086,24 +6088,25 @@ void Renderer::check_hold(std::vector<Json>& out) {
     if (auto v = arbiter_.tick(now_ms())) settle_gesture(*v, arbiter_pointer_, out);
 }
 
-void Renderer::settle_gesture(const twidget::GestureVerdict& v, int pointer, std::vector<Json>& out) {
+void Renderer::settle_gesture(const twidget::gesture::Verdict& v, int pointer, std::vector<Json>& out) {
     auto it = touches_.find(pointer);
     if (it == touches_.end()) return;
     Touch& t = it->second;
-    if (v.event == twidget::GestureEvent::ContextMenu) {
-        t.held = v.gesture == twidget::Gesture::Hold;
+    if (v.event == twidget::gesture::WidgetEvent::ContextMenu && !t.held) {
+        t.held = true;
         int64_t target = t.capture ? t.capture : t.target;
         if (target) emit_event("contextmenu", target, t.capture ? box_of(target) : t.target_rect, t, 0, out);
     }
     if (v.cancel && bubble_) bubble_takes(pointer, v, out);
 }
 
-void Renderer::bubble_takes(int pointer, const twidget::GestureVerdict& v, std::vector<Json>& out) {
+void Renderer::bubble_takes(int pointer, const twidget::gesture::Verdict& v, std::vector<Json>& out) {
     auto it = touches_.find(pointer);
     if (it == touches_.end()) return;
     Touch done = it->second;
     // Nothing more of this pointer reaches the widget: its later moves and its release find no touch.
     touches_.erase(it);
+    if (done.primary) out.push_back(Json::object().set("type", "release"));  // SPEC S11.4
     if (pointer == arbiter_pointer_) {
         arbiter_.cancel();
         arbiter_pointer_ = -1;
@@ -6115,10 +6118,12 @@ void Renderer::bubble_takes(int pointer, const twidget::GestureVerdict& v, std::
         emit_event("touchcancel", done.target, done.target_rect, done, 3, out);
     }
     set_capture(done, 0, out);
+    constexpr std::array actions{"menu", "swipe", "scroll", "back"};
+    constexpr std::array gestures{"press", "tap", "double-tap", "hold", "drag-x", "drag-y", "menu-click"};
     out.push_back(Json::object()
                       .set("type", "bubble")
-                      .set("action", std::string(twidget::gesture::name(v.action.value_or(twidget::BubbleAction::Menu))))
-                      .set("gesture", std::string(twidget::gesture::name(v.gesture)))
+                      .set("action", actions[size_t(v.action.value_or(twidget::gesture::BubbleAction::Menu))])
+                      .set("gesture", gestures[size_t(v.gesture)])
                       .set("x", done.x)
                       .set("y", done.y)
                       .set("edge", v.edge));
@@ -6441,13 +6446,13 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
             }
             if (had) selection_changed();
         }
-        std::optional<twidget::GestureVerdict> verdict;
+        std::optional<twidget::gesture::Verdict> verdict;
         if (primary) {
             // A drag that selects claims what a claim can: horizontal drags (a mouse never pans the chat anyway).
-            twidget::WidgetGestureClaim claim = selecting ? twidget::WidgetGestureClaim{true, false, false} : gesture_claim(t.target);
-            out.push_back(Json::object().set("type", "gesture").set("wants", claim.y).set("x", claim.x).set("y", claim.y).set("hold", claim.hold));
+            twidget::gesture::Claim claim = selecting ? twidget::gesture::Claim{true, false, false} : gesture_claim(t.target);
+            out.push_back(Json::object().set("type", "gesture").set("wants", claim.vertical).set("x", claim.horizontal).set("y", claim.vertical).set("hold", claim.hold));
             arbiter_pointer_ = pointer;
-            verdict = arbiter_.down(now_ms(), arbiter_x(x), y, claim, t.mouse ? twidget::PointerKind::Mouse : twidget::PointerKind::Touch, button);
+            verdict = arbiter_.down(now_ms(), arbiter_x(x), y, claim, t.mouse ? twidget::gesture::Device::Mouse : twidget::gesture::Device::Touch, button);
         }
         if (button == 0 && container_->mouse(0, x, y)) restyled_by_input();
         if (t.target) {
@@ -6465,7 +6470,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
     t.x = x;
     t.y = y;
     t.modifiers = modifiers;
-    std::optional<twidget::GestureVerdict> verdict;
+    std::optional<twidget::gesture::Verdict> verdict;
     if (pointer == arbiter_pointer_) {
         if (action == 1) verdict = arbiter_.move(now_ms(), arbiter_x(x), y);
         else {
@@ -6483,7 +6488,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
     }
     if (action == 1) {
         // A finger jitters a few px during a tap: moves inside the policy's slop are not forwarded.
-        if (!t.moved && std::hypot(x - t.x0, y - t.y0) <= twidget::gesture::TOUCH_SLOP_PX) {
+        if (!t.moved && std::hypot(x - t.x0, y - t.y0) <= twidget::gesture::kTouchSlopPx) {
             if (verdict) settle_gesture(*verdict, pointer, out);
             return out;
         }
@@ -6511,8 +6516,10 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         flush_pending(out);
         return out;
     }
+    if (verdict) settle_gesture(*verdict, pointer, out);
     Touch done = t;
     touches_.erase(it);
+    if (done.primary) out.push_back(Json::object().set("type", "release"));  // SPEC S11.4
     if (selection_.pointer == pointer) selection_.pointer = -1;
     if (done.button == 0 && container_->mouse(action, x, y, done.mouse && action == 2)) restyled_by_input();
     if (action == 2) {
@@ -6530,13 +6537,14 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         // A click: the press and the release land on the same element, or one inside the other
         // (the click goes to the outer one). A finger must also have stayed inside the slop.
         int64_t click = 0;
-        if (done.target && (done.mouse || !done.moved)) {
+        const bool tap = !done.moved && std::hypot(x - done.x0, y - done.y0) <= twidget::gesture::kTouchSlopPx;
+        if (done.target && (done.mouse || tap)) {
             if (up_target == done.target || is_ancestor(done.target, up_target)) click = done.target;
             else if (is_ancestor(up_target, done.target)) click = up_target;
         }
         // A secondary button never clicks, nor does a hold the widget took (it had its contextmenu).
         if (done.primary && click && done.button == 0 && !done.held) {
-            bool twice = verdict && verdict->event == twidget::GestureEvent::DblClick;
+            bool twice = verdict && verdict->event == twidget::gesture::WidgetEvent::DblClick;
             click_count_ = twice ? 2 : 1;
             Rect rect = click == done.target ? done.target_rect : up_rect;
             emit_event("click", click, rect, done, 2, out);
@@ -6805,7 +6813,7 @@ void Renderer::stop_layout(uint64_t boxes) {
 void Renderer::stop_paint(const paint::Verdict& verdict) {
     // Reported before the frame is drawn; the host stops the widget and freezes the renderer with its own label.
     paint_stopped_ = true;
-    pending_events_.push_back(Json::object().set("type", "limit").set("code", twidget::paintLimitCode(verdict.code)).set("count", verdict.count));
+    pending_events_.push_back(Json::object().set("type", "limit").set("code", twidget::paint_limit_code(verdict.code)).set("count", verdict.count));
     // From this frame on: no blurred shadows, filters, backdrop-filter or transparency, animations stopped where they
     // are and the layers back in the document, so the stopped widget costs nothing to scroll.
     container_->set_no_effects();
