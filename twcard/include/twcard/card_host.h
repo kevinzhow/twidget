@@ -1,10 +1,12 @@
 #pragma once
 
 #include "twcard/engine.h"
+#include "twcard/intl.h"
 #include "twidget/gesture_policy.h"
 #include "twidget/json.h"
 
 #include <functional>
+#include <chrono>
 #include <map>
 
 namespace twcard {
@@ -37,7 +39,7 @@ struct Options {
         std::optional<std::string> chatType;
         twidget::Json viewer;
     } context;
-    std::function<std::optional<std::string>(std::string_view)> intl;
+    std::shared_ptr<const IntlProvider> intl;
 };
 
 struct Action {
@@ -83,6 +85,7 @@ public:
     virtual void load() = 0;
     virtual void send(const std::string& message) = 0;
     virtual void post(std::function<void()> task) = 0;
+    virtual void postAt(std::chrono::steady_clock::time_point due, std::function<void()> task) = 0;
     virtual void destroy() = 0;
 
     std::function<void(const std::string&)> onMessage;

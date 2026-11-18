@@ -56,6 +56,10 @@ public:
         ready.notify_one();
     }
 
+    void postAt(std::chrono::steady_clock::time_point due, std::function<void()> work) override {
+        delayed.emplace_back(due, std::move(work));
+    }
+
     void destroy() override { destroyed = true; }
 
     bool until(const std::function<bool()>& done) {
@@ -76,6 +80,7 @@ public:
     std::vector<std::string> seen;
     Json ops;
     bool destroyed = false, holdQuery = false, queryHeld = false;
+    std::vector<std::pair<std::chrono::steady_clock::time_point, std::function<void()>>> delayed;
 
 private:
     std::mutex mutex;
@@ -144,6 +149,55 @@ int main() {
     waiting.destroy();
     check(renderer->destroyed && std::chrono::steady_clock::now() - before < 500ms,
           "destroy wakes a blocked query without waiting for its timeout");
+
+    Options options;
+    options.context.canQuery = true;
+    CardHost requests(R"(
+        let requestId = 0;
+        onTestEvent = () => testBridge('request', {id: ++requestId, data: 'ping', wallet: false});
+    )", {}, 400, options, resources, [&](const Theme&, double) {
+        auto fixture = std::make_unique<RendererFixture>();
+        renderer = fixture.get();
+        return fixture;
+    });
+    std::vector<CardHost::Respond> replies;
+    requests.onRequest = [&](const Request& request, CardHost::Respond respond) {
+        check(request.data == "ping" && !request.wallet, "request data reach the app");
+        replies.push_back(std::move(respond));
+    };
+    const auto press = [&] {
+        renderer->onMessage(R"({"type":"gesture"})");
+        renderer->onMessage(R"({"type":"event","ev":{"type":"click","detail":1},"trusted":true})");
+    };
+    requests.start();
+    check(renderer->until([&] { return std::find(renderer->seen.begin(), renderer->seen.end(), "query") != renderer->seen.end(); }),
+          "request fixture is loaded");
+    const auto sentAt = std::chrono::steady_clock::now();
+    press();
+    if (renderer->until([&] { return replies.size() == 1; })) {
+        check(renderer->delayed.size() == 1 && renderer->delayed[0].first >= sentAt + 15s,
+              "the host schedules the fifteen-second deadline");
+        auto reply = replies[0];
+        reply({RequestFailure::None, "pong"});
+        reply({RequestFailure::None, "duplicate"});
+        press();
+        if (renderer->until([&] { return replies.size() == 2; }) && renderer->delayed.size() == 2) {
+            renderer->delayed[0].second();
+            renderer->delayed[1].second();
+            replies[1]({RequestFailure::None, "late"});
+            bool drained = false;
+            renderer->post([&] { drained = true; });
+            check(renderer->until([&] { return drained; }), "the queued replies drain");
+            check(requests.probe("JSON.stringify(testAnswers)") ==
+                      R"([{"type":"answer","id":1,"result":"pong"},{"type":"answer","id":2,"error":"TIMEOUT"}])",
+                  "duplicates, stale timeouts and late replies cannot complete another request");
+        } else {
+            check(false, "a new press can submit after the first answer");
+        }
+    } else {
+        check(false, "a trusted press submits a request");
+    }
+    requests.destroy();
 
     return failures != 0;
 }

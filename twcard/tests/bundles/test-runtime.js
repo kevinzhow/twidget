@@ -43,6 +43,8 @@
     globalThis.performance = { now: () => host('now') };
     globalThis.query = (q) => host('query', JSON.stringify(q));
     globalThis.sendOps = (ops) => host('ops', JSON.stringify(ops));
+    globalThis.testBridge = (method, args) => host('bridge', JSON.stringify([method, args]));
+    globalThis.testAnswers = [];
     globalThis.randomBytes = (n) => host('random', n);
     globalThis.onTestEvent = null;
 
@@ -82,6 +84,7 @@
                 return;
             }
             case 'event': if (onTestEvent) run(onTestEvent, json()); return;
+            case 'bridge': testAnswers.push(json()); return;
             case 'visibility': document.hidden = !json().visible; document.title += document.hidden ? '[hidden]' : '[shown]'; return;
             case 'rejection':
                 globalThis.lastRejectedPromise = arg;
