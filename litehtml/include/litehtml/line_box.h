@@ -277,6 +277,9 @@ namespace litehtml
         /// How far `item`, placed next, overlaps the item before it: a ruby longer than its base overhangs a kana
         /// next to it (JLReq 3.3.8 rule 2), by up to one ruby character.
         pixel_t ruby_overlap(const line_box_item* item) const;
+        /// How far a ruby that does not fit the line with ruby_overlap overlaps the kana before it to fit ending the
+        /// line (JLReq 3.3.8 line-edge b: its whole excess, up to one ruby character); -1 when that does not apply.
+        pixel_t ruby_end_overlap(const line_box_item* item, pixel_t extra) const;
         bool    is_empty() const;
         pixel_t baseline() const;
         pixel_t top_margin() const;

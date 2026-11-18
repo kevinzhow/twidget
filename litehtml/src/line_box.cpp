@@ -305,7 +305,13 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
             if(!last_content_item())
                 r.single->align_base(-r.single->base_start);
         }
-        const pixel_t overlap = ruby_overlap(item.get());
+        pixel_t       overlap = ruby_overlap(item.get());
+        // It fits only ending the line (line-edge b): its base ends with its annotation now.
+        if(const pixel_t end = r.single ? ruby_end_overlap(item.get(), 0_px) : -1_px; end >= 0_px)
+        {
+            r.single->align_base(r.single->pos().width - r.single->base_end);
+            overlap = end;
+        }
         if(r.single)
             r.single->overlap_before = overlap;
         m_width -= overlap;
@@ -1189,7 +1195,8 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
         if(trailing <= 0_px && !(part && part->is_fragment))
             if(auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get()))
                 end_extra = text->line_end_extra();
-        if(m_left + m_width - ruby_overlap(item.get()) + item->width() + end_extra - hang + trailing > m_right)
+        if(m_left + m_width - ruby_overlap(item.get()) + item->width() + end_extra - hang + trailing > m_right &&
+           ruby_end_overlap(item.get(), end_extra - hang + trailing) < 0_px)
         {
             return false;
         }
@@ -1235,6 +1242,26 @@ litehtml::pixel_t litehtml::line_box::ruby_overlap(const line_box_item* item) co
     if(ruby_of(prev, r) && cjk::ruby_may_overhang(edge_of(item, false)))
         return std::max(0_px, std::min(r.after, r.em));
     return 0_px;
+}
+
+litehtml::pixel_t litehtml::line_box::ruby_end_overlap(const line_box_item* item, pixel_t extra) const
+{
+    // JLReq 3.3.8 line-edge b: a ruby that ends a line has its base end with its annotation, which overhangs a kana
+    // before it by up to one ruby character: one that does not fit the line overhanging by its mid-line share may fit
+    // so. -1: it fits as it is, or not even so.
+    ruby_sides r;
+    if(!ruby_of(item, r) || !r.single)
+        return -1_px;
+    const pixel_t width = item->width();
+    if(m_left + m_width - ruby_overlap(item) + width + extra <= m_right)
+        return -1_px;
+    const line_box_item* prev = last_content_item();
+    ruby_sides           other;
+    if(!prev || ruby_of(prev, other) || !cjk::ruby_may_overhang(edge_of(prev, true)))
+        return -1_px;
+    const pixel_t excess = r.single->base_start + (r.single->pos().width - r.single->base_end);
+    const pixel_t overlap = std::max(0_px, std::min(excess, r.em));
+    return m_left + m_width - overlap + width + extra <= m_right ? overlap : -1_px;
 }
 
 uint8_t litehtml::line_box::start_position() const
