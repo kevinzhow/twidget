@@ -250,6 +250,12 @@ int main() {
     check(q["result"].asBool(), "isPointInPath on a Path2D, under the transform");
     q = r.receive(parse(R"({"type":"query","qid":3,"query":{"q":"canvasCall","id":30,"method":"getTransform","args":[]}})"))[0];
     check(q["result"].arr().size() == 6 && q["result"].arr()[4].asNumber() == 10, "getTransform");
+    r.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":30,"cmds":[
+        ["c","resetTransform"],["pn",2,null],["pc",2,"addPath",{"p":1},[1,0,0,1,40,7]],["c","fill",{"p":2}]
+    ]}]})"));
+    const auto& added = backend.runs.back().back();
+    check(added.kind == CanvasOp::Fill && added.path.points.size() >= 2 &&
+          added.path.points[0] == 40 && added.path.points[1] == 7, "Path2D.addPath applies its optional matrix");
     q = r.receive(parse(R"({"type":"query","qid":4,"query":{"q":"imageData","id":30,"x":0,"y":0,"w":2,"h":1}})"))[0];
     check(q["binaryBase64"].asString() == "BwcHBwcHBwc=" && q["result"]["width"].asNumber() == 2, "getImageData returns the backend's pixels as base64");
     {

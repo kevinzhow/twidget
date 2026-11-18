@@ -888,7 +888,13 @@ void Canvas::path_method(Builder& b, const Matrix& m, const std::string& method,
         if (a.empty() || a[0].kind != Value::PathRef) return;
         auto it = paths_.find(int(a[0].ref));
         if (it == paths_.end() || &it->second == &b) return;
-        Geometry g = transformed(it->second.geometry, m);
+        Matrix added;
+        if (a.size() == 2 && a[1].kind == Value::List && a[1].list.size() == 6) {
+            const auto& matrix = a[1].list;
+            added = {matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]};
+        }
+        // SPEC S6.1 and S11.6: apply the addPath matrix in the destination path's coordinate system.
+        Geometry g = transformed(it->second.geometry, added.then(m));
         b.geometry.ops.insert(b.geometry.ops.end(), g.ops.begin(), g.ops.end());
         b.geometry.points.insert(b.geometry.points.end(), g.points.begin(), g.points.end());
         b.open = it->second.open;
