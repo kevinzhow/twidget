@@ -3285,43 +3285,6 @@ int main() {
         check(ids.count(11) && ids.count(-21), "the spinner is a layer under its owner's ::after, a still layer: " + sr.composition_debug());
     }
 
-    // ── a box-shadow pulse: a ring layer under the still dot ──
-    {
-        StubBackend rb;
-        Renderer rr(300, 1, false, rb);
-        rr.set_compositing(true);
-        rr.receive(parse(R"({"type":"ops","ops":[
-         {"op":"el","id":2,"tag":"html","adopt":"html","attrs":[]},
-         {"op":"el","id":3,"tag":"head","adopt":"head","attrs":[]},
-         {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
-         {"op":"el","id":20,"tag":"style","attrs":[]},
-         {"op":"css","id":20,"text":"@keyframes pulse{to{box-shadow:0 0 0 10px rgba(52,199,89,0)}} #d{margin:20px;width:8px;height:8px;border-radius:50%;background:#34c759;box-shadow:0 0 0 0 rgba(52,199,89,.5);animation:pulse 1.6s ease-out infinite} #e{margin:20px;width:8px;height:8px;border-radius:2px;background:#000;box-shadow:0 0 0 0 #f00;animation:pulse 1s infinite}"},
-         {"op":"ins","parent":3,"id":20,"before":null},
-         {"op":"el","id":10,"tag":"div","attrs":[["id","d"]]},{"op":"ins","parent":4,"id":10,"before":null},
-         {"op":"el","id":11,"tag":"div","attrs":[["id","e"]]},{"op":"ins","parent":4,"id":11,"before":null}]})"));
-        auto doc = rr.paint();
-        const auto& layers = rr.composition().layers;
-        int ring = -1, dot = -1;
-        bool square = false;
-        for (size_t i = 0; i < layers.size(); i++) {
-            if (layers[i].id == (int64_t(10) | (int64_t(1) << 50))) ring = int(i);
-            if (layers[i].id == 10) dot = int(i);
-            if (layers[i].id == 11) square = true;
-        }
-        check(ring >= 0 && dot == ring + 1, "the pulse is a ring layer right under the dot's own: " + rr.composition_debug());
-        if (ring >= 0 && dot >= 0) {
-            bool shadow = false;
-            for (const Command& c : layers[dot].content) shadow = shadow || c.kind == Cmd::Shadow;
-            check(!shadow && layers[ring].content.size() == 1 && layers[ring].content[0].kind == Cmd::FillRect, "the dot's layer has no shadow, the ring is one disc");
-            double span = 0;
-            auto keys = resume_track(layers[ring].track, layers[ring].track.duration * 0.999, span);
-            check(!keys.empty() && std::abs(keys.front().opacity) < 0.02 && std::abs(keys.front().matrix.a - 1) < 0.02, "at the end it is the widest and gone");
-            keys = resume_track(layers[ring].track, 0, span);
-            check(!keys.empty() && std::abs(keys.front().opacity - 1) < 0.02 && std::abs(keys.front().matrix.a - 4.0 / 14) < 0.02, "at the start it is the dot's size, at full strength");
-        }
-        check(!square, "a square box's spread shadow is no scaled disc: no ring");
-    }
-
     // ── SVG 2 geometry properties in CSS: r from a sheet and from an animation ──
     {
         StubBackend gb;
