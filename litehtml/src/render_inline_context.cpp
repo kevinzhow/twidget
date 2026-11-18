@@ -161,7 +161,54 @@ namespace
         }
         return 0;
     }
+
+    // A typographic letter unit for word-break: keep-all: a letter or digit (kana, kanji, Hangul, Latin), not
+    // punctuation, a symbol or a space.
+    bool letter(char32_t c)
+    {
+        if(c < 0x80)
+            return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        if((c >= 0x2000 && c <= 0x2BFF) || (c >= 0x3000 && c <= 0x303F) || (c >= 0xFE30 && c <= 0xFE4F) ||
+           (c >= 0xFF00 && c <= 0xFF0F) || (c >= 0xFF1A && c <= 0xFF20) || (c >= 0xFF3B && c <= 0xFF40) ||
+           (c >= 0xFF5B && c <= 0xFF65) || c == 0x30FB)
+            return false;
+        return litehtml::cjk::classify(c) == 0 || c == 0x30FC;  // ー is part of a word
+    }
 } // namespace
+
+bool litehtml::same_text(const element::ptr& before, const element::ptr& after)
+{
+    const auto parent = before->parent();
+    if(!parent || parent != after->parent())
+        return false;
+    const auto& kids = parent->children();
+    for(auto it = kids.begin(); it != kids.end(); ++it)
+        if(*it == before)
+            return std::next(it) != kids.end() && *std::next(it) == after;
+    return false;
+}
+
+bool litehtml::no_break_opportunity(const element::ptr& before, const element::ptr& after, bool kinsoku)
+{
+    // The nearest common ancestor: the first of before's ancestors that is one of after's.
+    element::ptr common;
+    {
+        std::vector<const element*> theirs;
+        for(auto p = after->parent(); p; p = p->parent())
+            theirs.push_back(p.get());
+        for(auto p = before->parent(); p && !common; p = p->parent())
+            if(std::find(theirs.begin(), theirs.end(), p.get()) != theirs.end())
+                common = p;
+    }
+    if(common && is_one_of(common->css().get_white_space(), white_space_nowrap, white_space_pre))
+        return true;
+    if(before->is_space() || after->is_space())
+        return false;
+    const char32_t last = edge_char(before, false), first = edge_char(after, true);
+    if(common && common->css().get_word_break() == word_break_keep_all && letter(last) && letter(first))
+        return true;
+    return kinsoku && cjk::no_break_between(last, first);
+}
 
 litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     pixel_t /*x*/, pixel_t /*y*/, bool /*second_pass*/, const containing_block_context& self_size,
@@ -253,41 +300,56 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
             size_t next = index + 1;
             for(; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
                 m_trailing += lbi_end(events[next].first).width();
-            // The next element's text stays on this line when no line may break between the two (the CJK rule set).
-            pixel_t starts = 0_px;
-            for(; next < events.size() && events[next].second == iterator_item_type_start_parent; next++)
-                starts += lbi_start(events[next].first).width();
-            // A ruby counts by its base text, on either side: <ruby>仕切<rt>しき</rt></ruby>って keeps 切 with っ.
-            // Two texts next to each other are one text's words, which the container's split_text already broke.
+            // The next pieces stay on this line with this one while there is no break opportunity between them
+            // (no_break_opportunity; a ruby counts by its base text, on either side: <ruby>仕切<rt>しき</rt></ruby>って
+            // keeps 切 with っ): their width is kept free after it, so that they go to the next line together. Not past
+            // the line's width: what does not fit an empty line overflows it anyway.
             auto is_ruby = [](const std::shared_ptr<render_item>& item) { return item->src_el()->tag() == _ruby_; };
-            // CSS handles spaces separately. In pre-wrap they can hang past a soft wrap, even though
-            // the CJK table forbids starting a line with a space.
-            const bool here_text = el->src_el()->is_text() && !el->src_el()->is_space() && !el->src_el()->is_break();
-            if(next < events.size() && events[next].second == iterator_item_type_child && (here_text || is_ruby(el)) &&
-               (next > index + 1 || is_ruby(el) || is_ruby(events[next].first)))
+            auto is_piece = [](const std::shared_ptr<render_item>& item) {
+                return item->src_el()->is_text() && !item->src_el()->is_break();
+            };
+            const bool  block_wraps = !is_one_of(ws, white_space_nowrap, white_space_pre);
+            std::shared_ptr<render_item> at = el;
+            size_t      at_index = index;
+            while(block_wraps && (is_piece(at) || is_ruby(at)) && m_trailing < self_size.render_width)
             {
-                const auto& following = events[next].first;
-                auto text = std::dynamic_pointer_cast<el_text>(following->src_el());
-                if(((text && !text->is_space() && !text->is_break()) || is_ruby(following)) &&
-                   cjk::no_break_between(edge_char(el->src_el(), false), edge_char(following->src_el(), true)))
+                pixel_t starts = 0_px;
+                size_t  n      = next;
+                for(; n < events.size() && events[n].second == iterator_item_type_start_parent; n++)
+                    starts += lbi_start(events[n].first).width();
+                if(n >= events.size() || events[n].second != iterator_item_type_child)
+                    break;
+                const auto& following = events[n].first;
+                const bool  across    = n > at_index + 1 || is_ruby(at) || is_ruby(following);
+                bool        joined    = false;
+                if(is_piece(at) && is_piece(following))
+                    joined = no_break_opportunity(at->src_el(), following->src_el(), across);
+                else if((is_piece(following) || is_ruby(following)) && !following->src_el()->is_space() &&
+                        !at->src_el()->is_space())
+                    joined = cjk::no_break_between(edge_char(at->src_el(), false), edge_char(following->src_el(), true));
+                if(!joined)
+                    break;
+                pixel_t width = 0_px;
+                if(is_piece(following))
                 {
-                    pixel_t width = 0_px;
-                    if(text)
-                    {
-                        size measured;
-                        following->src_el()->get_content_size(measured, self_size.render_width);
-                        width = measured.width;
-                    } else
-                    {
-                        // As place_inline measures an inline box: at its shrink-to-fit width, not the line's (render first: it
-                        // sets the width).
-                        const pixel_t natural = following->render(0_px, 0_px, self_size, fmt_ctx).natural_width;
-                        width = std::min(natural, following->width());
-                    }
-                    m_trailing += starts + width;
-                    for(next++; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
-                        m_trailing += lbi_end(events[next].first).width();
+                    size measured;
+                    following->src_el()->get_content_size(measured, self_size.render_width);
+                    width = measured.width;
+                } else
+                {
+                    // As place_inline measures an inline box: at its shrink-to-fit width, not the line's (render first: it
+                    // sets the width).
+                    const pixel_t natural = following->render(0_px, 0_px, self_size, fmt_ctx).natural_width;
+                    width = std::min(natural, following->width());
                 }
+                m_trailing += starts + width;
+                for(n++; n < events.size() && events[n].second == iterator_item_type_end_parent; n++)
+                    m_trailing += lbi_end(events[n].first).width();
+                at       = following;
+                at_index = n - 1;
+                while(at_index > 0 && events[at_index].second != iterator_item_type_child)
+                    at_index--;
+                next = n;
             }
         }
         [&]() {

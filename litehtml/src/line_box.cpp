@@ -1020,6 +1020,18 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
             return true;
         }
 
+        // No break opportunity between the last piece and this one: it stays, past the line's end if it must (CSS
+        // Text 3 §5; place_inline kept the width of such a run free after its first piece, so a run that fits an
+        // empty line went to the next one whole). Not between the fragments of a word broken because it overflowed.
+        {
+            auto last_part = std::dynamic_pointer_cast<render_text>(last_el);
+            auto this_part = std::dynamic_pointer_cast<render_text>(item->get_el());
+            if(!(last_part && last_part->is_fragment) && !(this_part && this_part->is_fragment) &&
+               no_break_opportunity(last_el->src_el(), item->get_el()->src_el(),
+                                    !same_text(last_el->src_el(), item->get_el()->src_el())))
+                return true;
+        }
+
         // CSS Text 3 §4.1.3, as Chromium: an ideographic space ending the line hangs (。　 at a paragraph's turn,
         // which the CJK line breaking keeps with the text before it).
         pixel_t hang = 0_px;
