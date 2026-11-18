@@ -272,6 +272,11 @@ namespace litehtml
         /// set_paragraph_start.
         uint8_t start_position() const;
         static bool starts_with_opening(const std::shared_ptr<render_text>& part);
+        /// The last item placed that shows something (not an inline element's start or end, nor a collapsed space).
+        const line_box_item* last_content_item() const;
+        /// How far `item`, placed next, overlaps the item before it: a ruby longer than its base overhangs a kana
+        /// next to it (JLReq 3.3.8 rule 2), by up to one ruby character.
+        pixel_t ruby_overlap(const line_box_item* item) const;
         bool    is_empty() const;
         pixel_t baseline() const;
         pixel_t top_margin() const;

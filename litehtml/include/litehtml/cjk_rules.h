@@ -77,6 +77,11 @@ namespace litehtml::cjk
     // line that wraps. Nothing else is trimmed (・：； keep their ems).
     trim compression(char32_t prev, char32_t c, char32_t next, uint8_t at);
 
+    // Whether a ruby longer than its base may overhang c next to the base (JLReq 3.3.8 rule 2): hiragana (cl-15),
+    // katakana (cl-16), the prolonged sound mark (cl-10) and small kana (cl-11); not iteration marks, the middle dot,
+    // kanji (rule 1), punctuation (rules 3 to 6 are not done) nor anything else.
+    bool ruby_may_overhang(char32_t c);
+
     // Bytes [from, to) of a text.
     struct span
     {

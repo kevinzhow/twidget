@@ -207,6 +207,17 @@ namespace litehtml::cjk
         return out;
     }
 
+    bool ruby_may_overhang(char32_t c)
+    {
+        if(c >= 0x3041 && c <= 0x3096)  // hiragana, small ones too
+            return true;
+        if(c >= 0x30A1 && c <= 0x30FA)  // katakana, small ones too
+            return true;
+        if(c == 0x30FC || (c >= 0x31F0 && c <= 0x31FF))  // ー, small katakana for Ainu
+            return true;
+        return c >= 0xFF66 && c <= 0xFF9D;  // half-width katakana and ｰ
+    }
+
     std::vector<size_t> justifiable_gaps(const std::string& text)
     {
         std::vector<size_t> gaps;

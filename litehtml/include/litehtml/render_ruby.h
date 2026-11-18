@@ -37,6 +37,17 @@ namespace litehtml
         bool has_annotation = false;
         /// How far the annotation's em box reaches above the pair's box (its base's).
         pixel_t annotation_overflow = 0_px;
+        /// Where its base's text starts and ends in the pair (from the pair's start, as laid out: centred, or spread by
+        /// ruby-align), and one ruby character (the annotation's font size): an annotation longer than its base
+        /// overhangs the text next to the pair by what lies outside [base_start, base_end] (line_box, JLReq 3.3.8).
+        pixel_t base_start = 0_px, base_end = 0_px, ruby_em = 0_px;
+        /// How far its base is moved along the line from where it was laid out (align_base).
+        pixel_t base_shift = 0_px;
+        /// How much of the text before it the pair overlaps (line_box::add_item).
+        pixel_t overlap_before = 0_px;
+        /// Moves its base `shift` along the line from where it was laid out: at a line's head the base starts with the
+        /// annotation, at a line's end it ends with it (JLReq 3.3.8 line-edge a, b).
+        void align_base(pixel_t shift);
         explicit render_item_ruby_pair(std::shared_ptr<element> src_el) :
             render_item_block_context(std::move(src_el))
         {
