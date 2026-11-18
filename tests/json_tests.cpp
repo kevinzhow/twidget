@@ -114,7 +114,8 @@ int main() {
         check(Json::parseDouble("12.5") == 12.5 && Json::parseDouble("7px") == 7 && Json::parseDouble("x") == 0,
               "parseDouble: the leading number, 0 when none");
         Json big = Json::parse("9007199254740993").value_or(Json());
-        check(big.asInt() == 9007199254740992LL || big.asInt() == 9007199254740993LL, "big integer");
+        check(big.asInt64() == 9007199254740992LL || big.asInt64() == 9007199254740993LL, "big integer");
+        check(big.asInt() == 2147483647 && Json(-1e12).asInt() == -2147483647 - 1, "asInt clamps to int");
         eq(Json(int64_t(-42)).dump(), "-42", "int64");
         std::setlocale(LC_NUMERIC, "C");
     }

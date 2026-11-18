@@ -24,9 +24,10 @@ else()
     set(TW_TEXT_DEFAULT OFF)
 endif()
 option(TWIDGET_TEXT "Build twidget::text, fonts and text measurement on HarfBuzz" ${TW_TEXT_DEFAULT})
-# cleanroom/base: TwidgetCore builds again once it has a JSON helper and a gesture policy of its own (PLAN.md P0).
-# Until then only litehtml, twidget::text and the display-list encoding are built.
-set(TWIDGET_LITEHTML_ONLY ON)
+# Only litehtml, twidget::base, twidget::text and the display-list encoding, without TwidgetCore (hosts that draw
+# documents only).
+# ON until P0's renderer.cpp edits land (gesture policy call sites, paint-limit code, release message; QUESTIONS Q1).
+option(TWIDGET_LITEHTML_ONLY "Build litehtml and the shared parts only, without TwidgetCore" ON)
 if(TWIDGET_LITEHTML_ONLY)
     set(TW_LITEHTML "${CMAKE_CURRENT_SOURCE_DIR}/litehtml")
     file(GLOB TW_GUMBO_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/gumbo/*.c")
@@ -129,6 +130,14 @@ else()
     target_compile_options(litehtml PRIVATE -w)
 endif()
 
+# twidget::base: JSON, the gesture policy, the paint limits (base/base.cmake).
+include("${CMAKE_CURRENT_SOURCE_DIR}/base/base.cmake")
+
+# The cards' UA stylesheet (core/src/ua.css, SPEC S11.3), compiled in as tw_ua_stylesheet.h.
+file(READ "${TW_CORE}/src/ua.css" TW_UA_CSS)
+configure_file("${TW_CORE}/src/tw_ua_stylesheet.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/tw_ua_stylesheet.h" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TW_CORE}/src/ua.css")
+
 add_library(twidget_core STATIC
     "${TW_CORE}/src/renderer.cpp"
     "${TW_CORE}/src/computed_style.cpp"
@@ -140,11 +149,11 @@ add_library(twidget_core STATIC
     "${TW_CORE}/src/filters.cpp"
     "${TW_CORE}/src/paint_policy.cpp")
 add_library(twidget::core ALIAS twidget_core)
-target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include")
+target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include" PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 # The display list's binary encoding and the image header reader, which hosts without the core share
 # (core/display_list.cmake).
 include("${TW_CORE}/display_list.cmake")
-target_link_libraries(twidget_core PUBLIC litehtml twidget::display_list)
+target_link_libraries(twidget_core PUBLIC litehtml twidget::display_list twidget::base)
 target_compile_definitions(twidget_core PUBLIC TW_LITEHTML_TWIDGET)
 if(MSVC)
     target_compile_options(twidget_core PRIVATE /utf-8 /W3)
@@ -224,6 +233,11 @@ if(TWIDGET_BUILD_TESTS)
         target_compile_options(twidget_paint_exclusion_rules_tests PRIVATE /utf-8)
     endif()
     add_test(NAME twidget_core COMMAND twidget_core_tests)
+    foreach(_t json gesture_policy theme paint_policy)
+        add_executable(twidget_${_t}_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_t}_tests.cpp")
+        target_link_libraries(twidget_${_t}_tests PRIVATE twidget::core)
+        add_test(NAME twidget_${_t} COMMAND twidget_${_t}_tests)
+    endforeach()
     # litehtml's text selection over vertical-rl text and ruby, without TwidgetCore.
     add_executable(twidget_text_selection_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/text_selection_tests.cpp")
     target_link_libraries(twidget_text_selection_tests PRIVATE twidget::litehtml)

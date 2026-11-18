@@ -259,7 +259,14 @@ double Json::asNumber(double def) const {
     auto* d = std::get_if<double>(&v_);
     return d ? *d : def;
 }
-int64_t Json::asInt(int64_t def) const {
+int Json::asInt(int def) const {
+    auto* d = std::get_if<double>(&v_);
+    if (!d || std::isnan(*d)) return def;
+    if (*d >= 2147483647.0) return INT32_MAX;
+    if (*d <= -2147483648.0) return INT32_MIN;
+    return int(*d);
+}
+int64_t Json::asInt64(int64_t def) const {
     auto* d = std::get_if<double>(&v_);
     if (!d || std::isnan(*d)) return def;
     if (*d >= 9.2233720368547758e18) return INT64_MAX;

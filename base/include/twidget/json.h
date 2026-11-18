@@ -62,8 +62,10 @@ public:
     /// The value, or `def` when it is of another type.
     const std::string& asString() const;
     double asNumber(double def = 0) const;
-    /// A number truncated toward zero and clamped to int64; `def` when not a number (or NaN).
-    int64_t asInt(int64_t def = 0) const;
+    /// A number truncated toward zero and clamped to int's range; `def` when not a number (or NaN).
+    int asInt(int def = 0) const;
+    /// The same, clamped to int64's range.
+    int64_t asInt64(int64_t def = 0) const;
     bool asBool(bool def = false) const;
 
     /// Members and items; empty for other types.
@@ -81,6 +83,7 @@ public:
     const Json& operator[](const std::string& key) const { return (*this)[std::string_view(key)]; }
     /// The item `index`, or null.
     const Json& operator[](size_t index) const;
+    const Json& operator[](int index) const { return index < 0 ? (*this)[size_t(-1)] : (*this)[size_t(index)]; }
     /// The member `key`, or nullptr.
     const Json* find(std::string_view key) const;
     Json* find(std::string_view key);
