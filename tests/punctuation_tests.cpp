@@ -177,8 +177,20 @@ void lay_out(Laid& l, bool vertical, bool half_forms, float length, const std::s
     l.doc->draw(0, 0, 0, nullptr);
 }
 
-// Where selecting the `n`th drawn character (from 2 px into its ink) highlights along the line: "start+length".
-std::string selected(Laid& l, bool vertical, size_t n, float ink_length = 8) {
+// `body` (paragraphs of their own) in a line (column) `length` px long.
+void lay_out_body(Laid& l, bool vertical, bool half_forms, float length, const std::string& body) {
+    l.c.half_forms = half_forms;
+    if (vertical) l.c.h = length;
+    l.doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                                           "><body style=\"margin:0;font-size:16px;line-height:20px\">" + body + "</body></html>",
+                                       &l.c);
+    l.doc->render(pixel_t(vertical ? 400 : length));
+    l.doc->draw(0, 0, 0, nullptr);
+}
+
+// Where selecting the `n`th drawn character (from `from` px into its ink, 2 px before the end of `ink_length`)
+// highlights along the line: "start+length".
+std::string selected(Laid& l, bool vertical, size_t n, float ink_length = 8, float from = 2) {
     if (n >= l.c.glyphs.size()) return "none";
     const Glyph& g = l.c.glyphs[n];
     text_selection ts(*l.doc);
@@ -189,7 +201,7 @@ std::string selected(Laid& l, bool vertical, size_t n, float ink_length = 8) {
         py = vertical ? x : y;
     };
     float x0, y0, x1, y1;
-    page(g.ink + 2, g.mid, x0, y0);
+    page(g.ink + from, g.mid, x0, y0);
     page(g.ink + ink_length - 2, g.mid, x1, y1);
     const auto rects = ts.rects(ts.position_at(x0, y0), ts.position_at(x1, y1));
     if (rects.size() != 1) return "rects " + std::to_string(rects.size());
@@ -234,6 +246,49 @@ void run(bool vertical, bool half_forms) {
     expect(104, "あ。「いうえお", "あ@0 。@16 「*@32 い@40 う@56 え@72 お@88", "a line that fits with 。「 halved");
     // Every line's first opening bracket, the wrapped ones too.
     expect(64, "あいうえ「かき", "あ@0 い@16 う@32 え@48 | 「*@0 か@8 き@24", "「 starting a wrapped line");
+
+    // JLReq 3.1.5 ①: an opening bracket that starts a paragraph has a full em before its ink (改行行頭 全角アキ), one
+    // that starts a wrapped line none (折り返し行頭 天ツキ). The paragraph's indent is the book's: its own text-indent
+    // of 1em takes the bracket's first half (as before); a paragraph with none, in a book whose paragraphs are indented
+    // (a U+3000 or text-indent on its sibling paragraphs, or on its lines after <br>), gets the em: the bracket full
+    // width after half an em. Paragraphs in a book that indents none stay as they were.
+    auto expect_body = [&](float length, const std::string& body, const std::string& want, const std::string& what) {
+        Laid l;
+        lay_out_body(l, vertical, half_forms, length, body);
+        const std::string got = drawn(l.c.glyphs, half_forms);
+        std::string w = want;
+        if (!half_forms)
+            for (size_t at; (at = w.find('*')) != std::string::npos;) w.erase(at, 1);
+        check(got == w, mode + what + ": " + got + "\n     want " + w);
+    };
+    const std::string p0 = "<p style=\"margin:0\">", p1 = "<p style=\"margin:0;text-indent:1em\">", e = "</p>";
+    expect_body(80, p0 + "　あいうえ" + e + p0 + "「かき」くけこさしす" + e,
+                "　@0 あ@16 い@32 う@48 え@64 | 「@16 か@24 き@40 」*@56 | く@0 け@16 こ@32 さ@48 し@64 | す@0",
+                "3.1.5 ①: a paragraph that starts with 「 after one indented with U+3000: 「 full width after half an em");
+    expect_body(80, p0 + "「かき」くけこさ「しす" + e + p0 + "　あ" + e,
+                "「@16 か@24 き@40 」*@56 | く@0 け@16 こ@32 さ@48 | 「*@0 し@8 す@24 | 　@0 あ@16",
+                "3.1.5 ①: the same paragraph's wrapped line starts with 「 flush (天ツキ)");
+    expect_body(400, p1 + "あい" + e + "<p style=\"margin:0;text-indent:0\">「か」き</p>",
+                "あ@16 い@32 | 「@16 か@24 」@40 き@56",
+                "3.1.5 ①: a text-indent:0 paragraph that starts with 「 between text-indent:1em ones (草枕's conversation)");
+    expect_body(400, p1 + "「か」き" + e, "「*@16 か@24 」@40 き@56",
+                "3.1.5 ①: a paragraph's own text-indent:1em takes the first half of its 「, as before");
+    expect_body(400, p0 + "あい" + e + p0 + "「か」き" + e, "あ@0 い@16 | 「*@0 か@8 」@24 き@40",
+                "a book that indents no paragraph: 「 at a paragraph's start as at a line's start, as before");
+    expect_body(400, "<p style=\"margin:0\">　あい<br/>「か」き<br/>　う</p>", "　@0 あ@16 い@32 | 「@16 か@24 」@40 き@56 | 　@0 う@16",
+                "3.1.5 ①: lines after <br> are paragraphs (毒姫): 「 after a <br> among U+3000 lines");
+    expect_body(400, "<h1 style=\"margin:0;font-size:16px\">「題」</h1>" + p0 + "　あ" + e, "「*@0 題@8 」@24 | 　@0 あ@16",
+                "a heading is not one of the paragraphs: its 「 as before");
+    expect_body(400, p0 + "　あ" + e + "<p style=\"margin:0;text-align:center\">「か」</p>", "　@0 あ@16 | 「*@180 か@188 」@204",
+                "a centred paragraph's 「 as before");
+    {
+        Laid l;
+        lay_out_body(l, vertical, half_forms, 400, p0 + "　あ" + e + p0 + "「か」" + e);
+        // its em box, from 2 px into it: its ink is in its second half
+        check(selected(l, vertical, 2, 8, -6) == "8+16", mode + "selecting a paragraph's first 「 (full width): " +
+                                                               selected(l, vertical, 2, 8, -6));
+        check(selected(l, vertical, 3, 16) == "24+16", mode + "selecting か after it: " + selected(l, vertical, 3, 16));
+    }
 
     // Selecting a trimmed character highlights its half; the next one starts where its ink does.
     {
