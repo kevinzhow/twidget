@@ -106,6 +106,36 @@ double font_setup_ms();
 
 class TextBackend : public twlite::Backend {
 public:
+    /// Embedded @font-face registrations shared by the documents of one book. System fonts and their caches
+    /// belong to the backend. Keep this scope alive while any document or display list using its fonts is in use.
+    /// Like the backend, this scope is used under the host's layout lock and must be destroyed before the backend.
+    class BookFonts {
+    public:
+        explicit BookFonts(TextBackend& backend);
+        ~BookFonts();
+        BookFonts(const BookFonts&) = delete;
+        BookFonts& operator=(const BookFonts&) = delete;
+
+        bool add(const std::string& family, int weight, bool italic, std::vector<uint8_t> bytes);
+        int create_font(const std::string& families, float size_px, int weight, bool italic, const std::string& features,
+                        twlite::FontMetrics& out);
+
+    private:
+        friend class TextBackend;
+        struct Registration {
+            int weight;
+            bool italic;
+            Face* face;
+        };
+        std::vector<Face*> match(const std::string& families, int weight, bool italic) const;
+
+        TextBackend& backend_;
+        std::map<std::string, std::vector<Registration>> registrations_;
+        std::vector<std::unique_ptr<Face>> faces_;
+        std::vector<int> fontIds_;
+        std::map<std::string, std::pair<int, twlite::FontMetrics>> fontKeys_;
+    };
+
     /// Consecutive characters of a text run that one face measured: the face and the run's UTF-16 length.
     struct Segment {
         Face* face = nullptr;
@@ -164,7 +194,8 @@ public:
 
     /// A book's font (@font-face): `family` at `weight` (100..900) and style, from the font file's bytes (TrueType,
     /// OpenType, a collection's first font, WOFF or WOFF2), as the OpenType Sanitizer writes them out. Fonts made after
-    /// it see it. False when the bytes are no font, or one OTS rejects (as a browser would).
+    /// it see it. False when the bytes are no font, or one OTS rejects (as a browser would). This default scope
+    /// lasts as long as the backend. Hosts sharing a backend between books use BookFonts instead.
     bool add_book_font(const std::string& family, int weight, bool italic, std::vector<uint8_t> bytes);
 
     const std::map<int, Font>& fonts() const { return fonts_; }
@@ -180,16 +211,13 @@ private:
     TextOptions options_;
     int optionsId_ = 0;  // the caches' key for options_
     int64_t fontsVersion_ = 0;
-    struct BookFont {
-        int weight = 400;
-        bool italic = false;
-        Face* face = nullptr;
-    };
-    std::map<std::string, std::vector<BookFont>> bookFonts_;  // by lower-case family
-    std::vector<std::unique_ptr<Face>> ownFaces_;
     std::map<int, Font> fonts_;
     std::map<std::string, std::pair<int, twlite::FontMetrics>> fontKeys_;
-    int create_font_uncached(const std::string& families, float size_px, int weight, bool italic, const std::string& features, twlite::FontMetrics& out);
+    std::unique_ptr<BookFonts> defaultBookFonts_;
+    int create_font(const std::string& families, float size_px, int weight, bool italic, const std::string& features,
+                    twlite::FontMetrics& out, BookFonts* scope);
+    int create_font_uncached(const std::string& families, float size_px, int weight, bool italic, const std::string& features,
+                             twlite::FontMetrics& out, std::vector<Face*> bookFaces);
     int nextFont_ = 0;
 };
 

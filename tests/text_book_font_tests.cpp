@@ -82,6 +82,29 @@ int main() {
     const std::string text = "<html>not a font</html>";
     CHECK(!backend.add_book_font("Bad Text", 400, false, std::vector<uint8_t>(text.begin(), text.end())), "text is refused");
 
+    {
+        TextOptions options;
+        options.reuse_fonts = true;
+        TextBackend shared(options);
+        const std::string families = "Shared Book Face, serif";
+        const int system_font = shared.create_font(families, 16, 400, false, "", m);
+        int embedded_font = 0, embedded_face = 0;
+        {
+            TextBackend::BookFonts book(shared);
+            TextBackend::BookFonts other(shared);
+            CHECK(book.create_font(families, 16, 400, false, "", m) == system_font, "shares cached system fonts");
+            CHECK(book.add("Shared Book Face", 400, false, cases[1].bytes), "registers a face in the book");
+            embedded_font = book.create_font(families, 16, 400, false, "", m);
+            embedded_face = face_info(shared.fonts().at(embedded_font).face).id;
+            CHECK(embedded_font != system_font, "registration replaces the cached system match");
+            CHECK(other.create_font(families, 16, 400, false, "", m) == system_font, "another open book uses the system face");
+            CHECK(book.add("Shared Book Face", 400, false, cases[1].bytes), "rereads a shared stylesheet");
+            CHECK(book.create_font(families, 16, 400, false, "", m) == embedded_font, "duplicate registration keeps the font handle");
+        }
+        CHECK(!shared.font(embedded_font) && face_bytes(embedded_face).empty(), "the closed book's font and face are released");
+        CHECK(shared.create_font(families, 16, 400, false, "", m) == system_font, "system font survives closing the book");
+    }
+
     std::printf("text_book_font_tests: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }
