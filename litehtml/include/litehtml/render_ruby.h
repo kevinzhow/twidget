@@ -41,6 +41,9 @@ namespace litehtml
         /// ruby-align), and one ruby character (the annotation's font size): an annotation longer than its base
         /// overhangs the text next to the pair by what lies outside [base_start, base_end] (line_box, JLReq 3.3.8).
         pixel_t base_start = 0_px, base_end = 0_px, ruby_em = 0_px;
+        /// Whether its base's text is Japanese (cjk::script_of its first character): JLReq's overhang and line-edge
+        /// rules apply to it; a ruby over Latin text stays as laid out.
+        bool japanese_base = false;
         /// How far its base is moved along the line from where it was laid out (align_base).
         pixel_t base_shift = 0_px;
         /// How much of the text before it the pair overlaps (line_box::add_item).

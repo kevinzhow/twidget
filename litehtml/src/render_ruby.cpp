@@ -3,6 +3,8 @@
 #include "document.h"
 #include "html_tag.h"
 #include "render_inline_context.h"
+#include "el_text.h"
+#include "cjk_rules.h"
 
 std::shared_ptr<litehtml::render_item> litehtml::render_item_ruby::init()
 {
@@ -107,6 +109,7 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
     auto ret            = render_item_block_context::_render_content(x, y, second_pass, self_size, fmt_ctx);
     annotation_overflow = 0_px;
     base_start = base_end = ruby_em = base_shift = overlap_before = 0_px;
+    japanese_base = false;
     if(!has_annotation || m_children.size() < 2)
         return ret;
     // ruby-align: space-around, Chromium's default: the narrower of the two spreads over the pair.
@@ -122,6 +125,17 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
             {
                 if(item->get_type() != line_box_item::type_text_part || item->get_el()->src_el()->is_white_space())
                     continue;
+                if(!any)
+                    if(auto text = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el()); text && !text->display_text().empty())
+                    {
+                        const std::string& s  = text->display_text();
+                        const unsigned char c0 = s[0];
+                        const size_t        n  = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+                        char32_t            c  = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
+                        for(size_t k = 1; k < n && k < s.size(); k++)
+                            c = (c << 6) | (static_cast<unsigned char>(s[k]) & 0x3F);
+                        japanese_base = cjk::script_of(c) == cjk::script::japanese;
+                    }
                 base_start = any ? std::min(base_start, item->left()) : item->left();
                 base_end   = any ? std::max(base_end, item->right()) : item->right();
                 any        = true;

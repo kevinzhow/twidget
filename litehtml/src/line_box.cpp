@@ -32,7 +32,7 @@ namespace
         const auto& el = item->get_el();
         if(auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(el))
         {
-            if(!pair->has_annotation || pair->ruby_em <= 0_px)
+            if(!pair->has_annotation || pair->ruby_em <= 0_px || !pair->japanese_base)
                 return false;
             out.single = pair.get();
             out.before = pair->base_start + pair->base_shift;
@@ -48,7 +48,8 @@ namespace
                     first = pair.get();
                 last = pair.get();
             }
-        if(!first || !first->has_annotation || !last->has_annotation || first->ruby_em <= 0_px || last->ruby_em <= 0_px)
+        if(!first || !first->has_annotation || !last->has_annotation || first->ruby_em <= 0_px || last->ruby_em <= 0_px ||
+           !first->japanese_base || !last->japanese_base)
             return false;
         out.before = first->pos().x + first->base_start;
         out.after  = el->pos().width - (last->pos().x + last->base_end);
