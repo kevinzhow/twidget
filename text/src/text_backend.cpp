@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <tuple>
+#include <unordered_set>
 
 namespace twtext {
 
@@ -663,33 +664,87 @@ TextBackend::TextBackend(TextOptions options) : options_(std::move(options)) {
 }
 
 TextBackend::~TextBackend() {
+    defaultBookFonts_.reset();
     for (auto& [id, f] : fonts_) delete f.hbFeatures;
-    // The book's faces go with it: nothing may find them any more.
+}
+
+TextBackend::BookFonts::BookFonts(TextBackend& backend) : backend_(backend) {}
+
+TextBackend::BookFonts::~BookFonts() {
+    for (int id : fontIds_) {
+        auto font = backend_.fonts_.find(id);
+        delete font->second.hbFeatures;
+        backend_.fonts_.erase(font);
+    }
+    if (faces_.empty()) return;
+    std::unordered_set<const Face*> removed;
+    for (const auto& face : faces_) removed.insert(face.get());
     std::lock_guard l(g_mutex);
-    for (auto& face : ownFaces_) {
+    std::erase_if(g_glyphFallback, [&](const auto& entry) {
+        return removed.contains(std::get<3>(entry.first)) || removed.contains(entry.second);
+    });
+    for (auto& face : faces_) {
         g_faceById[size_t(face->info.id - 1)] = nullptr;
-        for (auto it = g_glyphFallback.begin(); it != g_glyphFallback.end();)
-            it = std::get<3>(it->first) == face.get() || it->second == face.get() ? g_glyphFallback.erase(it) : std::next(it);
         hb_font_destroy(face->font);
     }
 }
 
 int TextBackend::create_font(const std::string& families, float size, int weight, bool italic, const std::string& features, twlite::FontMetrics& out) {
-    if (!options_.reuse_fonts) return create_font_uncached(families, size, weight, italic, features, out);
-    // Asked again (another chapter, part or layout): the same font, its widths kept.
-    char numbers[64];
-    std::snprintf(numbers, sizeof numbers, "|%g|%d|%d|", double(size), weight, int(italic));
-    std::string key = families + numbers + features;
-    if (auto known = fontKeys_.find(key); known != fontKeys_.end()) {
-        out = known->second.second;
-        return known->second.first;
+    return create_font(families, size, weight, italic, features, out, defaultBookFonts_.get());
+}
+
+int TextBackend::BookFonts::create_font(const std::string& families, float size, int weight, bool italic,
+                                        const std::string& features, twlite::FontMetrics& out) {
+    return backend_.create_font(families, size, weight, italic, features, out, this);
+}
+
+int TextBackend::create_font(const std::string& families, float size, int weight, bool italic, const std::string& features,
+                             twlite::FontMetrics& out, BookFonts* scope) {
+    auto book = scope ? scope->match(families, weight, italic) : std::vector<Face*>{};
+    const bool embedded = !book.empty();
+    auto& keys = embedded ? scope->fontKeys_ : fontKeys_;
+    std::string key;
+    if (options_.reuse_fonts) {
+        // Asked again in the same scope: the same font, its widths kept.
+        char numbers[64];
+        std::snprintf(numbers, sizeof numbers, "|%g|%d|%d|", double(size), weight, int(italic));
+        key = families + numbers + features;
+        if (auto known = keys.find(key); known != keys.end()) {
+            out = known->second.second;
+            return known->second.first;
+        }
     }
-    int made = create_font_uncached(families, size, weight, italic, features, out);
-    if (made) fontKeys_[key] = {made, out};
+    int made = create_font_uncached(families, size, weight, italic, features, out, std::move(book));
+    if (made && embedded) scope->fontIds_.push_back(made);
+    if (made && options_.reuse_fonts) keys.emplace(std::move(key), std::make_pair(made, out));
     return made;
 }
 
-int TextBackend::create_font_uncached(const std::string& families, float size, int weight, bool italic, const std::string& features, twlite::FontMetrics& out) {
+std::vector<Face*> TextBackend::BookFonts::match(const std::string& families, int weight, bool italic) const {
+    // The book's fonts the list names come before the system's (CSS Fonts 4 §4.5: @font-face families first).
+    std::vector<Face*> book;
+    if (registrations_.empty()) return book;
+    size_t start = 0;
+    while (start <= families.size()) {
+        size_t comma = families.find(',', start);
+        std::string name = lower(trim(families.substr(start, comma == std::string::npos ? std::string::npos : comma - start)));
+        start = comma == std::string::npos ? families.size() + 1 : comma + 1;
+        auto found = registrations_.find(name);
+        if (found == registrations_.end()) continue;
+        // The style first, then the nearest weight (CSS Fonts 4 §5.2, simplified).
+        const Registration* best = nullptr;
+        int bestScore = 0;
+        for (const auto& b : found->second) {
+            int score = std::abs(b.weight - weight) + (b.italic != italic ? 10000 : 0);
+            if (!best || score < bestScore) best = &b, bestScore = score;
+        }
+        if (best && std::find(book.begin(), book.end(), best->face) == book.end()) book.push_back(best->face);
+    }
+    return book;
+}
+
+int TextBackend::create_font_uncached(const std::string& families, float size, int weight, bool italic, const std::string& features,
+                                      twlite::FontMetrics& out, std::vector<Face*> book) {
     Face* face = nullptr;
     std::string family;
     std::vector<std::string> fallbacks;
@@ -718,26 +773,6 @@ int TextBackend::create_font_uncached(const std::string& families, float size, i
         family = it->second.family;
         fallbacks = it->second.fallbacks;
         g_setupMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    }
-    // The book's fonts the list names come before the system's (CSS Fonts 4 §4.5: @font-face families first).
-    std::vector<Face*> book;
-    if (!bookFonts_.empty()) {
-        size_t start = 0;
-        while (start <= families.size()) {
-            size_t comma = families.find(',', start);
-            std::string name = lower(trim(families.substr(start, comma == std::string::npos ? std::string::npos : comma - start)));
-            start = comma == std::string::npos ? families.size() + 1 : comma + 1;
-            auto found = bookFonts_.find(name);
-            if (found == bookFonts_.end()) continue;
-            // The style first, then the nearest weight (CSS Fonts 4 §5.2, simplified).
-            const BookFont* best = nullptr;
-            int bestScore = 0;
-            for (const BookFont& b : found->second) {
-                int score = std::abs(b.weight - weight) + (b.italic != italic ? 10000 : 0);
-                if (!best || score < bestScore) best = &b, bestScore = score;
-            }
-            if (best && std::find(book.begin(), book.end(), best->face) == book.end()) book.push_back(best->face);
-        }
     }
     if (!book.empty()) {
         face = book.front();
@@ -1271,6 +1306,11 @@ std::vector<TextBackend::GlyphRun> TextBackend::shape(int font, const std::strin
 }
 
 bool TextBackend::add_book_font(const std::string& family, int weight, bool italic, std::vector<uint8_t> bytes) {
+    if (!defaultBookFonts_) defaultBookFonts_ = std::make_unique<BookFonts>(*this);
+    return defaultBookFonts_->add(family, weight, italic, std::move(bytes));
+}
+
+bool TextBackend::BookFonts::add(const std::string& family, int weight, bool italic, std::vector<uint8_t> bytes) {
     if (family.empty() || bytes.empty()) return false;
     // The OpenType Sanitizer, as a browser runs a web font through it: OpenType, TrueType and collections checked
     // and written out again, WOFF and WOFF2 unpacked, anything else refused. Its output is what HarfBuzz measures
@@ -1279,6 +1319,10 @@ bool TextBackend::add_book_font(const std::string& family, int weight, bool ital
     ots::OTSContext ots;
     if (!ots.Process(&out, bytes.data(), bytes.size(), 0)) return false;
     bytes.assign(static_cast<const uint8_t*>(out.get()), static_cast<const uint8_t*>(out.get()) + out.Tell());
+    auto& registrations = registrations_[lower(trim(family))];
+    // A linked stylesheet can be read in every chapter or layout of a book. Reuse its face and font handles.
+    for (const auto& known : registrations)
+        if (known.weight == weight && known.italic == italic && *known.face->bytes == bytes) return true;
     auto face = std::make_unique<Face>();
     face->bytes = std::make_shared<std::vector<uint8_t>>(std::move(bytes));
     face->family = family;
@@ -1287,8 +1331,9 @@ bool TextBackend::add_book_font(const std::string& family, int weight, bool ital
         std::lock_guard l(g_mutex);
         if (!load_face(face.get(), {}, weight)) return false;
     }
-    bookFonts_[lower(trim(family))].push_back({weight, italic, face.get()});
-    ownFaces_.push_back(std::move(face));
+    registrations.push_back({weight, italic, face.get()});
+    faces_.push_back(std::move(face));
+    fontKeys_.clear();
     return true;
 }
 
