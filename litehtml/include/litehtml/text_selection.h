@@ -47,7 +47,7 @@ namespace litehtml
         /// The place nearest the point: the closest line (a column in vertical text), the closest character
         /// boundary along it.
         text_position position_at(pixel_t x, pixel_t y) const;
-        /// One rectangle per line the range [a, b) covers (either order), on the page.
+        /// Selection bands on the page for [a, b) (either order), split where the centre changes within a line.
         std::vector<position> rects(const text_position& a, const text_position& b) const;
         /// The range's base text; a line break between blocks.
         std::string text(const text_position& a, const text_position& b) const;

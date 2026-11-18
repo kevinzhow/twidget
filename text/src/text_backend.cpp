@@ -1123,6 +1123,43 @@ std::vector<TextBackend::Segment> TextBackend::segments(int font, const std::str
     return out;
 }
 
+bool TextBackend::ideographic_center(int font, const std::string& text, float& center) {
+    const auto* f = this->font(font);
+    if (!f) return false;
+    const auto faces = segments(font, text);
+    const auto dominant = std::max_element(faces.begin(), faces.end(),
+        [](const Segment& a, const Segment& b) { return a.utf16 < b.utf16; });
+    const Face* face = dominant != faces.end() && dominant->face ? dominant->face : f->face;
+    if (!face) return false;
+
+    auto baseline = [&](hb_ot_layout_baseline_tag_t tag, hb_position_t& value) {
+        for (const hb_tag_t script : {HB_TAG('h','a','n','i'), HB_TAG('k','a','n','a'), HB_OT_TAG_DEFAULT_SCRIPT})
+            if (hb_ot_layout_get_baseline(face->font, tag, HB_DIRECTION_LTR, script, HB_TAG_NONE, &value)) return true;
+        return false;
+    };
+    hb_position_t bottom = 0, top = 0;
+    const bool has_bottom = baseline(HB_OT_LAYOUT_BASELINE_TAG_IDEO_EMBOX_BOTTOM_OR_LEFT, bottom);
+    const bool has_top = baseline(HB_OT_LAYOUT_BASELINE_TAG_IDEO_EMBOX_TOP_OR_RIGHT, top);
+    if (has_bottom || has_top) {
+        if (!has_bottom) bottom = top - hb_position_t(face->upem);
+        if (!has_top) top = bottom + hb_position_t(face->upem);
+        if (top > bottom) {
+            center = (float(top) + float(bottom)) / 2 * f->size / face->upem;
+            return true;
+        }
+    }
+    if (baseline(HB_OT_LAYOUT_BASELINE_TAG_IDEO_FACE_BOTTOM_OR_LEFT, bottom) &&
+        baseline(HB_OT_LAYOUT_BASELINE_TAG_IDEO_FACE_TOP_OR_RIGHT, top) && top > bottom) {
+        center = (float(top) + float(bottom)) / 2 * f->size / face->upem;
+        return true;
+    }
+    twlite::FontMetrics em;
+    if (!(face->hasTypo && twlite::set_em_box(em, face->typoAscent, face->typoDescent, f->size)) &&
+        !twlite::set_em_box(em, face->ascent, face->descent, f->size)) return false;
+    center = em.em_ascent - f->size / 2;
+    return true;
+}
+
 std::vector<std::pair<float, float>> TextBackend::fallback_extents(int font, const std::string& text) {
     std::vector<std::pair<float, float>> out;
     auto it = fonts_.find(font);

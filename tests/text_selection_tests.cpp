@@ -4,6 +4,7 @@
 #include <text_selection.h>
 
 #include <cstdio>
+#include <cmath>
 #include <string>
 
 using namespace litehtml;
@@ -19,6 +20,14 @@ void check(bool ok, const std::string& what) {
 
 struct Stub : document_container {
     float w = 300, h = 200;
+    bool asymmetric_metrics = false;
+    struct Drawn {
+        std::string text;
+        position box;
+        pixel_t center;
+    };
+    std::vector<Drawn> drawn;
+    std::vector<paint_group> groups;
     uint_ptr create_font(const font_description& d, const document*, font_metrics* fm) override {
         if (fm) {
             fm->font_size = d.size;
@@ -27,12 +36,32 @@ struct Stub : document_container {
             fm->height = d.size;
             fm->x_height = d.size * 0.5f;
             fm->ch_width = 8;
+            if (asymmetric_metrics) {
+                fm->ascent = d.size;
+                fm->descent = d.size * 0.25f;
+                fm->height = fm->ascent + fm->descent;
+                fm->em_ascent = d.size * 0.72f;
+            }
         }
         return 1;
     }
     void delete_font(uint_ptr) override {}
     pixel_t text_width(const char* text, uint_ptr) override { return pixel_t(8.0f * float(std::string(text).size())); }
-    void draw_text(uint_ptr, const char*, uint_ptr, web_color, const position&) override {}
+    bool text_used_extents(const char* text, uint_ptr, pixel_t& ascent, pixel_t& descent) override {
+        if (!asymmetric_metrics || std::string(text) != "漢") return false;
+        ascent = 25;
+        descent = 4;
+        return true;
+    }
+    void begin_group(uint_ptr, const paint_group& group) override { groups.push_back(group); }
+    void end_group(uint_ptr) override { groups.pop_back(); }
+    void draw_text(uint_ptr, const char* text, uint_ptr, web_color, const position& box) override {
+        // The undo-rotation group translates by (cx - cy, cx + cy), and the document maps cy to the page's x.
+        const auto center = groups.size() == 2
+            ? pixel_t(w - (groups.back().matrix.ty - groups.back().matrix.tx) / 2)
+            : box.y + box.height - 4_px - (16_px * 0.72f - 8_px);
+        drawn.push_back({text, box, center});
+    }
     pixel_t pt_to_px(float pt) const override { return pt * 96 / 72; }
     pixel_t get_default_font_size() const override { return 16; }
     const char* get_default_font_name() const override { return "serif"; }
@@ -69,9 +98,42 @@ struct Stub : document_container {
 const char* BODY = "<p style=\"margin:0\">\xE3\x81\x82\xE3\x81\x84<ruby>\xE6\xBC\xA2<rt>\xE3\x81\x8B\xE3\x82\x93</rt></ruby>"
                    "\xE3\x81\x86\xE3\x80\x82\xE3\x81\x88\xE3\x81\x8A\xE3\x80\x82</p>";
 
+void centered_bands(bool vertical) {
+    Stub c;
+    c.asymmetric_metrics = true;
+    const std::string mode = vertical ? "vertical" : "horizontal";
+    const auto doc = document::createFromString(
+        "<html style=\"writing-mode:" + std::string(vertical ? "vertical-rl" : "horizontal-tb") +
+        "\"><body style=\"margin:0;font-size:16px;line-height:32px\">"
+        "<p style=\"margin:0\"><span>あ</span><span>漢</span></p></body></html>", &c);
+    doc->render(300);
+    doc->draw(0, 0, 0, nullptr);
+    text_selection selection(*doc);
+    const auto& runs = selection.runs();
+    check(runs.size() == 2 && c.drawn.size() == 2, mode + ": two painted runs");
+    if (runs.size() != 2 || c.drawn.size() != 2) return;
+    for (size_t i = 0; i < runs.size(); ++i) {
+        const auto& run = runs[i];
+        const auto bands = selection.rects({run.text, run.offset}, {run.text, run.offset + run.shown.size()});
+        check(bands.size() == 1, mode + ": one band for an individual run");
+        if (bands.size() != 1) continue;
+        const auto& band = bands.front();
+        const float center = vertical ? float(band.x + band.width / 2_px) : float(band.y + band.height / 2_px);
+        check(std::abs(center - float(c.drawn[i].center)) <= 0.5f, mode + ": band centered on " + run.shown);
+        check((vertical ? band.width : band.height) == run.box.height, mode + ": original thickness");
+    }
+    const auto both = selection.rects({runs.front().text, runs.front().offset},
+                                      {runs.back().text, runs.back().offset + runs.back().shown.size()});
+    check(both.size() == (vertical ? 2 : 1), mode + ": a distinct fallback centre splits only its own run");
+    if (vertical && both.size() == 2)
+        check(std::abs(float(both[0].bottom() - both[1].y)) <= 0.01f, mode + ": the fallback runs meet without a gap");
+}
+
 } // namespace
 
 int main() {
+    centered_bands(false);
+    centered_bands(true);
     const std::string sentence2 = "\xE3\x81\x88\xE3\x81\x8A\xE3\x80\x82";  // えお。
     const std::string base = "\xE3\x81\x82\xE3\x81\x84\xE6\xBC\xA2\xE3\x81\x86\xE3\x80\x82";  // あい漢う。
     {

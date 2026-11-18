@@ -185,6 +185,8 @@ public:
     bool has_half_width_form(int font, const std::string& text, bool vertical);
     /// The faces `text` is measured with in `font`, in order (text_width shapes each segment with its face).
     std::vector<Segment> segments(int font, const std::string& text);
+    /// The dominant drawn face's ideographic centre above its horizontal baseline, in CSS px.
+    bool ideographic_center(int font, const std::string& text, float& center);
     /// The ascent and descent (CSS px, unrounded) of each face other than the font's own that `text` is measured with
     /// in `font`: fallback faces, which a line of `line-height: normal` makes room for (CSS Inline 3 §4.2; Blink
     /// includes the used fonts there). Empty when the font's own face draws all of it.
