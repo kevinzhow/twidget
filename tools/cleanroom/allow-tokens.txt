@@ -1,0 +1,2 @@
+# Exact strings removed from a line before the denylist is applied (our own files whose names look like a denylisted one).
+gesture-policy.json

@@ -1,5 +1,5 @@
 # The portable half of twidget for every platform but Apple's SwiftPM build: the litehtml fork,
-# TwidgetCore (the C++ renderer behind widget-sandbox's renderer protocol), and each platform's
+# TwidgetCore (the C++ renderer of the cards' renderer protocol), and each platform's
 # backend. What a build produces depends on the platform:
 #   Android      libtwidget_litehtml.so, the JNI surface (platforms/android)
 #   iOS, macOS   libtwidget_litehtml.a, the C ABI on CoreGraphics (platforms/apple), merged by tools/build-apple.sh
@@ -24,9 +24,16 @@ else()
     set(TW_TEXT_DEFAULT OFF)
 endif()
 option(TWIDGET_TEXT "Build twidget::text, fonts and text measurement on HarfBuzz" ${TW_TEXT_DEFAULT})
-# cleanroom/base: TwidgetCore builds again once it has a JSON helper and a gesture policy of its own (PLAN.md P0).
-# Until then only litehtml, twidget::text and the display-list encoding are built.
-set(TWIDGET_LITEHTML_ONLY ON)
+# twcard (twcard/): the card runtime's trusted host (QuickJS engine, validator, CardHost), for POSIX hosts.
+if(NOT EMSCRIPTEN AND NOT WIN32)
+    set(TW_TWCARD_DEFAULT ON)
+else()
+    set(TW_TWCARD_DEFAULT OFF)
+endif()
+option(TWIDGET_TWCARD "Build twcard, the card runtime's host" ${TW_TWCARD_DEFAULT})
+# Only litehtml, twidget::base, twidget::text and the display-list encoding, without TwidgetCore (hosts that draw
+# documents only).
+option(TWIDGET_LITEHTML_ONLY "Build litehtml and the shared parts only, without TwidgetCore" OFF)
 if(TWIDGET_LITEHTML_ONLY)
     set(TW_LITEHTML "${CMAKE_CURRENT_SOURCE_DIR}/litehtml")
     file(GLOB TW_GUMBO_SOURCES CONFIGURE_DEPENDS "${TW_LITEHTML}/src/gumbo/*.c")
@@ -38,11 +45,31 @@ if(TWIDGET_LITEHTML_ONLY)
         PRIVATE "${TW_LITEHTML}/src")
     target_compile_options(litehtml PRIVATE -w)
     include("${CMAKE_CURRENT_SOURCE_DIR}/core/display_list.cmake")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/base/base.cmake")
     if(TWIDGET_TEXT)
         add_subdirectory(text)
     endif()
     if(TWIDGET_BUILD_TESTS)
         enable_testing()
+    endif()
+    if(TWIDGET_TWCARD)
+        include("${CMAKE_CURRENT_SOURCE_DIR}/twcard/twcard.cmake")
+    endif()
+    if(TWIDGET_BUILD_TESTS)
+        add_executable(twidget_json_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/json_tests.cpp")
+        target_link_libraries(twidget_json_tests PRIVATE twidget::base)
+        add_test(NAME twidget_json COMMAND twidget_json_tests)
+        add_executable(twidget_gesture_policy_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/gesture_policy_tests.cpp")
+        target_link_libraries(twidget_gesture_policy_tests PRIVATE twidget::base)
+        add_test(NAME twidget_gesture_policy COMMAND twidget_gesture_policy_tests)
+        add_executable(twidget_theme_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/theme_tests.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/core/src/css.cpp")
+        target_include_directories(twidget_theme_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/core/src")
+        target_link_libraries(twidget_theme_tests PRIVATE twidget::base)
+        add_test(NAME twidget_theme COMMAND twidget_theme_tests)
+        add_executable(twidget_paint_policy_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/paint_policy_tests.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/core/src/paint_policy.cpp")
+        target_include_directories(twidget_paint_policy_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/core/src")
+        target_link_libraries(twidget_paint_policy_tests PRIVATE twidget::base)
+        add_test(NAME twidget_paint_policy COMMAND twidget_paint_policy_tests)
         add_executable(twidget_text_selection_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/text_selection_tests.cpp")
         target_link_libraries(twidget_text_selection_tests PRIVATE twidget::litehtml)
         add_test(NAME twidget_text_selection COMMAND twidget_text_selection_tests)
@@ -71,6 +98,9 @@ if(TWIDGET_LITEHTML_ONLY)
         if(Python3_FOUND)
             add_test(NAME twidget_cjk_rules_table COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/cjk_rules/generate.py" --check)
         endif()
+        add_executable(twidget_litehtml_layout_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/litehtml_layout_tests.cpp")
+        target_link_libraries(twidget_litehtml_layout_tests PRIVATE twidget::litehtml)
+        add_test(NAME twidget_litehtml_layout COMMAND twidget_litehtml_layout_tests)
         if(TWIDGET_TEXT)
             add_executable(twidget_text_outline_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/text_outline_tests.cpp")
             target_link_libraries(twidget_text_outline_tests PRIVATE twidget::text)
@@ -114,6 +144,14 @@ else()
     target_compile_options(litehtml PRIVATE -w)
 endif()
 
+# twidget::base: JSON, the gesture policy, the paint limits (base/base.cmake).
+include("${CMAKE_CURRENT_SOURCE_DIR}/base/base.cmake")
+
+# The cards' UA stylesheet (core/src/ua.css, SPEC S11.3), compiled in as tw_ua_stylesheet.h.
+file(READ "${TW_CORE}/src/ua.css" TW_UA_CSS)
+configure_file("${TW_CORE}/src/tw_ua_stylesheet.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/tw_ua_stylesheet.h" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TW_CORE}/src/ua.css")
+
 add_library(twidget_core STATIC
     "${TW_CORE}/src/renderer.cpp"
     "${TW_CORE}/src/computed_style.cpp"
@@ -125,11 +163,11 @@ add_library(twidget_core STATIC
     "${TW_CORE}/src/filters.cpp"
     "${TW_CORE}/src/paint_policy.cpp")
 add_library(twidget::core ALIAS twidget_core)
-target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include")
+target_include_directories(twidget_core PUBLIC "${TW_CORE}/src" "${TW_CORE}/include" PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 # The display list's binary encoding and the image header reader, which hosts without the core share
 # (core/display_list.cmake).
 include("${TW_CORE}/display_list.cmake")
-target_link_libraries(twidget_core PUBLIC litehtml twidget::display_list)
+target_link_libraries(twidget_core PUBLIC litehtml twidget::display_list twidget::base)
 target_compile_definitions(twidget_core PUBLIC TW_LITEHTML_TWIDGET)
 if(MSVC)
     target_compile_options(twidget_core PRIVATE /utf-8 /W3)
@@ -178,6 +216,13 @@ if(TWIDGET_TEXT)
     add_subdirectory(text)
 endif()
 
+if(TWIDGET_BUILD_TESTS)
+    enable_testing()
+endif()
+if(TWIDGET_TWCARD)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/twcard/twcard.cmake")
+endif()
+
 # Qt hosts (Telegram Desktop) on any desktop OS: fonts, images, canvases and the painter on QPainter.
 if(TWIDGET_QT)
     find_package(Qt6 REQUIRED COMPONENTS Gui)
@@ -209,6 +254,11 @@ if(TWIDGET_BUILD_TESTS)
         target_compile_options(twidget_paint_exclusion_rules_tests PRIVATE /utf-8)
     endif()
     add_test(NAME twidget_core COMMAND twidget_core_tests)
+    foreach(_t json gesture_policy theme paint_policy)
+        add_executable(twidget_${_t}_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_t}_tests.cpp")
+        target_link_libraries(twidget_${_t}_tests PRIVATE twidget::core)
+        add_test(NAME twidget_${_t} COMMAND twidget_${_t}_tests)
+    endforeach()
     # litehtml's text selection over vertical-rl text and ruby, without TwidgetCore.
     add_executable(twidget_text_selection_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/text_selection_tests.cpp")
     target_link_libraries(twidget_text_selection_tests PRIVATE twidget::litehtml)
@@ -271,6 +321,13 @@ if(TWIDGET_BUILD_TESTS)
     if(Python3_FOUND)
         add_test(NAME twidget_cjk_rules_table COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/cjk_rules/generate.py" --check)
     endif()
+    # litehtml's layout from source text: the boxes it gives, without TwidgetCore.
+    add_executable(twidget_litehtml_layout_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/litehtml_layout_tests.cpp")
+    target_link_libraries(twidget_litehtml_layout_tests PRIVATE twidget::litehtml)
+    if(MSVC)
+        target_compile_options(twidget_litehtml_layout_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME twidget_litehtml_layout COMMAND twidget_litehtml_layout_tests)
     if(TWIDGET_TEXT)
         add_executable(twidget_text_outline_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/text_outline_tests.cpp")
         target_link_libraries(twidget_text_outline_tests PRIVATE twidget::text)

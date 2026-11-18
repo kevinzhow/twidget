@@ -581,7 +581,10 @@ void litehtml::render_item::render_positioned(render_type rt)
 
         if(process)
         {
+            // An absolute box's containing block is laid out already: its height is definite.
             containing_block_context containing_block_size;
+            containing_block_size.width.type  = containing_block_context::cbc_value_type_absolute;
+            containing_block_size.height.type = containing_block_context::cbc_value_type_absolute;
             if(el_position == element_position_fixed || (is_root() && !src_el()->is_positioned()))
             {
                 containing_block_size.height = view_port.height;
@@ -2325,6 +2328,12 @@ void litehtml::render_item::calc_cb_length(const css_length& len, pixel_t percen
     }
 }
 
+bool litehtml::render_item::percent_of_auto(const css_length& len, const containing_block_context::typed_pixel& base)
+{
+    return base.type == containing_block_context::cbc_value_type_auto && !len.is_predefined() &&
+           (len.units() == css_units_percentage || len.units() == css_units_calc);
+}
+
 litehtml::containing_block_context litehtml::render_item::calculate_containing_block_context(
     const containing_block_context& cb_context)
 {
@@ -2387,7 +2396,7 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
                     }
                 }
             }
-            if(height != nullptr)
+            if(height != nullptr && !percent_of_auto(*height, cb_context.height))
             {
                 calc_cb_length(*height, cb_context.height, ret.height);
             }
@@ -2408,8 +2417,10 @@ litehtml::containing_block_context litehtml::render_item::calculate_containing_b
     calc_cb_length(src_el()->css().get_min_width(), cb_context.width, ret.min_width);
     calc_cb_length(src_el()->css().get_max_width(), cb_context.width, ret.max_width);
 
-    calc_cb_length(src_el()->css().get_min_height(), cb_context.height, ret.min_height);
-    calc_cb_length(src_el()->css().get_max_height(), cb_context.height, ret.max_height);
+    if(!percent_of_auto(src_el()->css().get_min_height(), cb_context.height))
+        calc_cb_length(src_el()->css().get_min_height(), cb_context.height, ret.min_height);
+    if(!percent_of_auto(src_el()->css().get_max_height(), cb_context.height))
+        calc_cb_length(src_el()->css().get_max_height(), cb_context.height, ret.max_height);
 
     // Fix box sizing
     if(ret.width.type != containing_block_context::cbc_value_type_auto)

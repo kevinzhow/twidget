@@ -1546,7 +1546,7 @@ namespace litehtml
         return svg_text_runs(el, container, runs, box);
     }
 
-    bool svg_ctm(const element::ptr& el, transform_matrix& ctm)
+    bool svg_ctm(const element::ptr& el, transform_matrix& ctm, bool viewport_only)
     {
         std::vector<element::ptr> chain;
         const el_svg*             svg = nullptr;
@@ -1556,13 +1556,18 @@ namespace litehtml
             if(!svg)
                 chain.push_back(p);
         }
-        if(!svg || chain.empty())
+        if(!svg)
         {
             return false;
         }
+        auto bounds = svg->get_placement();
+        if(bounds.width <= 0_px || bounds.height <= 0_px)
+            return false;
+        if(viewport_only)
+            bounds.x = bounds.y = 0_px;
         paint_group group;
         float       view[4];
-        svg->view_group(svg->get_placement(), view, group);
+        svg->view_group(bounds, view, group);
         // As the painter composes them: an element's own transform first, then each parent's, then the view's.
         const position   view_box = position(pixel_t(view[0]), pixel_t(view[1]), pixel_t(view[2]), pixel_t(view[3]));
         transform_matrix m;

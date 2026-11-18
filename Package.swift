@@ -6,9 +6,8 @@ import PackageDescription
 let optimizesDebug = !#filePath.contains("/checkouts/") && ProcessInfo.processInfo.environment["TWIDGET_DEBUG_UNOPTIMIZED"] == nil
 
 
-// cleanroom/base: the targets that need the unlicensed upstream package (HTMLScript and HTML3D through its QuickJS
-// product; TwidgetRenderer, Twidget3DSandbox and their tests) are left out until PLAN.md P14 brings them back on our
-// own runtime. Their sources stay in apple/.
+// The card renderer and the scripted targets (TwidgetRenderer, HTMLScript, HTML3D, Twidget3DSandbox) were removed with
+// the old card runtime; cards on Apple platforms come back later, on twcard.
 let package = Package(
     name: "twidget",
     platforms: [.macOS(.v10_13)],

@@ -133,6 +133,29 @@ int main() {
     }
     check(dbl && detail == 2 && types(second).find("click:12 dblclick:12") != std::string::npos, "two quick clicks: click detail 2, then dblclick (got " + types(second) + ")");
     check(types(second).find("touch") == std::string::npos, "a mouse sends no touch events");
+
+    // S11.4: the host observes the end of each primary press without DOM listeners.
+    {
+        Renderer release(300, 1, false, backend);
+        release.receive(parse(PAGE));
+        auto releases = [](const std::vector<Json>& messages) {
+            return std::count_if(messages.begin(), messages.end(), [](const Json& message) {
+                return message["type"].asString() == "release";
+            });
+        };
+        release.touch(0, 40, 20, 0, true);
+        release.touch(0, 45, 20, 1, false);
+        check(releases(release.touch(3, 45, 20, 1, false)) == 0, "secondary cancel does not end the primary press");
+        check(releases(release.touch(2, 40, 20, 0, true)) == 1, "primary pointerup sends one release");
+        release.touch(0, 40, 20, 0, true);
+        check(releases(release.touch(3, 40, 20, 0, true)) == 1, "primary pointercancel sends one release");
+        check(releases(release.touch(2, 40, 20, 0, true)) == 0, "cancelled presses do not release again");
+
+        release.receive(parse(R"({"type":"arbitrate","bubble":true})"));
+        release.touch(0, 40, 20, 0, true);
+        check(releases(release.touch(1, 40, 45, 0, true)) == 1, "a press taken by the bubble sends a release");
+        check(releases(release.touch(2, 40, 45, 0, true)) == 0, "a press taken by the bubble releases once");
+    }
     r.touch(0, 10, 10, 0, true, true, 0);
     out = r.touch(2, 150, 10, 0, true, true, 0);
     check(types(out).find("click") == std::string::npos, "press on A1, release on B: no click");
@@ -227,6 +250,12 @@ int main() {
     check(q["result"].asBool(), "isPointInPath on a Path2D, under the transform");
     q = r.receive(parse(R"({"type":"query","qid":3,"query":{"q":"canvasCall","id":30,"method":"getTransform","args":[]}})"))[0];
     check(q["result"].arr().size() == 6 && q["result"].arr()[4].asNumber() == 10, "getTransform");
+    r.receive(parse(R"({"type":"ops","ops":[{"op":"canvas","id":30,"cmds":[
+        ["c","resetTransform"],["pn",2,null],["pc",2,"addPath",{"p":1},[1,0,0,1,40,7]],["c","fill",{"p":2}]
+    ]}]})"));
+    const auto& added = backend.runs.back().back();
+    check(added.kind == CanvasOp::Fill && added.path.points.size() >= 2 &&
+          added.path.points[0] == 40 && added.path.points[1] == 7, "Path2D.addPath applies its optional matrix");
     q = r.receive(parse(R"({"type":"query","qid":4,"query":{"q":"imageData","id":30,"x":0,"y":0,"w":2,"h":1}})"))[0];
     check(q["binaryBase64"].asString() == "BwcHBwcHBwc=" && q["result"]["width"].asNumber() == 2, "getImageData returns the backend's pixels as base64");
     {
@@ -1027,12 +1056,13 @@ int main() {
         c.receive(parse(R"({"type":"listen","types":["pointermove","mousemove","pointerup","mouseup","gotpointercapture","lostpointercapture"]})"));
         c.touch(0, 10, 10, 0, true, true, 0);
         auto got = c.receive(parse(R"({"type":"ops","ops":[{"op":"call","id":11,"method":"setPointerCapture","args":[1]}]})"));
-        check(types(got).empty(), "setPointerCapture on the pressed mouse: no gotpointercapture, outside profile 1 (got " + types(got) + ")");
+        check(types(got) == "gotpointercapture:11 ", "setPointerCapture dispatches gotpointercapture to the target");
         c.touch(1, 150, 10, 0, true, true, 0);
         auto moved = c.tick();
         check(types(moved) == "pointermove:11 mousemove:12 ", "captured: pointermove to the capture, mousemove to the element under the mouse (got " + types(moved) + ")");
         auto up = c.touch(2, 150, 10, 0, true, true, 0);
-        check(types(up) == "pointerup:11 mouseup:12 ", "release: pointerup to the capture, mouseup under the mouse (got " + types(up) + ")");
+        check(types(up) == "pointerup:11 mouseup:12 lostpointercapture:11 ",
+              "release sends pointerup to the capture, mouseup under the mouse, then lostpointercapture");
         c.touch(0, 10, 10, 0, true, true, 0);
         auto click = events(c.touch(2, 10, 10, 0, true, true, 0));
         bool actions = false;
@@ -1452,7 +1482,7 @@ int main() {
         check(!f.editor(), "focus() long after the user's input does not");
     }
 
-    // ── widget-sandbox v0.1.0: trusted input, the gesture claim, the theme ──
+    // ── trusted input, the gesture claim, the theme ──
     {
         StubBackend vb;
         Renderer v(300, 1, false, vb);
@@ -1464,7 +1494,7 @@ int main() {
         check(trusted, "a click is trusted, as the hosts require before they count a gesture");
     }
 
-    // ── widget-sandbox v0.3.0: a finger's press counts from its release; a widget's canvas pixels together ──
+    // ── a finger's press counts from its release; a widget's canvas pixels together ──
     {
         StubBackend fb;
         Renderer f(300, 1, false, fb);
@@ -1537,7 +1567,7 @@ int main() {
             "button":{"bg":"#ff0000","radius":"12px","font":"14px Arial","padding":"8px  14px","pressedOpacity":0.6,"disabledOpacity":"2"}}})"));
         std::string html = t.last_html();
         auto has = [&](const char* s) { return html.find(s) != std::string::npos; };
-        check(has("--tg-theme-bg-color:#12ab34 !important") && has("--tg-theme-text-color:#000000 !important") && has("--tg-color-scheme:light !important"),
+        check(has("--tg-theme-bg-color:#12ab34 !important") && has("--tg-theme-text-color:#1b1d21 !important") && has("--tg-color-scheme:light !important"),
               "the palette goes on the root, lowercased, a bad value replaced by the scheme's default");
         check(has("--tg-button-bg:#ff0000") && has("--tg-button-radius:12px") && has("--tg-button-pressed-opacity:0.6") && !has("--tg-button-font") &&
                   !has("--tg-button-padding") && !has("--tg-button-disabled-opacity"),
@@ -1561,7 +1591,7 @@ int main() {
                   var("--tg-button-pressed-opacity") == ".5" && var("--tg-button-disabled-opacity") == "1.0" && var("--tg-button-height") == "0" &&
                   var("--tg-button-text") == "#abcdef",
               "button tokens within their grammar pass as given, colours lowercased");
-        check(var("--tg-color-scheme") == "dark" && var("--tg-theme-bg-color") == "#212121" && var("--tg-button-bg") == "-",
+        check(var("--tg-color-scheme") == "dark" && var("--tg-theme-bg-color") == "#1e2228" && var("--tg-button-bg") == "-",
               "a dark theme without a palette takes the dark defaults; a missing token sets no variable");
         check(var("--tg-text-font-size") == "15px" && var("--tg-text-line-height") == "1.35" && var("--tg-text-padding") == "8px 12px",
               "without text tokens the reference set stands in");
@@ -1696,7 +1726,7 @@ int main() {
         check(t.selected_text() == "ll", "the ends snap to the nearest character boundaries (got '" + t.selected_text() + "')");
         DisplayList list = t.paint();
         bool tint = std::any_of(list.begin(), list.end(), [](const Command& c) {
-            return c.kind == Cmd::FillRect && c.color.r == 51 && c.color.g == 144 && c.color.b == 236 && c.color.a == 77 && c.rect.x == 16 && c.rect.w == 16;
+            return c.kind == Cmd::FillRect && c.color.r == 36 && c.color.g == 129 && c.color.b == 204 && c.color.a == 77 && c.rect.x == 16 && c.rect.w == 16;
         });
         check(tint, "the selection paints in the link colour over its characters");
 
@@ -2097,7 +2127,7 @@ int main() {
         check(cs(30, "display") == "inline", "display: initial is inline (got " + cs(30, "display") + ")");
         check(cs(32, "color") == "rgb(0, 0, 140)", "color: unset inherits (got " + cs(32, "color") + ")");
         check(cs(33, "display") == "block", "display: revert is the UA's block (got " + cs(33, "display") + ")");
-        check(cs(34, "margin-top") == "15px", "margin: revert brings back litehtml's 1em, past the profile's layer (got " + cs(34, "margin-top") + ")");
+        check(cs(34, "margin-top") == "7.5px", "margin: revert restores the UA paragraph margin (got " + cs(34, "margin-top") + ")");
         check(cs(35, "color") == "rgb(102, 51, 153)", "rebeccapurple is a colour (got " + cs(35, "color") + ")");
         double natural = 0;
         for (const Json& ev : events(loaded))
@@ -2284,6 +2314,29 @@ int main() {
         double length = ask(Json::object().set("q", "svg").set("id", 12).set("method", "getComputedTextLength")).asNumber();
         check(length > 10, "getComputedTextLength measures an SVG text (got " + std::to_string(length) + ")");
 
+        // S11.5: viewport and screen matrices differ by the surrounding HTML layout;
+        // text metrics count advances across tspans even when a tspan resets x.
+        s.receive(parse(R"svg({"type":"ops","ops":[
+            {"op":"style","id":10,"name":"margin-left","value":"20px"},
+            {"op":"attr","id":11,"name":"transform","value":"translate(3 4)"},
+            {"op":"style","id":12,"name":"letter-spacing","value":"2px"},
+            {"op":"el","id":14,"tag":"tspan","ns":"svg","attrs":[["x","0"]]},
+            {"op":"text","id":15,"data":"AB"},
+            {"op":"ins","id":14,"parent":12,"before":null},
+            {"op":"ins","id":15,"parent":14,"before":null}]})svg"));
+        auto svg = [&](int id, const char* method, Json args = Json::array()) {
+            return ask(Json::object().set("q", "svg").set("id", id).set("method", method).set("args", std::move(args)));
+        };
+        auto viewportMatrix = svg(11, "getCTM");
+        auto screenMatrix = svg(11, "getScreenCTM");
+        check(viewportMatrix["a"].asNumber() == 2 && viewportMatrix["e"].asNumber() == 6 &&
+              viewportMatrix["f"].asNumber() == 8 && screenMatrix["e"].asNumber() == 26,
+              "SVG viewport and screen matrices compose the element transform and view box");
+        check(svg(12, "getNumberOfChars").asInt() == 7 &&
+              svg(12, "getComputedTextLength").asNumber() == 70 &&
+              svg(12, "getSubStringLength", Json::array().push(4).push(2)).asNumber() == 20,
+              "SVG text and substring metrics sum the letter-spaced advances across tspans");
+
         // Computed paint: inherited from a group, currentColor resolved; a link in the theme's link colour, from the UA layer.
         s.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":20,"tag":"g","svg":true,"attrs":[["fill","#0a0"],["stroke","currentColor"],["style","color:rgb(1, 2, 3)"]]},{"op":"ins","parent":10,"id":20,"before":null},
             {"op":"el","id":21,"tag":"circle","svg":true,"attrs":[["r","4"]]},{"op":"ins","parent":20,"id":21,"before":null},
@@ -2294,7 +2347,7 @@ int main() {
               "fill and stroke inherit, currentColor resolved (got " + cs["fill"].asString() + ", " + cs["stroke"].asString() + ")");
         check(ask(Json::object().set("q", "cs").set("id", 11))["stroke"].asString() == "none", "no stroke is none");
         Json link = ask(Json::object().set("q", "cs").set("id", 22));
-        check(link["color"].asString() == "rgb(51, 144, 236)" && link["text-decoration-line"].asString() == "none",
+        check(link["color"].asString() == "rgb(36, 129, 204)" && link["text-decoration-line"].asString() == "none",
               "a link is --tg-theme-link-color, not underlined (got " + link["color"].asString() + ", " + link["text-decoration-line"].asString() + ")");
     }
 
@@ -2870,7 +2923,7 @@ int main() {
         }
     }
 
-    // ── who gets a press: widget-sandbox's gesture policy ──
+    // ── who gets a press: the gesture policy ──
     {
         Renderer g(300, 1, false, backend);
         // none (30) over auto (31), 40 px in; a full-width none strip (32) for the leading edge.
@@ -3068,6 +3121,40 @@ int main() {
               "the stopped paint keeps sharp shadows only, opaque, the transparent box hidden (blurred " + std::to_string(blurred) + ", sharp " + std::to_string(sharp) +
                   ", effects " + std::to_string(effects) + ", translucent " + std::to_string(translucent) + ", hidden " + std::to_string(hidden) + ")");
         check(!s.wants_tick() && run(s, page(heavy)).empty(), "and takes no more ops or frames");
+    }
+
+    // S1.9: freeze keeps the transition's current position and draws the stopped state outside card CSS.
+    {
+        Renderer::set_test_clock(10);
+        Renderer stopped(300, 1, false, backend);
+        stopped.set_compositing(true);
+        stopped.receive(parse(R"({"type":"ops","ops":[
+            {"op":"el","id":2,"tag":"html","adopt":"html"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0"]]},
+            {"op":"el","id":5,"tag":"div","attrs":[["style","position:relative;left:0;width:20px;height:20px;transition:left 1s linear; background:red"]]},
+            {"op":"ins","id":5,"parent":4}
+        ]})"));
+        stopped.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":5,"name":"left","value":"80px"}]})"));
+        stopped.tick();
+        Renderer::set_test_clock(10.5);
+        stopped.tick();
+        stopped.receive(parse(R"({"type":"frozen","reason":"Widget stopped","fatal":true})"));
+        const auto position = [&] {
+            for (const auto& message : stopped.receive(parse(R"({"type":"query","qid":1,"query":{"q":"rect","id":5}})")))
+                if (message["type"].asString() == "result") return message["result"]["x"].asNumber();
+            return -1.0;
+        };
+        const double atStop = position();
+        Renderer::set_test_clock(11.5);
+        stopped.tick();
+        stopped.receive(parse(R"({"type":"ops","ops":[{"op":"style","id":5,"name":"left","value":"0px"}]})"));
+        check(atStop > 0 && atStop < 80 && position() == atStop,
+              "freeze holds the sampled transition position and refuses later ops");
+        const auto display = stopped.paint();
+        check(std::any_of(display.begin(), display.end(), [](const auto& item) {
+            return item.kind == Cmd::Text && item.text == "Widget stopped";
+        }) && stopped.last_html().find("Widget stopped") == std::string::npos, "the renderer paints the stopped label outside card CSS");
+        Renderer::set_test_clock(std::numeric_limits<double>::quiet_NaN());
     }
 
     // ── a long flush in parts ──

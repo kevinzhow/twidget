@@ -1,0 +1,126 @@
+/* twidget's UA stylesheet for cards (SPEC S11.3): the look a card starts from, on top of litehtml's master CSS.
+
+   Colours and sizes come from the variables TwidgetCore sets on the root from the host's messages
+   (core/src/css.h theme_variables, content_safe_area_variables; SPEC S7.1, S10.2):
+     --tg-theme-*                 the 15 theme colours, always set
+     --tg-text-font-size, --tg-text-line-height, --tg-text-padding     always set
+     --tg-button-*                only the tokens the host gave, so each use has a fallback
+     --tg-content-safe-area-*     always set (0px when the host gave none)
+   This sheet is part of litehtml's user-agent origin, so author styles take precedence.
+
+   Public guide, "Native look": the root has no background (the bubble's colour shows through); the body's margin is
+   the text padding; "the default styles add the band to the body's bottom padding" ("The time in the corner"). */
+
+html {
+	color: var(--tg-theme-text-color);
+	background: transparent;
+	font-family: system-ui, sans-serif;
+	font-size: var(--tg-text-font-size);
+	line-height: var(--tg-text-line-height);
+	overflow-wrap: break-word;
+	user-select: none;
+}
+
+body {
+	margin: var(--tg-text-padding);
+	padding: var(--tg-content-safe-area-inset-top) var(--tg-content-safe-area-inset-right)
+		var(--tg-content-safe-area-inset-bottom) var(--tg-content-safe-area-inset-left);
+}
+
+a, a:link {
+	color: var(--tg-theme-link-color);
+	text-decoration: none;
+}
+
+/* Headings: a bubble's scale, not a page's. */
+h1, h2, h3, h4, h5, h6 {
+	margin: 0.6em 0 0.3em;
+	line-height: 1.2;
+	font-weight: 600;
+}
+h1 { font-size: 1.6em; }
+h2 { font-size: 1.35em; }
+h3 { font-size: 1.15em; }
+h4 { font-size: 1em; }
+h5 { font-size: 0.9em; }
+h6 { font-size: 0.85em; color: var(--tg-theme-subtitle-text-color); }
+
+p { margin: 0.5em 0; }
+
+hr {
+	height: 0;
+	margin: 0.6em 0;
+	border: 0;
+	border-top: 1px solid var(--tg-theme-section-separator-color);
+}
+
+ul, ol {
+	margin: 0.5em 0;
+	padding-left: 1.4em;
+}
+li { margin: 0.15em 0; }
+
+table {
+	border-collapse: collapse;
+	border-spacing: 0;
+	border-color: var(--tg-theme-section-separator-color);
+}
+/* "tables (with separator lines)": a line under every cell, in the separator colour. */
+td, th {
+	padding: 4px 6px;
+	text-align: start;
+	border-bottom: 1px solid var(--tg-theme-section-separator-color);
+}
+th {
+	font-weight: 600;
+	color: var(--tg-theme-section-header-text-color);
+}
+
+blockquote {
+	margin: 0.5em 0;
+	padding-left: 0.75em;
+	border-left: 3px solid var(--tg-theme-accent-text-color);
+}
+
+code, kbd, samp, pre {
+	font-family: monospace;
+	font-size: 0.9em;
+}
+pre {
+	margin: 0.5em 0;
+	white-space: pre-wrap;
+}
+
+small { color: var(--tg-theme-hint-color); }
+
+figure { margin: 0.5em 0; }
+figcaption {
+	margin-top: 0.3em;
+	font-size: 0.9em;
+	color: var(--tg-theme-hint-color);
+}
+
+summary { cursor: pointer; }
+
+/* The client-styled button (SPEC S11.3; guide "Native look": a pressed state (:active) and a disabled state
+   ([disabled])); its dimming is not a heavy element (guide, Limits; core/src/paint_policy.h). */
+button {
+	display: inline-block;
+	box-sizing: border-box;
+	margin: 0;
+	border: 0;
+	border-radius: var(--tg-button-radius, 8px);
+	padding: var(--tg-button-padding, 6px 14px);
+	min-height: var(--tg-button-height, 0px);
+	background: var(--tg-button-bg, var(--tg-theme-button-color));
+	color: var(--tg-button-text, var(--tg-theme-button-text-color));
+	font: var(--tg-button-font, 500 1em system-ui, sans-serif);
+	line-height: 1.2;
+	text-align: center;
+	cursor: pointer;
+}
+button:active { opacity: var(--tg-button-pressed-opacity, 0.7); }
+button[disabled] {
+	opacity: var(--tg-button-disabled-opacity, 0.45);
+	cursor: default;
+}

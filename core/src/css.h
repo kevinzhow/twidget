@@ -77,13 +77,12 @@ std::optional<std::pair<float, float>> parse_origin(std::string_view text, float
 /// `opacity`: a number or a percentage, clamped to 0..1.
 std::optional<float> parse_opacity(std::string_view text);
 
-/// The custom properties the host's `theme` message sets on the widget's root (widget-sandbox
-/// docs/sdk-v1.md §2.3, §2.4): the palette completed from the scheme's defaults, `--tg-color-scheme`,
-/// each button token whose value passes its grammar, and the text tokens completed from the reference set.
-/// Twin of `themeVariables` in sdk-policy.ts.
+/// The custom properties the host's `theme` message sets on the card's root (SPEC S7.1, S10.2): the 15
+/// `--tg-theme-*` colours (a `#rrggbb` value lowercased, anything else our default for the scheme), `--tg-color-scheme`,
+/// each button token whose value passes its grammar, and the text tokens completed from their defaults.
 std::vector<std::pair<std::string, std::string>> theme_variables(const twidget::Json& theme);
-/// The `--tg-content-safe-area-*` properties of the host's `safeArea` message (docs/sdk-v1.md §2.17): all six, each
-/// inset 0–64 and corner 0–200 px at two decimals, anything else 0px. Twin of `contentSafeAreaVariables` in sdk-policy.ts.
+/// The `--tg-content-safe-area-*` properties of the host's `safeArea` message (SPEC S7.1): all six, each inset 0–64
+/// and corner 0–200 px (non-finite or out of range: 0) at two decimals.
 std::vector<std::pair<std::string, std::string>> content_safe_area_variables(const twidget::Json& inset);
 /// A name `theme_variables` or `content_safe_area_variables` may set: the widget's own style ops cannot set it on the root.
 bool is_theme_variable(std::string_view name);

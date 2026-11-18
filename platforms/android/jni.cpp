@@ -1,4 +1,4 @@
-// JNI surface of the litehtml renderer (org.telegram.widgetsandbox.litehtml.LitehtmlNative)
+// JNI surface of the litehtml renderer (dev.twidget.litehtml.LitehtmlNative)
 // and the Backend that calls back into LitehtmlBackend.kt for fonts, text
 // metrics, image decoding and canvas bitmaps (android.graphics — there is no
 // NDK text API). One Renderer per widget behind an opaque handle; every
@@ -255,7 +255,7 @@ T guarded(jlong h, T def, const char* what, F f) {
 
 extern "C" {
 
-JNIEXPORT jlong JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_create(JNIEnv* env, jclass, jdouble width, jdouble dpr, jstring theme, jobject backend) {
+JNIEXPORT jlong JNICALL Java_dev_twidget_litehtml_LitehtmlNative_create(JNIEnv* env, jclass, jdouble width, jdouble dpr, jstring theme, jobject backend) {
     EnvScope scope(env);
     try {
         auto h = std::make_unique<Handle>();
@@ -268,12 +268,12 @@ JNIEXPORT jlong JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_
     }
 }
 
-JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_destroy(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT void JNICALL Java_dev_twidget_litehtml_LitehtmlNative_destroy(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     delete handle_of(h);
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_receive(JNIEnv* env, jclass, jlong h, jstring json) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_receive(JNIEnv* env, jclass, jlong h, jstring json) {
     EnvScope scope(env);
     std::string text = get_string(env, json);
     return new_string(env, guarded<std::string>(h, "[]", "receive", [&](Handle& hd) {
@@ -283,7 +283,7 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
     }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_setWidth(JNIEnv* env, jclass, jlong h, jdouble width) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_setWidth(JNIEnv* env, jclass, jlong h, jdouble width) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "setWidth", [&](Handle& hd) {
         std::vector<Json> out;
@@ -292,7 +292,7 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
     }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_setMaxHeight(JNIEnv* env, jclass, jlong h, jdouble height) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_setMaxHeight(JNIEnv* env, jclass, jlong h, jdouble height) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "setMaxHeight", [&](Handle& hd) {
         std::vector<Json> out;
@@ -301,7 +301,7 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
     }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_setTheme(JNIEnv* env, jclass, jlong h, jstring theme) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_setTheme(JNIEnv* env, jclass, jlong h, jstring theme) {
     EnvScope scope(env);
     bool dark = get_string(env, theme) == "dark";
     return new_string(env, guarded<std::string>(h, "[]", "setTheme", [&](Handle& hd) {
@@ -311,29 +311,29 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
     }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_touch(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint pointer, jboolean primary) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_touch(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint pointer, jboolean primary) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "touch", [&](Handle& hd) { return messages(hd.renderer->touch(action, x, y, pointer, primary)); }));
 }
 
 /// A mouse or touch pointer with modifiers (bit0 alt, bit1 ctrl, bit2 meta, bit3 shift); `mouse` sends no touch events.
 /// `button` 2 is a mouse's secondary button.
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_pointer(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint pointer, jboolean primary, jboolean mouse, jint modifiers, jint button) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_pointer(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint pointer, jboolean primary, jboolean mouse, jint modifiers, jint button) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "pointer", [&](Handle& hd) { return messages(hd.renderer->touch(action, x, y, pointer, primary, mouse, modifiers, button)); }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_hover(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint modifiers) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_hover(JNIEnv* env, jclass, jlong h, jint action, jdouble x, jdouble y, jint modifiers) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "hover", [&](Handle& hd) { return messages(hd.renderer->hover(action, x, y, modifiers)); }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_wheel(JNIEnv* env, jclass, jlong h, jdouble x, jdouble y, jdouble dx, jdouble dy, jint mode, jint modifiers) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_wheel(JNIEnv* env, jclass, jlong h, jdouble x, jdouble y, jdouble dx, jdouble dy, jint mode, jint modifiers) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "wheel", [&](Handle& hd) { return messages(hd.renderer->wheel(x, y, dx, dy, mode, modifiers)); }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_key(JNIEnv* env, jclass, jlong h, jstring type, jstring key, jstring code, jboolean repeat, jint modifiers) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_key(JNIEnv* env, jclass, jlong h, jstring type, jstring key, jstring code, jboolean repeat, jint modifiers) {
     EnvScope scope(env);
     std::string t = get_string(env, type), k = get_string(env, key), c = get_string(env, code);
     return new_string(env, guarded<std::string>(h, "[]", "key", [&](Handle& hd) { return messages(hd.renderer->key(t, k, c, repeat, modifiers)); }));
@@ -341,40 +341,40 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
 
 /// The text control being edited (Renderer::EditorSpec as JSON), or "null": the view covers it with an
 /// EditText of its own, which brings the keyboard and the input method.
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_editor(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_editor(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "null", "editor", [&](Handle& hd) { return hd.renderer->editor_json(); }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_edit(JNIEnv* env, jclass, jlong h, jlong generation, jstring text, jstring inputType) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_edit(JNIEnv* env, jclass, jlong h, jlong generation, jstring text, jstring inputType) {
     EnvScope scope(env);
     std::string t = get_string(env, text), i = get_string(env, inputType);
     return new_string(env, guarded<std::string>(h, "[]", "edit", [&](Handle& hd) { return messages(hd.renderer->edit(uint64_t(generation), t, i.empty() ? "insertText" : i)); }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_endEditing(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_endEditing(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "end_editing", [&](Handle& hd) { return messages(hd.renderer->end_editing()); }));
 }
 
 /// One display frame (Choreographer): animations advance. Call it every frame while wantsTick holds,
 /// otherwise after nextTickIn seconds.
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_tick(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_tick(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "tick", [&](Handle& hd) { return messages(hd.renderer->tick()); }));
 }
 
-JNIEXPORT jboolean JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_wantsTick(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jboolean JNICALL Java_dev_twidget_litehtml_LitehtmlNative_wantsTick(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return guarded<bool>(h, false, "wantsTick", [&](Handle& hd) { return hd.renderer->wants_tick(); });
 }
 
-JNIEXPORT jdouble JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_nextTickIn(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jdouble JNICALL Java_dev_twidget_litehtml_LitehtmlNative_nextTickIn(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return guarded<double>(h, INFINITY, "nextTickIn", [&](Handle& hd) { return hd.renderer->next_tick_in(); });
 }
 
-JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_setCompositing(JNIEnv* env, jclass, jlong h, jboolean enabled) {
+JNIEXPORT void JNICALL Java_dev_twidget_litehtml_LitehtmlNative_setCompositing(JNIEnv* env, jclass, jlong h, jboolean enabled) {
     EnvScope scope(env);
     guarded<bool>(h, false, "setCompositing", [&](Handle& hd) {
         hd.renderer->set_compositing(enabled);
@@ -383,13 +383,13 @@ JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_s
 }
 
 /// Where the last displayList differs from the one before (Renderer::damage_json): null means all.
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_damage(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_damage(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "null", "damage", [&](Handle& hd) { return hd.renderer->damage_json(); }));
 }
 
 /// Drops caches that are made again on demand: onTrimMemory, or a widget scrolled away.
-JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_trim(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT void JNICALL Java_dev_twidget_litehtml_LitehtmlNative_trim(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     guarded<int>(h, 0, "trim", [&](Handle& hd) {
         hd.renderer->trim();
@@ -398,18 +398,18 @@ JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_t
 }
 
 /// The layers above the last displayList (src/compositor.h, to_json(Composition)).
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_composition(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_composition(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "{\"v\":0,\"l\":[]}", "composition", [&](Handle& hd) { return twlite::to_json(hd.renderer->composition()); }));
 }
 
 /// The renderer clock, in seconds: what the layers' track starts are on.
-JNIEXPORT jdouble JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_clock(JNIEnv*, jclass) {
+JNIEXPORT jdouble JNICALL Java_dev_twidget_litehtml_LitehtmlNative_clock(JNIEnv*, jclass) {
     return twlite::Renderer::clock();
 }
 
 /// Layer `index` of the last composition as a display list; null past the end.
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_layerContent(JNIEnv* env, jclass, jlong h, jint index) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_layerContent(JNIEnv* env, jclass, jlong h, jint index) {
     EnvScope scope(env);
     std::string json = guarded<std::string>(h, "", "layerContent", [&](Handle& hd) {
         const auto& layers = hd.renderer->composition().layers;
@@ -419,44 +419,44 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
 }
 
 /// (width << 32) | height, CSS px.
-JNIEXPORT jlong JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_size(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jlong JNICALL Java_dev_twidget_litehtml_LitehtmlNative_size(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return guarded<jlong>(h, 0, "size", [&](Handle& hd) {
         return (jlong(uint32_t(hd.renderer->width())) << 32) | jlong(uint32_t(hd.renderer->viewport_height()));
     });
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_selectedText(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_selectedText(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "", "selected_text", [&](Handle& hd) { return hd.renderer->selected_text(); }));
 }
 
-JNIEXPORT jboolean JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_clearSelection(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jboolean JNICALL Java_dev_twidget_litehtml_LitehtmlNative_clearSelection(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return guarded<bool>(h, false, "clear_selection", [&](Handle& hd) { return hd.renderer->clear_selection(); });
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_selectableText(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_selectableText(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "selectable_text", [&](Handle& hd) { return hd.renderer->selectable_text_json(); }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_cursor(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_cursor(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "auto", "cursor", [&](Handle& hd) { return hd.renderer->cursor(); }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_masterCss(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_masterCss(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "", "master_css", [&](Handle& hd) { return hd.renderer->master_css(); }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_themeVariables(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_themeVariables(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "{}", "theme_variables", [&](Handle& hd) { return hd.renderer->theme_variables_json(); }));
 }
 
-JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_setResizeTracking(JNIEnv* env, jclass, jlong h, jboolean enabled, jboolean prefersBottom) {
+JNIEXPORT void JNICALL Java_dev_twidget_litehtml_LitehtmlNative_setResizeTracking(JNIEnv* env, jclass, jlong h, jboolean enabled, jboolean prefersBottom) {
     EnvScope scope(env);
     guarded<bool>(h, false, "set_resize_tracking", [&](Handle& hd) {
         hd.renderer->set_resize_tracking(enabled, prefersBottom);
@@ -464,23 +464,23 @@ JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_s
     });
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_imageReady(JNIEnv* env, jclass, jlong h, jint image, jfloat width, jfloat height) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_imageReady(JNIEnv* env, jclass, jlong h, jint image, jfloat width, jfloat height) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "image_ready", [&](Handle& hd) { return messages(hd.renderer->image_ready(image, width, height)); }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_html(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_html(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "", "html", [&](Handle& hd) { return hd.renderer->last_html(); }));
 }
 
-JNIEXPORT jboolean JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_dirty(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jboolean JNICALL Java_dev_twidget_litehtml_LitehtmlNative_dirty(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return guarded<bool>(h, false, "dirty", [&](Handle& hd) { return hd.renderer->dirty(); });
 }
 
 /// The display list of the current document as JSON (display_list.h), CSS px.
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_displayList(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_displayList(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "[]", "displayList", [&](Handle& hd) {
         twlite::DisplayList list = hd.renderer->paint();
@@ -489,7 +489,7 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
     }));
 }
 
-JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_stats(JNIEnv* env, jclass, jlong h) {
+JNIEXPORT jstring JNICALL Java_dev_twidget_litehtml_LitehtmlNative_stats(JNIEnv* env, jclass, jlong h) {
     EnvScope scope(env);
     return new_string(env, guarded<std::string>(h, "{}", "stats", [&](Handle& hd) {
         const auto& s = hd.renderer->stats();
@@ -503,7 +503,7 @@ JNIEXPORT jstring JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNativ
 
 /// Runs a FilterPush's filters (its "fl", display_list.h's Filter as [kind, amount, x, y, argb]) over an
 /// ARGB_8888 bitmap's premultiplied pixels; `scale` is its px per CSS px.
-JNIEXPORT void JNICALL Java_org_telegram_widgetsandbox_litehtml_LitehtmlNative_filterPixels(JNIEnv* env, jclass, jobject bitmap, jstring filters, jfloat scale) {
+JNIEXPORT void JNICALL Java_dev_twidget_litehtml_LitehtmlNative_filterPixels(JNIEnv* env, jclass, jobject bitmap, jstring filters, jfloat scale) {
     auto parsed = Json::parse(get_string(env, filters));
     if (!parsed) return;
     twlite::Filters steps;

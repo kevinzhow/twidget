@@ -260,13 +260,15 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
             // A ruby counts by its base text, on either side: <ruby>仕切<rt>しき</rt></ruby>って keeps 切 with っ.
             // Two texts next to each other are one text's words, which the container's split_text already broke.
             auto is_ruby = [](const std::shared_ptr<render_item>& item) { return item->src_el()->tag() == _ruby_; };
-            const bool here_text = el->src_el()->is_text() && !el->src_el()->is_white_space() && !el->src_el()->is_break();
+            // CSS handles spaces separately. In pre-wrap they can hang past a soft wrap, even though
+            // the CJK table forbids starting a line with a space.
+            const bool here_text = el->src_el()->is_text() && !el->src_el()->is_space() && !el->src_el()->is_break();
             if(next < events.size() && events[next].second == iterator_item_type_child && (here_text || is_ruby(el)) &&
                (next > index + 1 || is_ruby(el) || is_ruby(events[next].first)))
             {
                 const auto& following = events[next].first;
                 auto text = std::dynamic_pointer_cast<el_text>(following->src_el());
-                if(((text && !text->is_white_space()) || is_ruby(following)) &&
+                if(((text && !text->is_space() && !text->is_break()) || is_ruby(following)) &&
                    cjk::no_break_between(edge_char(el->src_el(), false), edge_char(following->src_el(), true)))
                 {
                     pixel_t width = 0_px;

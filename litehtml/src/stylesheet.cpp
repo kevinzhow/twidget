@@ -239,12 +239,19 @@ namespace litehtml
                 // @font-face: the container loads the font (CSS Fonts 4 §4); its declarations as written.
                 if(lowcase(rule->name) == "font-face" && rule->block.type == CURLY_BLOCK)
                 {
-                    doc->container()->font_face(get_repr(rule->block.value, 0, -1, true), baseurl);
+                    auto& face = m_font_faces.emplace_back(get_repr(rule->block.value, 0, -1, true), baseurl);
+                    doc->container()->font_face(face.first, face.second);
                     break;
                 }
                 css_parse_error("unrecognized rule @" + rule->name);
             }
         }
+    }
+
+    void css::register_font_faces(document_container& container) const
+    {
+        for(const auto& [declarations, baseurl] : m_font_faces)
+            container.font_face(declarations, baseurl);
     }
 
     // https://drafts.csswg.org/css-cascade-5/#at-import

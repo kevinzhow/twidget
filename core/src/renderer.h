@@ -1,4 +1,4 @@
-// The renderer trust domain of widget-sandbox's docs/protocol.md on litehtml:
+// The renderer trust domain of the cards' renderer protocol on litehtml:
 // validated RenderOps in, layout answers and WidgetEvents out, a DisplayList on
 // request. litehtml has no DOM mutation API, so the ops maintain a shadow tree
 // here; every batch serialises it to HTML, which the fork patches into the live
@@ -69,7 +69,7 @@ public:
     /// Host → renderer message (parsed JSON). Returns renderer → host messages.
     std::vector<twidget::Json> receive(const twidget::Json& msg);
     void set_width(double width, std::vector<twidget::Json>& out);
-    /// The tallest the widget may grow, in CSS px (600, widget-sandbox's shared bound, unless the host
+    /// The tallest the widget may grow, in CSS px (600, the shared bound, unless the host
     /// says otherwise); past it the document is cut off.
     void set_max_height(double height, std::vector<twidget::Json>& out);
     /// The chat theme changed: `prefers-color-scheme` inside the document follows.
@@ -127,7 +127,7 @@ public:
     /// The platform's editor let go (the user dismissed it, or it lost the keyboard): change if the
     /// value differs from when editing began, then blur and focusout.
     std::vector<twidget::Json> end_editing();
-    /// Text selection (widget-sandbox v0.1.1, docs/sdk-v1.md §5.10). A mouse drag that starts on text under
+    /// Text selection. A mouse drag that starts on text under
     /// `user-select: text`, where the widget does not prevent the press, selects it; any other primary press
     /// drops the selection. The host copies it with its own command, and clears it on what it handles itself.
     bool has_selection() const;
@@ -151,7 +151,7 @@ public:
     /// layer's track as of now, so a host lays its selection again while a layer moves. "[]" when none.
     std::string selectable_text_json() const;
     /// A widget's accessibility summary: one node per element a screen reader reads or acts on, in document
-    /// order, not one per DOM node. widget-sandbox's profile gives HTML no accessibility semantics in v1 (D21) but
+    /// order, not one per DOM node. Profile 1 gives HTML no accessibility semantics but
     /// keeps `role`, `alt`, `title` and `aria-*` on the elements; the summary reads them as a browser would,
     /// with the tags' own roles (button, a[href], h1–h6, img, details>summary, input, progress) and, for an
     /// element no role names, an outermost `cursor: pointer` as a button.
@@ -306,7 +306,7 @@ private:
         bool mouse;
         int modifiers;
         int button = 0;
-        bool held = false;  // the widget took a hold: the release is no click
+        bool held = false;  // the widget already received this press's contextmenu
         int64_t capture = 0;  // setPointerCapture: pointer events go here instead
         double sent_x = x0, sent_y = y0;  // where the widget last heard the pointer was, for movementX/Y
         bool finger = false;  // a real finger or pen, not a mouse playing one: the chat may still scroll its press
@@ -365,16 +365,16 @@ private:
     bool match_media(const std::string& query) const;
     int64_t widget_id_at(double x, double y, Rect* placement) const;
     /// What the widget claims of a press on `target`: the `touch-action` of it and its ancestors, and its
-    /// preventDefault on pointerdown or touchstart.
-    twidget::WidgetGestureClaim gesture_claim(int64_t target) const;
+    /// learned pointerdown prevention (SPEC S11.2).
+    twidget::gesture::Claim gesture_claim(int64_t target) const;
     /// The arbiter's x: from the client's leading edge.
     double arbiter_x(double x) const { return rtl_ ? width_ - x : x; }
     std::optional<double> hold_deadline() const;
     void check_hold(std::vector<twidget::Json>& out);
     /// Acts on a verdict once the event that produced it has gone to the widget.
-    void settle_gesture(const twidget::GestureVerdict& v, int pointer, std::vector<twidget::Json>& out);
+    void settle_gesture(const twidget::gesture::Verdict& v, int pointer, std::vector<twidget::Json>& out);
     /// Playing the bubble: the press ends for the widget with pointercancel, and the host hears what the bubble does.
-    void bubble_takes(int pointer, const twidget::GestureVerdict& v, std::vector<twidget::Json>& out);
+    void bubble_takes(int pointer, const twidget::gesture::Verdict& v, std::vector<twidget::Json>& out);
     void set_capture(Touch& t, int64_t id, std::vector<twidget::Json>& out);
     /// The border box of element `id`, empty when it is not laid out.
     Rect box_of(int64_t id) const;
@@ -541,6 +541,8 @@ private:
     /// Rule 5: the running animations into the ledger; true when one that was counted ended.
     bool sync_motion(double now);
     void stop_paint(const paint::Verdict& verdict);
+    void hold_animation_frame();
+    void paint_stop_label(DisplayList& list);
     /// Past the layout budget (Container::layout), whatever the host's policy: a violation for the host's log, and the
     /// renderer freezes (fatal) with the badge alone, the widget's document laid out no more.
     void stop_layout(uint64_t boxes);
@@ -707,8 +709,8 @@ private:
     int64_t hover_ = 0;
     double hover_x_ = 0, hover_y_ = 0;
     int click_count_ = 0;
-    // Who gets each primary press (widget-sandbox's gesture policy): the widget's own dblclick and contextmenu.
-    twidget::GestureArbiter arbiter_;
+    // Who gets each primary press, and the widget's own dblclick and contextmenu (SPEC S11.2).
+    twidget::gesture::Arbiter arbiter_;
     int arbiter_pointer_ = -1;
     // `arbitrate`: the renderer plays the bubble (`bubble_`), a mouse's main button as a finger (`bubble_touch_`).
     bool bubble_ = false, bubble_touch_ = false, rtl_ = false;

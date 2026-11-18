@@ -8,6 +8,7 @@
 #include <litehtml/html_tag.h>
 #include <litehtml/render_inline_context.h>
 #include <litehtml/render_item.h>
+#include <litehtml/media_query.h>
 #ifdef TW_LITEHTML_TWIDGET
 #include <litehtml/css_effects.h>
 #include <litehtml/el_break.h>
@@ -15,6 +16,7 @@
 #include <litehtml/el_svg.h>
 #include <litehtml/el_text.h>
 #include <litehtml/render_inline.h>
+#include <litehtml/utf8_strings.h>
 #endif
 
 #include <algorithm>
@@ -36,7 +38,7 @@ namespace twlite {
 
 namespace {
 
-/// widget-sandbox's shared bubble bounds are 50 to 600 CSS px; the host may raise the top (set_max_height).
+/// The shared bubble bounds are 50 to 600 CSS px; the host may raise the top (set_max_height).
 constexpr double MIN_HEIGHT = 50.0;
 /// The tallest a host may let a widget grow: past this a document is a runaway, not content.
 constexpr double HEIGHT_CEILING = 16384.0;
@@ -45,11 +47,12 @@ constexpr int MAX_PASSES = 4;
 /// first build starts its animations before its script says what it listens for; animationiteration
 /// repeats, and stays opt-in.
 const char* const ALWAYS_FORWARD[] = {"click", "load", "error", "toggle", "animationstart", "animationend", "transitionend"};
-/// Every event the widget may get (profile 1, `tables.events` in widget-sandbox's profile.json): no keys,
+/// Every event the widget may get (profile 1): no keys,
 /// focus, input, touch, wheel or scroll; dblclick and contextmenu only as the gesture policy decides.
 const char* const PROFILE_EVENTS[] = {
     "click", "pointerdown", "pointerup", "pointermove", "pointerenter", "pointerleave", "pointerover", "pointerout", "pointercancel",
     "dblclick", "contextmenu",
+    "gotpointercapture", "lostpointercapture",
     "mousedown", "mouseup", "mousemove", "mouseenter", "mouseleave", "mouseover", "mouseout",
     "load", "error", "toggle", "animationstart", "animationend", "animationiteration", "transitionend",
 };
@@ -135,8 +138,7 @@ constexpr double SCRIPT_FOCUS_S = 1;
 /// visible box: litehtml has no controls of its own (the container would own them), so they are
 /// bordered inline blocks here, with the value as text where the shadow tree knows it.
 ///
-/// The profile's UA layer (TW_UA_STYLESHEET, `tables.uaStylesheet` in widget-sandbox's profile.json) comes
-/// after these: the root, the text elements and `<button>` on the theme's variables, as every renderer draws them.
+/// The card defaults in ua.css follow these platform rules (SPEC S11.3).
 const char* const UA_EXTRA = R"css(
 button,input,select,textarea,meter,progress{box-sizing:border-box}
 input,select,textarea{display:inline-block;border:1px solid #8f8f8f;border-radius:3px;background:#fff;color:#000;padding:2px 6px;font:13.333px -apple-system,system-ui,sans-serif;min-height:1.8em;min-width:2em;vertical-align:middle}
@@ -279,6 +281,13 @@ std::vector<Rect> inline_boxes_of(const litehtml::element::ptr& el) {
 }
 
 #ifdef TW_LITEHTML_TWIDGET
+litehtml::transform_matrix layout_transform(const litehtml::element::ptr& el) {
+    litehtml::transform_matrix result;
+    for (auto item = el->get_render_item(); item; item = item->parent())
+        result = result.then(item->get_visual_transform());
+    return result;
+}
+
 /// A path's bounds, sampled along its outline so that curves bound by their ink, not their control points.
 bool path_bounds(const litehtml::vector_path& path, float& x0, float& y0, float& x1, float& y1) {
     const int steps = 512;
@@ -313,6 +322,41 @@ std::optional<Rect> svg_box_of(const litehtml::element::ptr& el) {
         bx0 = std::min(bx0, tx); by0 = std::min(by0, ty); bx1 = std::max(bx1, tx); by1 = std::max(by1, ty);
     }
     return Rect{bx0, by0, bx1 - bx0, by1 - by0};
+}
+
+// S11.5 indexes the rendered text in UTF-16 units. Keep the painter's run boundaries, fonts and spacing.
+Json svg_text_metric(const std::vector<litehtml::svg_text_run>& runs, litehtml::document_container& container,
+                     std::string_view method, const Json& args) {
+    const size_t start = size_t(std::max(0, args[0].asInt()));
+    const size_t end = start + size_t(std::max(0, args[1].asInt()));
+    const bool substring = method == "getSubStringLength" && start < end;
+    size_t units = 0;
+    double length = 0, subLength = 0;
+    for (const auto& run : runs) {
+        length += run.box.width.value();
+        int first = -1, last = 0, byte = 0;
+        while (size_t(byte) < run.text.size()) {
+            const int previous = byte;
+            const char32_t character = litehtml::read_utf8_char(run.text, byte);
+            if (byte == previous) ++byte;
+            const size_t next = units + (character > 0xffff ? 2 : 1);
+            if (substring && next > start && units < end) {
+                if (first < 0) first = previous;
+                last = byte;
+            }
+            units = next;
+        }
+        if (first >= 0) {
+            const auto font = run.style->css().get_font();
+            const double to = size_t(last) == run.text.size() ? run.box.width.value()
+                : container.text_width(run.text.substr(0, last).c_str(), font).value();
+            const double from = first == 0 ? 0
+                : container.text_width(run.text.substr(0, first).c_str(), font).value();
+            subLength += to - from;
+        }
+    }
+    if (method == "getNumberOfChars") return units;
+    return method == "getSubStringLength" ? subLength : length;
 }
 #endif
 
@@ -367,8 +411,7 @@ void content_extent(const std::shared_ptr<litehtml::render_item>& ri, float& rig
 /// Where `r`, in `el`'s layout coordinates, shows: its transform and its ancestors', as a bounding box.
 Rect transformed_box(const litehtml::element::ptr& el, Rect r) {
 #ifdef TW_LITEHTML_TWIDGET
-    litehtml::transform_matrix m;
-    for (auto ri = el->get_render_item(); ri; ri = ri->parent()) m = m.then(ri->get_visual_transform());
+    const auto m = layout_transform(el);
     if (m.is_identity()) return r;
     float xs[4] = {r.x, r.x + r.w, r.x, r.x + r.w}, ys[4] = {r.y, r.y, r.y + r.h, r.y + r.h};
     float x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
@@ -681,11 +724,11 @@ constexpr size_t MAX_WIDTH_BYTES = 1 << 20;
 /// Past this a selectable run's carets are spread evenly over its width rather than measured: a press
 /// or a move must not shape a long unbroken run once per probe.
 constexpr size_t MAX_MEASURED_RUN = 4096;
-/// The profile's image types (widget-sandbox's PROFILE_IMAGES). The validator lets no other through, but
+/// The profile's image types. The validator lets no other through, but
 /// a path around it (generated content's url(), once) must not hand a backend anything else.
 constexpr std::string_view IMAGE_TYPES[] = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"};
 
-/// A data: URL's media type as widget-sandbox's checkUrl reads it: the scheme in any case, around tabs,
+/// A data: URL's media type, read leniently: the scheme in any case, around tabs,
 /// newlines and the C0 controls and spaces at its ends; trimmed and lower-cased. Empty when not a data: URL.
 std::string data_mime(std::string_view raw) {
     std::string url;
@@ -846,7 +889,7 @@ public:
     bool patched() const { return patched_; }
 
     /// Boxes one layout may lay out afresh: nested flex, grid and table boxes measure their children several times
-    /// each, so a few hundred bytes of markup ask for 2^depth layouts. The heaviest widget of widget-sandbox's corpus
+    /// each, so a few hundred bytes of markup ask for 2^depth layouts. The heaviest card measured
     /// lays out 2,600 boxes in a pass; the base is 40 times that, and a document of many elements gets more.
     static constexpr uint64_t kLayoutBudgetBase = 100000;
     static constexpr uint64_t kLayoutBudgetPerElement = 50;
@@ -3021,7 +3064,7 @@ void Renderer::apply_root_variables() {
     // The layer with the theme's values in place of its var(), since the fork applies a var() in a shorthand
     // after the cascade (`margin: var(…)` from the master CSS would beat the widget's own `margin: 0`), and
     // without :where() (css.h, unwrap_where).
-    container_->set_master(std::string(litehtml::master_css) + UA_EXTRA + css::unwrap_where(css::substitute_variables(TW_UA_STYLESHEET, theme_vars_)));
+    container_->set_master(std::string(litehtml::master_css) + UA_EXTRA + css::substitute_variables(TW_UA_STYLESHEET, theme_vars_));
 }
 
 const std::string& Renderer::master_css() const { return container_->master(); }
@@ -3054,8 +3097,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
     std::vector<Json> out;
     const std::string& type = msg["type"].asString();
     if (type == "ops") {
-        // Past the paint limit the host stops the widget: what its task still sent is not drawn.
-        if (paint_stopped_) return out;
+        if (still()) return out;  // SPEC S1.9 and S10.4
         const auto& ops = msg["ops"].arr();
         std::vector<int64_t> scripted;
         bool fast = scripted_only(ops, scripted);
@@ -3652,30 +3694,14 @@ void Renderer::write_style(const Node* n, std::string& out) const {
     escape_attr(plain, out);
 }
 
-namespace {
-const char* const kFrozenBadgeCss =
-    "[data-tw-frozen=fatal] body{opacity:.85}[data-tw-badge]{position:fixed;right:6px;bottom:6px;z-index:2147483647;"
-    "font:11px/1.3 -apple-system,system-ui,sans-serif;color:#fff;background:rgba(60,60,60,.75);padding:2px 7px;"
-    "border-radius:9px}";
-}
-
 std::string Renderer::serialize() const {
     std::string out;
     out.reserve(4096);
     out += "<!DOCTYPE html>";
-    if (layout_stopped_) {
-        // Past the layout budget nothing of the widget's is laid out again, its stylesheets neither: the badge alone.
-        out += "<html data-tw-frozen=\"fatal\"><head><style>" + std::string(kFrozenBadgeCss) +
-               "</style></head><body><div data-tw-badge=\"fatal\">";
-        escape_text(frozen_reason_, out);
-        out += "</div></body></html>";
-        return out;
-    }
-    // the frozen chrome: html attribute, badge style in head, badge in body (renderer elements, never in the widget's table)
+    if (layout_stopped_) return out + "<html><head></head><body></body></html>";
     const Node* html = html_node_.get();
     out += "<html";
     if (html->id) out += " data-twid=\"" + std::to_string(html->id) + "\"";
-    if (frozen_) out += frozen_fatal_ ? " data-tw-frozen=\"fatal\"" : " data-tw-frozen=\"paused\"";
     bool styled = !html->styles.empty() || !theme_vars_.empty() || overrides_.count(html->id);
     for (const auto& [name, value] : html->attrs) {
         if (name == "style") { styled = true; continue; }
@@ -3690,29 +3716,7 @@ std::string Renderer::serialize() const {
         out.push_back('"');
     }
     out.push_back('>');
-    for (const Node* c : html->children) {
-        if (c == body_node_.get() && frozen_) {
-            // badge before the body's own children would shift them; append it inside instead
-            std::string body;
-            serialize_node(c, body);
-            size_t close = body.rfind("</body>");
-            if (close != std::string::npos) {
-                std::string badge = "<div data-tw-badge=\"" + std::string(frozen_fatal_ ? "fatal" : "paused") + "\">";
-                escape_text(frozen_reason_, badge);
-                badge += "</div>";
-                body.insert(close, badge);
-            }
-            out += body;
-        } else if (c == head_node_.get() && frozen_) {
-            std::string head;
-            serialize_node(c, head);
-            size_t close = head.rfind("</head>");
-            if (close != std::string::npos) head.insert(close, std::string("<style>") + kFrozenBadgeCss + "</style>");
-            out += head;
-        } else {
-            serialize_node(c, out);
-        }
-    }
+    for (const Node* child : html->children) serialize_node(child, out);
     out += "</html>";
     return out;
 }
@@ -5546,6 +5550,7 @@ DisplayList Renderer::paint() {
     DisplayList list = paint_document();
     drop_inert_clips(list);
     paint_selection(list, 0, true);
+    if (frozen_) paint_stop_label(list);
     // What changed against the last paint, for a platform to repaint only that.
     PaintSummary summary = summarize(list);
     damage_valid_ = painted_valid_ && painted_size_ == std::make_pair(px_width(), px_height()) &&
@@ -5971,10 +5976,29 @@ Json Renderer::answer(const Json& q) {
 #ifdef TW_LITEHTML_TWIDGET
     if (kind == "svg") {
         const std::string& method = q["method"].asString();
-        litehtml::position text;
-        if (el && litehtml::svg_text_box(el, container_.get(), text)) {
-            if (method == "getComputedTextLength") return double(text.width);
-            if (method == "getBBox") return Json::object().set("x", double(text.x)).set("y", double(text.y)).set("width", double(text.width)).set("height", double(text.height));
+        if (el && (method == "getCTM" || method == "getScreenCTM")) {
+            litehtml::transform_matrix matrix;
+            if (!litehtml::svg_ctm(el, matrix, method == "getCTM"))
+                return Json::object().set("error", "no SVG viewport");
+            if (method == "getScreenCTM") {
+                for (auto root = el; root; root = root->parent()) {
+                    if (dynamic_cast<litehtml::el_svg*>(root.get())) {
+                        matrix = matrix.then(layout_transform(root));
+                        break;
+                    }
+                }
+            }
+            return Json::object().set("a", matrix.a).set("b", matrix.b).set("c", matrix.c)
+                .set("d", matrix.d).set("e", matrix.tx).set("f", matrix.ty);
+        }
+        if (el && shadow && (shadow->tag == "text" || shadow->tag == "tspan")) {
+            litehtml::position text;
+            std::vector<litehtml::svg_text_run> runs;
+            litehtml::svg_text_runs(el, container_.get(), runs, text);
+            if (method == "getComputedTextLength" || method == "getNumberOfChars" || method == "getSubStringLength")
+                return svg_text_metric(runs, *container_, method, q["args"]);
+            if (method == "getBBox")
+                return Json::object().set("x", double(text.x)).set("y", double(text.y)).set("width", double(text.width)).set("height", double(text.height));
         }
         litehtml::vector_path path;
         if (!el || !litehtml::svg_geometry(el, path)) return Json::object().set("error", "unsupported");
@@ -5999,21 +6023,12 @@ Json Renderer::answer(const Json& q) {
 }
 
 bool Renderer::match_media(const std::string& query) const {
-    std::string q = lower(query);
-    if (q.find("prefers-color-scheme") != std::string::npos) return (q.find("dark") != std::string::npos) == dark_;
-    auto px = [&](const char* key) -> double {
-        size_t i = q.find(key);
-        if (i == std::string::npos) return NAN;
-        size_t j = i + std::strlen(key);
-        while (j < q.size() && (q[j] == ' ' || q[j] == ':')) j++;
-        return std::atof(q.c_str() + j);
-    };
-    double v;
-    if (!std::isnan(v = px("max-width"))) return width_ <= v;
-    if (!std::isnan(v = px("min-width"))) return width_ >= v;
-    if (q.find("hover") != std::string::npos) return q.find("none") != std::string::npos;
-    if (q.find("pointer") != std::string::npos) return q.find("coarse") != std::string::npos;
-    return false;
+    auto* doc = container_->doc();
+    if (!doc) return false;
+    litehtml::media_features features{};
+    container_->get_media_features(features);
+    const auto parsed = litehtml::parse_media_query_list(rewrite_color_scheme(query, dark_), doc->shared_from_this());
+    return parsed.check(features);
 }
 
 int64_t Renderer::widget_id_at(double x, double y, Rect* placement) const {
@@ -6065,15 +6080,18 @@ bool Renderer::layer_shown(int64_t id, double now, Affine& shown, float& opacity
 
 // ───────────────────────── events ─────────────────────────
 
-twidget::WidgetGestureClaim Renderer::gesture_claim(int64_t target) const {
-    bool prevented = prevent_.count(std::to_string(target) + ":pointerdown") || prevent_.count(std::to_string(target) + ":touchstart");
-    std::vector<std::string> values;
-    // Up to the widget's <html> itself: touch-action on an ancestor covers its descendants, as in CSS.
+twidget::gesture::Claim Renderer::gesture_claim(int64_t target) const {
+    twidget::gesture::Claim claim;
+    claim.horizontal = prevent_.contains(std::to_string(target) + ":pointerdown");
+    // SPEC S11.2: combine the declarations on the target and its ancestors through the root.
     for (const Node* n = target ? node(target) : html_node_.get(); n; n = n->parent) {
-        // From any stylesheet: the fork keeps the declaration as written, which is all this needs.
-        if (auto el = n->id ? container_->element(n->id) : nullptr) values.push_back(computed_touch_action(el));
+        if (auto el = n->id ? container_->element(n->id) : nullptr) {
+            const auto local = twidget::gesture::claim_for_touch_action(computed_touch_action(el));
+            claim.horizontal |= local.horizontal;
+            claim.hold |= local.hold;
+        }
     }
-    return twidget::gesture::claimOf(values, prevented);
+    return claim;
 }
 
 std::optional<double> Renderer::hold_deadline() const {
@@ -6086,24 +6104,25 @@ void Renderer::check_hold(std::vector<Json>& out) {
     if (auto v = arbiter_.tick(now_ms())) settle_gesture(*v, arbiter_pointer_, out);
 }
 
-void Renderer::settle_gesture(const twidget::GestureVerdict& v, int pointer, std::vector<Json>& out) {
+void Renderer::settle_gesture(const twidget::gesture::Verdict& v, int pointer, std::vector<Json>& out) {
     auto it = touches_.find(pointer);
     if (it == touches_.end()) return;
     Touch& t = it->second;
-    if (v.event == twidget::GestureEvent::ContextMenu) {
-        t.held = v.gesture == twidget::Gesture::Hold;
+    if (v.event == twidget::gesture::WidgetEvent::ContextMenu && !t.held) {
+        t.held = true;
         int64_t target = t.capture ? t.capture : t.target;
         if (target) emit_event("contextmenu", target, t.capture ? box_of(target) : t.target_rect, t, 0, out);
     }
     if (v.cancel && bubble_) bubble_takes(pointer, v, out);
 }
 
-void Renderer::bubble_takes(int pointer, const twidget::GestureVerdict& v, std::vector<Json>& out) {
+void Renderer::bubble_takes(int pointer, const twidget::gesture::Verdict& v, std::vector<Json>& out) {
     auto it = touches_.find(pointer);
     if (it == touches_.end()) return;
     Touch done = it->second;
     // Nothing more of this pointer reaches the widget: its later moves and its release find no touch.
     touches_.erase(it);
+    if (done.primary) out.push_back(Json::object().set("type", "release"));  // SPEC S11.4
     if (pointer == arbiter_pointer_) {
         arbiter_.cancel();
         arbiter_pointer_ = -1;
@@ -6115,10 +6134,12 @@ void Renderer::bubble_takes(int pointer, const twidget::GestureVerdict& v, std::
         emit_event("touchcancel", done.target, done.target_rect, done, 3, out);
     }
     set_capture(done, 0, out);
+    constexpr std::array actions{"menu", "swipe", "scroll", "back"};
+    constexpr std::array gestures{"press", "tap", "double-tap", "hold", "drag-x", "drag-y", "menu-click"};
     out.push_back(Json::object()
                       .set("type", "bubble")
-                      .set("action", std::string(twidget::gesture::name(v.action.value_or(twidget::BubbleAction::Menu))))
-                      .set("gesture", std::string(twidget::gesture::name(v.gesture)))
+                      .set("action", actions[size_t(v.action.value_or(twidget::gesture::BubbleAction::Menu))])
+                      .set("gesture", gestures[size_t(v.gesture)])
                       .set("x", done.x)
                       .set("y", done.y)
                       .set("edge", v.edge));
@@ -6374,7 +6395,7 @@ void Renderer::emit_event(const char* type, int64_t target, const Rect& target_r
         in.movement_y = t.y - t.sent_y;
     }
     // A finger's or a pen's press may still become the chat's scroll, which ends it in pointercancel: its press is no
-    // gesture, its release is (widget-sandbox v0.3.0, a finger's press counts from its release).
+    // gesture, its release is (a finger's press counts from its release).
     bool trusted = !(t.finger && (std::strcmp(type, "pointerdown") == 0 || std::strcmp(type, "mousedown") == 0));
     dispatch(event_json(type, target, target_rect, in), out, trusted);
 }
@@ -6441,13 +6462,13 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
             }
             if (had) selection_changed();
         }
-        std::optional<twidget::GestureVerdict> verdict;
+        std::optional<twidget::gesture::Verdict> verdict;
         if (primary) {
             // A drag that selects claims what a claim can: horizontal drags (a mouse never pans the chat anyway).
-            twidget::WidgetGestureClaim claim = selecting ? twidget::WidgetGestureClaim{true, false, false} : gesture_claim(t.target);
-            out.push_back(Json::object().set("type", "gesture").set("wants", claim.y).set("x", claim.x).set("y", claim.y).set("hold", claim.hold));
+            twidget::gesture::Claim claim = selecting ? twidget::gesture::Claim{true, false, false} : gesture_claim(t.target);
+            out.push_back(Json::object().set("type", "gesture").set("wants", claim.vertical).set("x", claim.horizontal).set("y", claim.vertical).set("hold", claim.hold));
             arbiter_pointer_ = pointer;
-            verdict = arbiter_.down(now_ms(), arbiter_x(x), y, claim, t.mouse ? twidget::PointerKind::Mouse : twidget::PointerKind::Touch, button);
+            verdict = arbiter_.down(now_ms(), arbiter_x(x), y, claim, t.mouse ? twidget::gesture::Device::Mouse : twidget::gesture::Device::Touch, button);
         }
         if (button == 0 && container_->mouse(0, x, y)) restyled_by_input();
         if (t.target) {
@@ -6465,7 +6486,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
     t.x = x;
     t.y = y;
     t.modifiers = modifiers;
-    std::optional<twidget::GestureVerdict> verdict;
+    std::optional<twidget::gesture::Verdict> verdict;
     if (pointer == arbiter_pointer_) {
         if (action == 1) verdict = arbiter_.move(now_ms(), arbiter_x(x), y);
         else {
@@ -6483,7 +6504,7 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
     }
     if (action == 1) {
         // A finger jitters a few px during a tap: moves inside the policy's slop are not forwarded.
-        if (!t.moved && std::hypot(x - t.x0, y - t.y0) <= twidget::gesture::TOUCH_SLOP_PX) {
+        if (!t.moved && std::hypot(x - t.x0, y - t.y0) <= twidget::gesture::kTouchSlopPx) {
             if (verdict) settle_gesture(*verdict, pointer, out);
             return out;
         }
@@ -6511,8 +6532,10 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         flush_pending(out);
         return out;
     }
+    if (verdict) settle_gesture(*verdict, pointer, out);
     Touch done = t;
     touches_.erase(it);
+    if (done.primary) out.push_back(Json::object().set("type", "release"));  // SPEC S11.4
     if (selection_.pointer == pointer) selection_.pointer = -1;
     if (done.button == 0 && container_->mouse(action, x, y, done.mouse && action == 2)) restyled_by_input();
     if (action == 2) {
@@ -6530,13 +6553,14 @@ std::vector<Json> Renderer::touch(int action, double x, double y, int pointer, b
         // A click: the press and the release land on the same element, or one inside the other
         // (the click goes to the outer one). A finger must also have stayed inside the slop.
         int64_t click = 0;
-        if (done.target && (done.mouse || !done.moved)) {
+        const bool tap = !done.moved && std::hypot(x - done.x0, y - done.y0) <= twidget::gesture::kTouchSlopPx;
+        if (done.target && (done.mouse || tap)) {
             if (up_target == done.target || is_ancestor(done.target, up_target)) click = done.target;
             else if (is_ancestor(up_target, done.target)) click = up_target;
         }
         // A secondary button never clicks, nor does a hold the widget took (it had its contextmenu).
         if (done.primary && click && done.button == 0 && !done.held) {
-            bool twice = verdict && verdict->event == twidget::GestureEvent::DblClick;
+            bool twice = verdict && verdict->event == twidget::gesture::WidgetEvent::DblClick;
             click_count_ = twice ? 2 : 1;
             Rect rect = click == done.target ? done.target_rect : up_rect;
             emit_event("click", click, rect, done, 2, out);
@@ -6619,7 +6643,7 @@ std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers)
     return out;
 }
 
-// Profile 1 gives a widget no wheel and no keyboard (widget-sandbox docs/profile-v1.md, "Input"): both
+// Profile 1 gives a widget no wheel and no keyboard (the public guide's profile 1): both
 // stay entry points so that hosts need not change, and do nothing.
 std::vector<Json> Renderer::wheel(double, double, double, double, int, int) {
     return {};
@@ -6676,6 +6700,51 @@ void Renderer::freeze(const std::string& reason, bool fatal) {
     touches_.clear();
     pending_moves_.clear();
     hover_ = 0;
+    arbiter_.cancel();
+    arbiter_pointer_ = -1;
+    if (!layout_stopped_ && !paint_stopped_) hold_animation_frame();
+}
+
+void Renderer::hold_animation_frame() {
+    // S1.9: sample once, including properties that had been painted in a compositor layer.
+    const double now = now_s();
+    overrides_ = animator_.sample(now);
+    update_composition(now);
+    patch_log_.valid = false;
+    stale_ = true;
+}
+
+void Renderer::paint_stop_label(DisplayList& list) {
+    // S1.9: the host's label is painted outside the card's markup and cascade.
+    if (frozen_reason_.empty()) return;
+    FontMetrics metrics;
+    const int font = canvas_font("12px system-ui", metrics);
+    if (!font) return;
+    const float width = float(width_);
+    const float height = float(vp_height_);
+    constexpr float horizontalPadding = 8, verticalPadding = 3, inset = 6;
+    const float labelWidth = std::min(width, canvas_text_width(font, frozen_reason_) + 2 * horizontalPadding);
+    const float labelHeight = std::min(height, metrics.height + 2 * verticalPadding);
+    const float x = std::max(0.0f, width - labelWidth - inset);
+    const float y = std::max(0.0f, height - labelHeight - inset);
+
+    Command background;
+    background.rect = {x, y, labelWidth, labelHeight};
+    background.radii = {4, 4, 4, 4, 4, 4, 4, 4};
+    background.color = frozen_fatal_ ? Color{51, 39, 42, 255} : Color{39, 44, 52, 255};
+    list.push_back(background);
+
+    Command label;
+    label.kind = Cmd::Text;
+    label.rect = background.rect;
+    label.font = font;
+    label.text = frozen_reason_;
+    label.color = {255, 255, 255, 255};
+    label.has_clip = true;
+    label.clip = background.rect;
+    label.x = x + horizontalPadding;
+    label.y = y + verticalPadding + metrics.ascent;
+    list.push_back(std::move(label));
 }
 
 // ───────────────────────── heavy boxes ─────────────────────────
@@ -6805,12 +6874,10 @@ void Renderer::stop_layout(uint64_t boxes) {
 void Renderer::stop_paint(const paint::Verdict& verdict) {
     // Reported before the frame is drawn; the host stops the widget and freezes the renderer with its own label.
     paint_stopped_ = true;
-    pending_events_.push_back(Json::object().set("type", "limit").set("code", twidget::paintLimitCode(verdict.code)).set("count", verdict.count));
-    // From this frame on: no blurred shadows, filters, backdrop-filter or transparency, animations stopped where they
-    // are and the layers back in the document, so the stopped widget costs nothing to scroll.
+    pending_events_.push_back(Json::object().set("type", "limit").set("code", twidget::paint_limit_code(verdict.code)).set("count", verdict.count));
+    // S10.4 and the public guide's Limits table: the last frame keeps its geometry with expensive effects removed.
+    hold_animation_frame();
     container_->set_no_effects();
-    update_composition(now_s());
-    stale_ = false;
     pending_moves_.clear();
     dirty_ = touched_all_ = true;
     composition_only_ = false;

@@ -335,7 +335,7 @@ void Canvas::resize(int width, int height, std::vector<CanvasOp>& out) {
     width = std::clamp(width, 0, MAX_SIDE);
     height = std::clamp(height, 0, MAX_SIDE);
     // A size past the widget's canvas pixels is not applied but still clears the bitmap: the canvas keeps the size it
-    // had, a new one stays 0 × 0 (widget-sandbox v0.3.0).
+    // had, a new one stays 0 × 0.
     if (int64_t(width) * height <= std::min<int64_t>(MAX_PIXELS, host_.canvas_allowance(id_))) {
         width_ = width;
         height_ = height;
@@ -488,7 +488,7 @@ bool Canvas::paint_of(const Paint& paint, CanvasPaint& out) const {
     else if (g.kind == "conic" && args(3)) out.kind = CanvasPaint::Conic;
     else return false;  // patterns are not drawn
     // A gradient without stops paints nothing, as in browsers; so does one with no length (the canvas
-    // spec), which is what widget-sandbox's validator makes of a conic gradient or a pattern.
+    // spec), which is what the validator makes of a conic gradient or a pattern.
     const float* a = out.args;
     bool degenerate = (out.kind == CanvasPaint::Linear && a[0] == a[2] && a[1] == a[3]) ||
                       (out.kind == CanvasPaint::Radial && a[0] == a[3] && a[1] == a[4] && a[2] == a[5]);
@@ -888,7 +888,13 @@ void Canvas::path_method(Builder& b, const Matrix& m, const std::string& method,
         if (a.empty() || a[0].kind != Value::PathRef) return;
         auto it = paths_.find(int(a[0].ref));
         if (it == paths_.end() || &it->second == &b) return;
-        Geometry g = transformed(it->second.geometry, m);
+        Matrix added;
+        if (a.size() == 2 && a[1].kind == Value::List && a[1].list.size() == 6) {
+            const auto& matrix = a[1].list;
+            added = {matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]};
+        }
+        // SPEC S6.1 and S11.6: apply the addPath matrix in the destination path's coordinate system.
+        Geometry g = transformed(it->second.geometry, added.then(m));
         b.geometry.ops.insert(b.geometry.ops.end(), g.ops.begin(), g.ops.end());
         b.geometry.points.insert(b.geometry.points.end(), g.points.begin(), g.points.end());
         b.open = it->second.open;

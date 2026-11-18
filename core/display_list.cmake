@@ -1,4 +1,4 @@
-# twidget_display_list (twidget::display_list): the part of TwidgetCore that needs nothing of widget-sandbox, for
+# twidget_display_list (twidget::display_list): the part of TwidgetCore that needs no card runtime, for
 # TwidgetCore and other hosts (a document reader) alike: the display list's binary encoding (list_encoding.cpp, the
 # frame format's display lists) and the image header reader (png.cpp). Included by twidget's top-level CMakeLists.txt
 # and by hosts that build on twidget without the core.

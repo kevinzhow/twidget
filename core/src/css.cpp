@@ -1,4 +1,5 @@
 #include "css.h"
+#include "twidget/theme.h"
 
 #include <algorithm>
 #include <cctype>
@@ -793,21 +794,6 @@ std::optional<float> parse_opacity(std::string_view text) {
 
 namespace {
 
-constexpr const char* THEME_KEYS[] = {
-    "bg_color", "text_color", "hint_color", "link_color", "button_color", "button_text_color",
-    "secondary_bg_color", "accent_text_color", "subtitle_text_color", "destructive_text_color",
-    "section_bg_color", "section_header_text_color", "section_separator_color", "header_bg_color", "bottom_bar_bg_color",
-};
-constexpr size_t THEME_KEY_COUNT = std::size(THEME_KEYS);
-
-// DEFAULT_THEME_PARAMS in sdk-policy.ts, light then dark, in THEME_KEYS order.
-constexpr const char* THEME_DEFAULTS[2][THEME_KEY_COUNT] = {
-    {"#ffffff", "#000000", "#707579", "#3390ec", "#3390ec", "#ffffff", "#f4f4f5", "#3390ec", "#707579", "#e53935",
-     "#ffffff", "#3390ec", "#e7e7e7", "#ffffff", "#ffffff"},
-    {"#212121", "#ffffff", "#aaaaaa", "#8774e1", "#8774e1", "#ffffff", "#181818", "#8774e1", "#aaaaaa", "#ff595a",
-     "#212121", "#8774e1", "#3d3d3d", "#212121", "#212121"},
-};
-
 constexpr const char* BUTTON_VARS[][2] = {
     {"bg", "--tg-button-bg"},
     {"text", "--tg-button-text"},
@@ -818,7 +804,7 @@ constexpr const char* BUTTON_VARS[][2] = {
     {"pressedOpacity", "--tg-button-pressed-opacity"},
     {"disabledOpacity", "--tg-button-disabled-opacity"},
 };
-/// The text tokens and the reference set that stands for any the host leaves out (DEFAULT_TEXT_TOKENS).
+/// Text tokens and their defaults (SPEC S7.1).
 constexpr const char* TEXT_VARS[][3] = {
     {"fontSize", "--tg-text-font-size", "15px"},
     {"lineHeight", "--tg-text-line-height", "1.35"},
@@ -962,8 +948,8 @@ std::optional<std::string> button_token(std::string_view field, const twidget::J
     }
 }
 
-std::string theme_variable_name(const char* key) {
-    std::string name = std::string("--tg-theme-") + key;
+std::string theme_variable_name(const std::string& key) {
+    std::string name = "--tg-theme-" + key;
     std::replace(name.begin(), name.end(), '_', '-');
     return name;
 }
@@ -972,13 +958,11 @@ std::string theme_variable_name(const char* key) {
 
 std::vector<std::pair<std::string, std::string>> theme_variables(const twidget::Json& theme) {
     bool dark = theme["colorScheme"].asString() == "dark";
-    const twidget::Json& params = theme["params"];
+    const auto params = twidget::theme_params(theme["params"], dark);
     std::vector<std::pair<std::string, std::string>> vars;
-    vars.reserve(THEME_KEY_COUNT + 1 + std::size(BUTTON_VARS) + std::size(TEXT_VARS));
-    for (size_t k = 0; k < THEME_KEY_COUNT; k++) {
-        const std::string& v = params[THEME_KEYS[k]].asString();
-        vars.emplace_back(theme_variable_name(THEME_KEYS[k]), hex_color(v) ? lower(v) : THEME_DEFAULTS[dark][k]);
-    }
+    vars.reserve(params.size() + 1 + std::size(BUTTON_VARS) + std::size(TEXT_VARS));
+    for (const auto& [key, value] : params.obj())
+        vars.emplace_back(theme_variable_name(key), value.asString());
     vars.emplace_back("--tg-color-scheme", dark ? "dark" : "light");
     const twidget::Json& button = theme["button"];
     for (const auto& [field, name] : BUTTON_VARS) {
@@ -1013,11 +997,9 @@ constexpr const char* SAFE_AREA_VARS[][2] = {
 std::vector<std::pair<std::string, std::string>> content_safe_area_variables(const twidget::Json& inset) {
     std::vector<std::pair<std::string, std::string>> vars;
     vars.reserve(std::size(SAFE_AREA_VARS));
+    const auto checked = twidget::content_safe_area(inset);
     for (const auto& [field, name] : SAFE_AREA_VARS) {
-        const twidget::Json& value = inset[field];
-        double max = std::string_view(field).rfind("corner", 0) == 0 ? 200 : 64;
-        double n = value.isNumber() ? value.asNumber() : 0;
-        if (!std::isfinite(n) || n < 0 || n > max) n = 0;
+        const double n = checked[field].asNumber();
         vars.emplace_back(name, twidget::Json::number(std::round(n * 100) / 100) + "px");
     }
     return vars;
@@ -1031,7 +1013,8 @@ bool is_theme_variable(std::string_view name) {
         if (name == var) return true;
     for (const auto& [field, var, fallback] : TEXT_VARS)
         if (name == var) return true;
-    for (const char* key : THEME_KEYS)
+    static const auto params = twidget::theme_params(twidget::Json(), false);
+    for (const auto& [key, value] : params.obj())
         if (name == theme_variable_name(key)) return true;
     return false;
 }
@@ -1056,7 +1039,7 @@ std::string substitute_variables(std::string_view css, const std::vector<std::pa
         out.append(css.substr(i, at - i));
         auto var = std::find_if(vars.begin(), vars.end(), [&](const auto& v) { return v.first == name; });
         if (var != vars.end()) out += var->second;
-        else if (comma != std::string_view::npos) out.append(trim(css.substr(comma + 1, end - 2 - comma)));
+        else if (comma != std::string_view::npos) out += substitute_variables(trim(css.substr(comma + 1, end - 2 - comma)), vars);
         else out.append(css.substr(at, end - at));
         i = end;
     }
