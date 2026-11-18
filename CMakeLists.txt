@@ -1,5 +1,5 @@
 # The portable half of twidget for every platform but Apple's SwiftPM build: the litehtml fork,
-# TwidgetCore (the C++ renderer behind widget-sandbox's renderer protocol), and each platform's
+# TwidgetCore (the C++ renderer of the cards' renderer protocol), and each platform's
 # backend. What a build produces depends on the platform:
 #   Android      libtwidget_litehtml.so, the JNI surface (platforms/android)
 #   iOS, macOS   libtwidget_litehtml.a, the C ABI on CoreGraphics (platforms/apple), merged by tools/build-apple.sh

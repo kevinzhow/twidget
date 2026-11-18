@@ -1482,7 +1482,7 @@ int main() {
         check(!f.editor(), "focus() long after the user's input does not");
     }
 
-    // ── widget-sandbox v0.1.0: trusted input, the gesture claim, the theme ──
+    // ── trusted input, the gesture claim, the theme ──
     {
         StubBackend vb;
         Renderer v(300, 1, false, vb);
@@ -1494,7 +1494,7 @@ int main() {
         check(trusted, "a click is trusted, as the hosts require before they count a gesture");
     }
 
-    // ── widget-sandbox v0.3.0: a finger's press counts from its release; a widget's canvas pixels together ──
+    // ── a finger's press counts from its release; a widget's canvas pixels together ──
     {
         StubBackend fb;
         Renderer f(300, 1, false, fb);
@@ -2923,7 +2923,7 @@ int main() {
         }
     }
 
-    // ── who gets a press: widget-sandbox's gesture policy ──
+    // ── who gets a press: the gesture policy ──
     {
         Renderer g(300, 1, false, backend);
         // none (30) over auto (31), 40 px in; a full-width none strip (32) for the leading edge.

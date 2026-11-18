@@ -1,4 +1,4 @@
-// The renderer trust domain of widget-sandbox's docs/protocol.md on litehtml:
+// The renderer trust domain of the cards' renderer protocol on litehtml:
 // validated RenderOps in, layout answers and WidgetEvents out, a DisplayList on
 // request. litehtml has no DOM mutation API, so the ops maintain a shadow tree
 // here; every batch serialises it to HTML, which the fork patches into the live
@@ -69,7 +69,7 @@ public:
     /// Host → renderer message (parsed JSON). Returns renderer → host messages.
     std::vector<twidget::Json> receive(const twidget::Json& msg);
     void set_width(double width, std::vector<twidget::Json>& out);
-    /// The tallest the widget may grow, in CSS px (600, widget-sandbox's shared bound, unless the host
+    /// The tallest the widget may grow, in CSS px (600, the shared bound, unless the host
     /// says otherwise); past it the document is cut off.
     void set_max_height(double height, std::vector<twidget::Json>& out);
     /// The chat theme changed: `prefers-color-scheme` inside the document follows.
@@ -127,7 +127,7 @@ public:
     /// The platform's editor let go (the user dismissed it, or it lost the keyboard): change if the
     /// value differs from when editing began, then blur and focusout.
     std::vector<twidget::Json> end_editing();
-    /// Text selection (widget-sandbox v0.1.1, docs/sdk-v1.md §5.10). A mouse drag that starts on text under
+    /// Text selection. A mouse drag that starts on text under
     /// `user-select: text`, where the widget does not prevent the press, selects it; any other primary press
     /// drops the selection. The host copies it with its own command, and clears it on what it handles itself.
     bool has_selection() const;
@@ -151,7 +151,7 @@ public:
     /// layer's track as of now, so a host lays its selection again while a layer moves. "[]" when none.
     std::string selectable_text_json() const;
     /// A widget's accessibility summary: one node per element a screen reader reads or acts on, in document
-    /// order, not one per DOM node. widget-sandbox's profile gives HTML no accessibility semantics in v1 (D21) but
+    /// order, not one per DOM node. Profile 1 gives HTML no accessibility semantics but
     /// keeps `role`, `alt`, `title` and `aria-*` on the elements; the summary reads them as a browser would,
     /// with the tags' own roles (button, a[href], h1–h6, img, details>summary, input, progress) and, for an
     /// element no role names, an outermost `cursor: pointer` as a button.

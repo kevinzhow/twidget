@@ -1,5 +1,5 @@
 // The `cs` query (getComputedStyle): what the fork computed for an element, written out as Chromium
-// writes it, since widgets and widget-sandbox's conformance set compare against the browser's strings.
+// writes it, since widgets and their conformance tests compare against the browser's strings.
 #pragma once
 
 #include "twidget/json.h"

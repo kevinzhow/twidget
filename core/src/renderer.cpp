@@ -38,7 +38,7 @@ namespace twlite {
 
 namespace {
 
-/// widget-sandbox's shared bubble bounds are 50 to 600 CSS px; the host may raise the top (set_max_height).
+/// The shared bubble bounds are 50 to 600 CSS px; the host may raise the top (set_max_height).
 constexpr double MIN_HEIGHT = 50.0;
 /// The tallest a host may let a widget grow: past this a document is a runaway, not content.
 constexpr double HEIGHT_CEILING = 16384.0;
@@ -47,7 +47,7 @@ constexpr int MAX_PASSES = 4;
 /// first build starts its animations before its script says what it listens for; animationiteration
 /// repeats, and stays opt-in.
 const char* const ALWAYS_FORWARD[] = {"click", "load", "error", "toggle", "animationstart", "animationend", "transitionend"};
-/// Every event the widget may get (profile 1, `tables.events` in widget-sandbox's profile.json): no keys,
+/// Every event the widget may get (profile 1): no keys,
 /// focus, input, touch, wheel or scroll; dblclick and contextmenu only as the gesture policy decides.
 const char* const PROFILE_EVENTS[] = {
     "click", "pointerdown", "pointerup", "pointermove", "pointerenter", "pointerleave", "pointerover", "pointerout", "pointercancel",
@@ -724,11 +724,11 @@ constexpr size_t MAX_WIDTH_BYTES = 1 << 20;
 /// Past this a selectable run's carets are spread evenly over its width rather than measured: a press
 /// or a move must not shape a long unbroken run once per probe.
 constexpr size_t MAX_MEASURED_RUN = 4096;
-/// The profile's image types (widget-sandbox's PROFILE_IMAGES). The validator lets no other through, but
+/// The profile's image types. The validator lets no other through, but
 /// a path around it (generated content's url(), once) must not hand a backend anything else.
 constexpr std::string_view IMAGE_TYPES[] = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"};
 
-/// A data: URL's media type as widget-sandbox's checkUrl reads it: the scheme in any case, around tabs,
+/// A data: URL's media type, read leniently: the scheme in any case, around tabs,
 /// newlines and the C0 controls and spaces at its ends; trimmed and lower-cased. Empty when not a data: URL.
 std::string data_mime(std::string_view raw) {
     std::string url;
@@ -889,7 +889,7 @@ public:
     bool patched() const { return patched_; }
 
     /// Boxes one layout may lay out afresh: nested flex, grid and table boxes measure their children several times
-    /// each, so a few hundred bytes of markup ask for 2^depth layouts. The heaviest widget of widget-sandbox's corpus
+    /// each, so a few hundred bytes of markup ask for 2^depth layouts. The heaviest card measured
     /// lays out 2,600 boxes in a pass; the base is 40 times that, and a document of many elements gets more.
     static constexpr uint64_t kLayoutBudgetBase = 100000;
     static constexpr uint64_t kLayoutBudgetPerElement = 50;
@@ -6395,7 +6395,7 @@ void Renderer::emit_event(const char* type, int64_t target, const Rect& target_r
         in.movement_y = t.y - t.sent_y;
     }
     // A finger's or a pen's press may still become the chat's scroll, which ends it in pointercancel: its press is no
-    // gesture, its release is (widget-sandbox v0.3.0, a finger's press counts from its release).
+    // gesture, its release is (a finger's press counts from its release).
     bool trusted = !(t.finger && (std::strcmp(type, "pointerdown") == 0 || std::strcmp(type, "mousedown") == 0));
     dispatch(event_json(type, target, target_rect, in), out, trusted);
 }
@@ -6643,7 +6643,7 @@ std::vector<Json> Renderer::hover(int action, double x, double y, int modifiers)
     return out;
 }
 
-// Profile 1 gives a widget no wheel and no keyboard (widget-sandbox docs/profile-v1.md, "Input"): both
+// Profile 1 gives a widget no wheel and no keyboard (the public guide's profile 1): both
 // stay entry points so that hosts need not change, and do nothing.
 std::vector<Json> Renderer::wheel(double, double, double, double, int, int) {
     return {};
