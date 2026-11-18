@@ -498,12 +498,15 @@ void litehtml::render_item_inline_context::space_around(pixel_t width)
 void litehtml::render_item_inline_context::make_room_for_ruby()
 {
     // As Chromium 156: a line whose ruby annotations reach into the line above moves down until their em boxes clear
-    // that line's em boxes. The first line's annotations hang over the box's top.
-    if(m_line_boxes.size() < 2)
+    // that line's em boxes. The first line's annotations hang over the box's top, except in a box that starts a
+    // formatting context (a table cell, an inline-block, overflow other than visible): there the first line moves down
+    // until they are inside its padding (Chromium grows a cell by what its padding-top does not hold; not by its border).
+    const bool own_context = src_el()->is_block_formatting_context();
+    if(m_line_boxes.empty() || (m_line_boxes.size() < 2 && !own_context))
         return;
     const auto& fm    = css().get_font_metrics();
     pixel_t     shift = 0_px;
-    for(size_t i = 1; i < m_line_boxes.size(); i++)
+    for(size_t i = own_context ? 0 : 1; i < m_line_boxes.size(); i++)
     {
         auto& line = m_line_boxes[i];
         if(shift != 0_px)
@@ -538,8 +541,8 @@ void litehtml::render_item_inline_context::make_room_for_ruby()
         }
         if(!found)
             continue;
-        const auto&   prev      = m_line_boxes[i - 1];
-        const pixel_t em_bottom = prev->bottom() - prev->baseline() + fm.em_bottom();
+        const pixel_t em_bottom = i == 0 ? -m_padding.top
+                                         : m_line_boxes[i - 1]->bottom() - m_line_boxes[i - 1]->baseline() + fm.em_bottom();
         if(reach < em_bottom)
         {
             line->y_shift(em_bottom - reach);
