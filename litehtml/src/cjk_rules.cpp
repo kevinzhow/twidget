@@ -157,7 +157,9 @@ namespace litehtml::cjk
         constexpr classes first_half  = closing | full_stop_comma;
         constexpr classes punctuation = opening | first_half | middle_dot;
         const classes     is          = classify(c);
-        if((is & opening) && ((at & line_start) || (classify(prev) & punctuation)))
+        // JLReq 3.1.5 ①: a wrapped line's opening bracket is flush with the line head (天ツキ); one that starts a
+        // paragraph keeps its first half there (the paragraph's indent before it is line_box's).
+        if((is & opening) && (((at & line_start) && !(at & paragraph_start)) || (classify(prev) & punctuation)))
             return {0.5f, 0};
         if((is & first_half) && ((classify(next) & (first_half | middle_dot)) || (at & line_end)))
             return {0, 0.5f};

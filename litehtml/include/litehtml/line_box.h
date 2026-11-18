@@ -8,6 +8,7 @@
 namespace litehtml
 {
     class render_item;
+    class render_text;
 
     struct line_context
     {
@@ -199,6 +200,8 @@ namespace litehtml
         text_align        m_text_align;
         bool              m_rtl;
         rendered_width    m_rendered_width;
+        bool              m_paragraph_start = false;  // set_paragraph_start
+        pixel_t           m_bracket_space   = 0;      // still to put before a paragraph's opening bracket
 
         std::list<std::unique_ptr<line_box_item>> m_items;
 
@@ -255,8 +258,20 @@ namespace litehtml
             return m_rendered_width;
         }
 
+        /// The line starts a paragraph (a block's first line, or the line after a <br>) of a book that indents its
+        /// paragraphs, and has less than an em of indent itself: an opening bracket that starts it keeps its full width,
+        /// after `bracket_space` more (JLReq 3.1.5 ①: 改行行頭 全角アキ; a wrapped line's opening bracket stays 天ツキ).
+        void    set_paragraph_start(pixel_t bracket_space)
+        {
+            m_paragraph_start = true;
+            m_bracket_space   = bracket_space;
+        }
         void    add_item(std::unique_ptr<line_box_item> item);
         bool    can_hold(const std::unique_ptr<line_box_item>& item, white_space ws, pixel_t trailing = 0_px) const;
+        /// Where the line's first character is, for compression: line_start, and paragraph_start after
+        /// set_paragraph_start.
+        uint8_t start_position() const;
+        static bool starts_with_opening(const std::shared_ptr<render_text>& part);
         bool    is_empty() const;
         pixel_t baseline() const;
         pixel_t top_margin() const;

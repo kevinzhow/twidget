@@ -52,6 +52,13 @@ namespace litehtml
         pixel_t                                          m_va_applied = 0_px;
         std::vector<position>                            m_ellipses;  // text-overflow: ellipsis, in the content box
         bool                                             m_cut = false;  // its texts may be cut
+        int                                              m_paragraphs_indented = -1;  // paragraphs_indented, once known
+
+        /// Whether its book indents its paragraphs (JLReq 3.5.1 ①), so that one that starts with an opening bracket and
+        /// no indent of its own is set 全角アキ (3.1.5 ①; line_box::set_paragraph_start): one of its lines after a <br>
+        /// starts with U+3000, or one of the nearest sibling elements of its tag has a text-indent above 0 or starts
+        /// with U+3000.
+        bool    paragraphs_indented();
 
         /// text-overflow: ellipsis: cuts the lines too long for the box and places their "…".
         void    apply_ellipsis(pixel_t room);

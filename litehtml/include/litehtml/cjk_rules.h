@@ -51,12 +51,15 @@ namespace litehtml::cjk
     std::vector<size_t> justifiable_gaps(const std::string& text);
 
     // Where a character is on its line, for compression: a line's first character, the last character of a line that
-    // wraps (not one before a forced break, nor on a paragraph's last line), both, or neither.
+    // wraps (not one before a forced break, nor on a paragraph's last line), both, or neither. paragraph_start (with
+    // line_start) is the first character of a paragraph whose opening bracket keeps its first half (JLReq 3.1.5 ①: the
+    // paragraph's line head is 全角アキ, line_box::set_paragraph_start).
     enum line_position : uint8_t
     {
-        line_middle = 0,
-        line_start  = 1 << 0,
-        line_end    = 1 << 1,
+        line_middle     = 0,
+        line_start      = 1 << 0,
+        line_end        = 1 << 1,
+        paragraph_start = 1 << 2,
     };
 
     // What punctuation compression takes from a character: the part of its advance (of its em) before its glyph and
@@ -68,7 +71,8 @@ namespace litehtml::cjk
     };
 
     // Punctuation compression of c between prev and next (0: none, as at a paragraph's start) at `at` (line_position
-    // bits): an opening bracket at a line's start or after another punctuation mark gives up its first half; a closing
+    // bits): an opening bracket at a line's start (not at a paragraph_start) or after another punctuation mark gives up
+    // its first half; a closing
     // bracket or 、。 before a closing bracket, 、。 or a middle dot gives up its second half, and so does one ending a
     // line that wraps. Nothing else is trimmed (・：； keep their ems).
     trim compression(char32_t prev, char32_t c, char32_t next, uint8_t at);

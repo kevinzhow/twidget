@@ -8,6 +8,7 @@
 #include "document_container.h"
 #include "types.h"
 #include "cjk_rules.h"
+#include <algorithm>
 #include "utf8_strings.h"
 #include <algorithm>
 #include <cmath>
@@ -204,10 +205,21 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
     if(add && item->get_type() == line_box_item::type_text_part)
     {
         // Punctuation compression: the line's first character is at a line's start (an opening bracket gives up its
-        // first half), after the text indent too.
+        // first half), after the text indent too; at a paragraph's start (set_paragraph_start) it keeps it, and the
+        // space still missing before it goes first.
         auto part = std::dynamic_pointer_cast<render_text>(item->get_el());
         if(part && !part->is_fragment && first_text_part(m_items.end()))
-            part->compress(cjk::line_start, cjk::line_middle);
+        {
+            const bool first = std::all_of(m_items.begin(), m_items.end(), [](const std::unique_ptr<line_box_item>& i) {
+                return i->get_type() == line_box_item::type_inline_start;
+            });
+            part->compress(first ? start_position() : cjk::line_start, cjk::line_middle);
+            if(first && m_paragraph_start && m_bracket_space > 0_px && starts_with_opening(part))
+            {
+                m_width         += m_bracket_space;
+                m_bracket_space  = 0_px;
+            }
+        }
     }
     if(add)
     {
@@ -345,7 +357,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             if(part && !part->is_fragment)
             {
                 const pixel_t was = part->pos().width;
-                part->compress(first_text_part(std::next(it).base()) ? cjk::line_start : cjk::line_middle, cjk::line_end);
+                part->compress(first_text_part(std::next(it).base()) ? start_position() : cjk::line_middle, cjk::line_end);
                 const pixel_t less = was - part->pos().width;
                 m_width -= less;
                 for(auto after = m_items.rbegin(); after != it; ++after)
@@ -1055,6 +1067,27 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
     }
 
     return true;
+}
+
+uint8_t litehtml::line_box::start_position() const
+{
+    return m_paragraph_start ? cjk::line_start | cjk::paragraph_start : cjk::line_start;
+}
+
+bool litehtml::line_box::starts_with_opening(const std::shared_ptr<render_text>& part)
+{
+    auto text = std::dynamic_pointer_cast<el_text>(part->src_el());
+    if(!text)
+        return false;
+    const std::string& s = text->display_text();
+    if(s.empty())
+        return false;
+    const unsigned char c0 = s[0];
+    const size_t        n  = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+    char32_t            c  = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
+    for(size_t k = 1; k < n && k < s.size(); k++)
+        c = (c << 6) | (static_cast<unsigned char>(s[k]) & 0x3F);
+    return cjk::classify(c) & cjk::opening;
 }
 
 bool litehtml::line_box::first_text_part(std::list<std::unique_ptr<line_box_item>>::const_iterator at) const
