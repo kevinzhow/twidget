@@ -1,4 +1,5 @@
 #include "css.h"
+#include "twidget/theme.h"
 
 #include <algorithm>
 #include <cctype>
@@ -793,26 +794,6 @@ std::optional<float> parse_opacity(std::string_view text) {
 
 namespace {
 
-// The 15 keys of Telegram Mini Apps `themeParams`, in the order SPEC S7.1 lists them.
-constexpr const char* THEME_KEYS[] = {
-    "bg_color", "text_color", "hint_color", "link_color", "button_color", "button_text_color", "secondary_bg_color",
-    "header_bg_color", "bottom_bar_bg_color", "accent_text_color", "section_bg_color", "section_header_text_color",
-    "section_separator_color", "subtitle_text_color", "destructive_text_color",
-};
-constexpr size_t THEME_KEY_COUNT = std::size(THEME_KEYS);
-
-// Our default palettes for keys the host leaves out (SPEC S7.1: "two palettes of our own choosing that look like a
-// Telegram light and dark bubble"), light then dark, in THEME_KEYS order. The Apple renderer uses the same values
-// (PLAN P14 item 5).
-constexpr const char* THEME_DEFAULTS[2][THEME_KEY_COUNT] = {
-    // bg, text, hint, link, button, button text, secondary bg,
-    // header bg, bottom bar bg, accent text, section bg, section header text, section separator, subtitle, destructive
-    {"#ffffff", "#1b1d21", "#868c94", "#2481cc", "#2a8bd8", "#ffffff", "#f0f2f5",
-     "#f7f8fa", "#f7f8fa", "#2481cc", "#ffffff", "#4a8fcf", "#e2e5e9", "#80868e", "#d9443c"},
-    {"#1e2228", "#f3f4f6", "#9097a0", "#6ab3f3", "#5aa5e6", "#ffffff", "#15181c",
-     "#22272e", "#22272e", "#6ab3f3", "#1e2228", "#79b6ee", "#30353d", "#8a9099", "#ef6259"},
-};
-
 constexpr const char* BUTTON_VARS[][2] = {
     {"bg", "--tg-button-bg"},
     {"text", "--tg-button-text"},
@@ -967,8 +948,8 @@ std::optional<std::string> button_token(std::string_view field, const twidget::J
     }
 }
 
-std::string theme_variable_name(const char* key) {
-    std::string name = std::string("--tg-theme-") + key;
+std::string theme_variable_name(const std::string& key) {
+    std::string name = "--tg-theme-" + key;
     std::replace(name.begin(), name.end(), '_', '-');
     return name;
 }
@@ -977,13 +958,11 @@ std::string theme_variable_name(const char* key) {
 
 std::vector<std::pair<std::string, std::string>> theme_variables(const twidget::Json& theme) {
     bool dark = theme["colorScheme"].asString() == "dark";
-    const twidget::Json& params = theme["params"];
+    const auto params = twidget::theme_params(theme["params"], dark);
     std::vector<std::pair<std::string, std::string>> vars;
-    vars.reserve(THEME_KEY_COUNT + 1 + std::size(BUTTON_VARS) + std::size(TEXT_VARS));
-    for (size_t k = 0; k < THEME_KEY_COUNT; k++) {
-        const std::string& v = params[THEME_KEYS[k]].asString();
-        vars.emplace_back(theme_variable_name(THEME_KEYS[k]), hex_color(v) ? lower(v) : THEME_DEFAULTS[dark][k]);
-    }
+    vars.reserve(params.size() + 1 + std::size(BUTTON_VARS) + std::size(TEXT_VARS));
+    for (const auto& [key, value] : params.obj())
+        vars.emplace_back(theme_variable_name(key), value.asString());
     vars.emplace_back("--tg-color-scheme", dark ? "dark" : "light");
     const twidget::Json& button = theme["button"];
     for (const auto& [field, name] : BUTTON_VARS) {
@@ -1018,11 +997,9 @@ constexpr const char* SAFE_AREA_VARS[][2] = {
 std::vector<std::pair<std::string, std::string>> content_safe_area_variables(const twidget::Json& inset) {
     std::vector<std::pair<std::string, std::string>> vars;
     vars.reserve(std::size(SAFE_AREA_VARS));
+    const auto checked = twidget::content_safe_area(inset);
     for (const auto& [field, name] : SAFE_AREA_VARS) {
-        const twidget::Json& value = inset[field];
-        double max = std::string_view(field).rfind("corner", 0) == 0 ? 200 : 64;
-        double n = value.isNumber() ? value.asNumber() : 0;
-        if (!std::isfinite(n) || n < 0 || n > max) n = 0;
+        const double n = checked[field].asNumber();
         vars.emplace_back(name, twidget::Json::number(std::round(n * 100) / 100) + "px");
     }
     return vars;
@@ -1036,7 +1013,8 @@ bool is_theme_variable(std::string_view name) {
         if (name == var) return true;
     for (const auto& [field, var, fallback] : TEXT_VARS)
         if (name == var) return true;
-    for (const char* key : THEME_KEYS)
+    static const auto params = twidget::theme_params(twidget::Json(), false);
+    for (const auto& [key, value] : params.obj())
         if (name == theme_variable_name(key)) return true;
     return false;
 }

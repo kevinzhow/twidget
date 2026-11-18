@@ -36,7 +36,8 @@ if(NOT TARGET twidget_base)
 
     add_library(twidget_base STATIC
         "${CMAKE_CURRENT_LIST_DIR}/src/json.cpp"
-        "${CMAKE_CURRENT_LIST_DIR}/src/gesture_policy.cpp")
+        "${CMAKE_CURRENT_LIST_DIR}/src/gesture_policy.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/src/theme.cpp")
     add_library(twidget::base ALIAS twidget_base)
     target_include_directories(twidget_base PUBLIC "${CMAKE_CURRENT_LIST_DIR}/include")
     target_link_libraries(twidget_base PRIVATE twidget_yyjson)

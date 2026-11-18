@@ -42,6 +42,7 @@
     globalThis.requestAnimationFrame = (fn) => { rafs.push(fn); host('raf'); };
     globalThis.performance = { now: () => host('now') };
     globalThis.query = (q) => host('query', JSON.stringify(q));
+    globalThis.sendOps = (ops) => host('ops', JSON.stringify(ops));
     globalThis.randomBytes = (n) => host('random', n);
     globalThis.onTestEvent = null;
 
