@@ -1,6 +1,7 @@
 // twcard::Engine: SPEC S1. See engine.h for the shape; this file is the QuickJS side and the task loop.
 #include "twcard/engine.h"
 
+#include "bundle_bytecode.h"
 #include "engine_protocol.h"
 #include "twidget/json.h"
 
@@ -76,12 +77,16 @@ std::string memory_reason(size_t limit) {
 // SPEC S0: compiled trusted bundles are shared as byte strings across QuickJS runtimes.
 struct BundleCache {
     std::mutex mutex;
-    std::map<std::string, std::vector<uint8_t>, std::less<>> entries;
+    std::map<std::string, CompiledBundle, std::less<>> entries;
 };
 
-BundleCache& bundleCache() {
+const CompiledBundle& cachedBundle(const std::string& source) {
     static BundleCache cache;
-    return cache;
+    std::lock_guard lock(cache.mutex);
+    if (auto entry = cache.entries.find(source); entry != cache.entries.end()) return entry->second;
+    auto compiled = compileTrustedBundle(source);
+    // Entries are immutable and never erased. Card threads deserialize them without holding the cache mutex.
+    return cache.entries.emplace(source, std::move(compiled)).first->second;
 }
 
 } // namespace
@@ -530,8 +535,13 @@ struct Engine::Impl {
             }
         }
         if (!done) {
-            JSValue compiled = compile_bundle(res.bundle);
-            r = JS_IsException(compiled) ? compiled : JS_EvalFunction(ctx, compiled);
+            const auto& compiled = cachedBundle(res.bundle);
+            if (compiled.bytes.empty()) {
+                e.delegate_.diagnostic("bundle", compiled.error);
+                return false;
+            }
+            JSValue fn = JS_ReadObject(ctx, compiled.bytes.data(), compiled.bytes.size(), JS_READ_OBJ_BYTECODE);
+            r = JS_IsException(fn) ? fn : JS_EvalFunction(ctx, fn);
         }
         if (JS_IsException(r)) {
             JSValue exc = JS_GetException(ctx);
@@ -542,29 +552,6 @@ struct Engine::Impl {
         JS_FreeValue(ctx, r);
         drain_jobs();
         return true;
-    }
-
-    JSValue compile_bundle(const std::string& source) {
-        auto& cache = bundleCache();
-        std::lock_guard lock(cache.mutex);
-        if (auto entry = cache.entries.find(source); entry != cache.entries.end()) {
-            JSValue compiled = JS_ReadObject(ctx, entry->second.data(), entry->second.size(), JS_READ_OBJ_BYTECODE);
-            if (!JS_IsException(compiled)) return compiled;
-            JS_FreeValue(ctx, JS_GetException(ctx));
-        }
-
-        JSValue compiled = JS_Eval(ctx, source.data(), source.size(), "twcard.js",
-                                   JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
-        if (JS_IsException(compiled)) return compiled;
-        size_t size = 0;
-        uint8_t* bytes = JS_WriteObject(ctx, &size, compiled, JS_WRITE_OBJ_BYTECODE);
-        if (bytes) {
-            cache.entries.insert_or_assign(source, std::vector<uint8_t>(bytes, bytes + size));
-            js_free(ctx, bytes);
-        } else {
-            JS_FreeValue(ctx, JS_GetException(ctx));
-        }
-        return compiled;
     }
 
     /// S1.2.1-2: the bundle with the host functions, then the names gone.

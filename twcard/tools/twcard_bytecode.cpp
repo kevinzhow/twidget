@@ -2,7 +2,7 @@
 // expects (SPEC S0 "Version": `twcard-bytecode <the bundle's first line>\n` + JS_WriteObject's output), so a blob
 // made from another bundle version is never used.
 //   twcard_bytecode twcard-runtime.js twcard-runtime.qbc
-#include <quickjs.h>
+#include "bundle_bytecode.h"
 
 #include <cstdio>
 #include <fstream>
@@ -27,29 +27,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "twcard_bytecode: %s has no `// twcard <semver> protocol <n>` first line\n", argv[1]);
         return 1;
     }
-    JSRuntime* rt = JS_NewRuntime();
-    JSContext* ctx = JS_NewContext(rt);
-    JSValue fn = JS_Eval(ctx, bundle.data(), bundle.size(), "twcard-runtime.js", JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
-    int rc = 0;
-    if (JS_IsException(fn)) {
-        JSValue exc = JS_GetException(ctx);
-        const char* m = JS_ToCString(ctx, exc);
-        std::fprintf(stderr, "twcard_bytecode: %s\n", m ? m : "compile error");
-        if (m) JS_FreeCString(ctx, m);
-        JS_FreeValue(ctx, exc);
-        rc = 1;
-    } else {
-        size_t size = 0;
-        uint8_t* buf = JS_WriteObject(ctx, &size, fn, JS_WRITE_OBJ_BYTECODE);
-        JS_FreeValue(ctx, fn);
-        std::ofstream out(argv[2], std::ios::binary);
-        const std::string header = "twcard-bytecode " + first + "\n";
-        out.write(header.data(), std::streamsize(header.size()));
-        out.write(reinterpret_cast<const char*>(buf), std::streamsize(size));
-        js_free(ctx, buf);
-        if (!out) rc = 1;
+    const auto compiled = twcard::compileTrustedBundle(bundle);
+    if (compiled.bytes.empty()) {
+        std::fprintf(stderr, "twcard_bytecode: %s\n", compiled.error.c_str());
+        return 1;
     }
-    JS_FreeContext(ctx);
-    JS_FreeRuntime(rt);
-    return rc;
+    std::ofstream out(argv[2], std::ios::binary);
+    out << "twcard-bytecode " << first << '\n';
+    out.write(reinterpret_cast<const char*>(compiled.bytes.data()), std::streamsize(compiled.bytes.size()));
+    out.close();
+    return out ? 0 : 1;
 }

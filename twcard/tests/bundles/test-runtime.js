@@ -47,6 +47,7 @@
     globalThis.testAnswers = [];
     globalThis.randomBytes = (n) => host('random', n);
     globalThis.onTestEvent = null;
+    globalThis.testRuntimeStack = function () { return new Error('runtime stack marker').stack; };
 
     globalThis.dispatch = function (kind, arg, arg2) {
         const json = () => JSON.parse(arg);

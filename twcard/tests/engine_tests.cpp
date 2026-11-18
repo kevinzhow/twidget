@@ -4,6 +4,7 @@
 #include "twcard/engine.h"
 #include "twidget/json.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -151,6 +152,24 @@ int main() {
     check(Resources::header(g_bundle->bundle) == std::make_pair(std::string("0.0.0-test"), 1), "bundle header parsed");
     check(!Resources::header("// twcard 1.0 protocol x\n") && !Resources::header("var x;\n") && !Resources::header("// twcard 1.0\n"),
           "malformed version lines refused");
+
+    const auto stackAt = g_bundle->bundle.find("runtime stack marker");
+    if (stackAt == std::string::npos) return 1;
+    const auto stackLine = 1 + std::count(g_bundle->bundle.begin(), g_bundle->bundle.begin() + stackAt, '\n');
+    const auto bundleFrame = "twcard.js:" + std::to_string(stackLine) + ":";
+    const auto checkLines = [&](std::shared_ptr<Resources> bundle, const std::string& label) {
+        Card c(js({"\n\nthrow new Error('line check')"}), {}, std::move(bundle));
+        check(wait_for([&] { return c.d.isLoaded.load(); }), label + " loads");
+        check(c.probe("lastScriptError.stack").find("card-inline-1.js:3:") != std::string::npos &&
+                  c.d.errorsJoined().find("line check") != std::string::npos,
+              label + " reports the inline script's third line");
+        check(c.probe("testRuntimeStack()").find(bundleFrame) != std::string::npos,
+              label + " preserves bundle line and column information");
+        check(c.probe("testRuntimeStack.toString()").find("runtime stack marker") == std::string::npos,
+              label + " omits retained bundle source");
+    };
+    checkLines(g_bundle, "first card");
+    checkLines(g_bundle, "cached card");
 
     // E1-ish: inline scripts in order, then loaded; a module with an import fails, the next script still runs.
     {
@@ -344,6 +363,13 @@ int main() {
         check(wait_for([&] { return c.d.deathCount() > 0; }) && c.d.death() == "runtime bundle failed to load", "a failing bundle: fail closed");
     }
     {
+        auto broken = std::make_shared<Resources>();
+        broken->bundle = "// twcard 0.0.0 protocol 1\nconst = 1;";
+        Card c(js({"document.title = 'ran'"}), {}, broken);
+        check(wait_for([&] { return c.d.deathCount() > 0; }) && c.d.death() == "runtime bundle failed to load" &&
+                  c.d.diagCount("bundle") == 1 && !c.d.isLoaded, "a compiler failure reports a bundle diagnostic and fails closed");
+    }
+    {
         auto withBc = std::make_shared<Resources>(*g_bundle);
         std::string bad = "twcard-bytecode // twcard 0.0.1 protocol 1\n";
         withBc->bytecode.assign(bad.begin(), bad.end());
@@ -361,6 +387,7 @@ int main() {
         Card c(js({"document.title += 'bc'"}), {}, withBc);
         check(wait_for([&] { return c.d.isLoaded.load(); }) && c.probe("document.title") == "bc[loaded]" && c.d.diagCount("bytecode") == 0,
               "the bundle's own bytecode (twcard_bytecode) is used");
+        checkLines(withBc, "precompiled bundle");
     }
 #endif
     // Timers: order, cap (S1.3: refused beyond maxTimers), clearTimer removes a pending fire.

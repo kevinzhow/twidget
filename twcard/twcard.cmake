@@ -110,6 +110,8 @@ if(NOT TARGET twcard)
     if(NOT CMAKE_CROSSCOMPILING)
         add_executable(twcard_bytecode "${CMAKE_CURRENT_LIST_DIR}/tools/twcard_bytecode.cpp")
         target_link_libraries(twcard_bytecode PRIVATE twcard_quickjs)
+        target_compile_features(twcard_bytecode PRIVATE cxx_std_20)
+        target_include_directories(twcard_bytecode PRIVATE "${CMAKE_CURRENT_LIST_DIR}/src")
     endif()
 
     if(TWIDGET_BUILD_TESTS)
