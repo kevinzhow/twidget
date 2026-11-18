@@ -934,7 +934,7 @@ int main() {
     // ── a box whose place and size are all given is laid out once, its absolute children too ──
     {
         // render_out_of_flow leaves it to render_positioned (no static pass). An absolutely positioned child with an
-        // auto height still gets its content height (htmlbubbles-ported/08-analytics/03-bot-bare.html: the gridline
+        // auto height still gets its content height (an analytics chart card: the gridline
         // labels came out 0 px tall when the box was laid out as a second pass).
         StubBackend gb;
         Renderer g(300, 1, false, gb);
@@ -963,7 +963,7 @@ int main() {
 
     // ── in-place patches of a row and what is inside it in one batch ──
     {
-        // The leaderboard (htmlbubbles-ported/08-analytics/10-bot-bare.html) each frame: the rows' top and height, and
+        // A leaderboard card each frame: the rows' top and height, and
         // in the same batch their bars' widths, numbers and classes. A row keeps its fast patch while things inside it
         // change; one child declares `height: inherit`, where the row's patch must give way to a full restyle.
         StubBackend pa, pb;

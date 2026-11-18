@@ -130,7 +130,7 @@ message-list integration and live bot delivery need their own checks.
 | `filter` and `backdrop-filter`: blur, brightness, contrast, grayscale, hue-rotate, invert, opacity, saturate, sepia, drop-shadow | `FilterPush`, `Backdrop` in the display list; `D2DBackend::filtered` |
 | A canvas drawn from another canvas that the same batch draws later | `Renderer::apply_ops` |
 | The paint limit (v0.6.0): heavy boxes counted before every frame from the computed style and running animations, `limit` once past 16 (2 with `backdrop-filter`), then a paint without blur, filters, backdrop or transparency | `Renderer::count_paint`, `stop_paint`, `src/paint_policy.*` |
-| A long flush in parts of 1000 ops builds once, at the frame | `PARTIAL_BATCH_OPS` |
+| A long flush in parts of 1000 ops builds once, at the frame | `kLongFlushPartOps`, `Renderer::receive` |
 
 ## The visual set
 

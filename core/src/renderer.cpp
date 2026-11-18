@@ -654,9 +654,9 @@ constexpr double MAX_SCRIPTED_AREA = 2e6;
 constexpr float LAYER_MARGIN = 48;
 /// After user input, ops batches build at once: they likely answer it.
 constexpr double INPUT_IMMEDIATE_S = 0.25;
-/// The sandbox hands a long flush over in parts of this many ops (widget-sandbox v0.6.0, capture.ts PARTIAL_BATCH_OPS);
+/// The runtime hands a long flush over in parts of about this many ops (SPEC S2.4);
 /// only the last part of a task is shorter.
-constexpr size_t PARTIAL_BATCH_OPS = 1000;
+constexpr size_t kLongFlushPartOps = 1000;
 /// The render throttle (the Swift renderer's): a pass costlier than a frame holds the next one back
 /// for THROTTLE_FACTOR times its cost, 25 % of the thread at most; under sustained load, more than
 /// SUSTAINED_LIMIT of SUSTAINED_WINDOW with two passes over HEAVY_PASS_S, 5 %. Nothing is charged in
@@ -1973,7 +1973,7 @@ public:
         list_.push_back(std::move(c));
     }
 
-    /// widget-sandbox's placeholder (url-policy.ts, PLACEHOLDER_IMAGE), its 48 × 48 drawing fitted into the image, centred.
+    /// The placeholder image (SPEC S9.3): its 48 × 48 drawing fitted into the image, centred.
     void draw_placeholder(const litehtml::background_layer& layer) {
         Rect to = rect_of(layer.origin_box);
         Rect clip = rect_of(layer.clip_box);
@@ -3062,7 +3062,7 @@ std::vector<Json> Renderer::receive(const Json& msg) {
         // Ticking already (something animates), or held back by the throttle, a batch waits for the
         // frame: a script sending several a frame builds once. Input wants its answer now. A part of a long
         // flush always waits: the rest of the task follows at once, and its last part builds them all.
-        bool partial = ops.size() >= PARTIAL_BATCH_OPS;
+        bool partial = ops.size() >= kLongFlushPartOps;
         bool coalesce = partial || ((frame_due() || throttled()) && now_s() - last_input_ > INPUT_IMMEDIATE_S);
         document_changed_ = false;
         apply_ops(ops, out);
@@ -3178,7 +3178,7 @@ void Renderer::toggle_details(int64_t clicked, std::vector<Json>& out) {
     else details->attrs.erase(open);
     if (attached(details)) patch_log_.valid = false;
     stale_ = true;
-    // The sandbox mirrors `open` from the event (widget-sandbox forms.ts).
+    // The runtime updates `open` from the event (SPEC S2.3, `<details>`).
     Json ev = event_json("toggle", details->id, box_of(details->id), Input{});
     ev.set("open", opening);
     dispatch(std::move(ev), out);

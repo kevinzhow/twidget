@@ -582,7 +582,7 @@ void Canvas::image(const std::vector<Value>& a, std::vector<CanvasOp>& out) {
         out.push_back(std::move(o));
         return;
     }
-    // A refused image is widget-sandbox's placeholder (url-policy.ts, PLACEHOLDER_IMAGE), which no
+    // A refused image is the placeholder image (SPEC S9.3), which no
     // backend holds: its drawing, as a document draws it (draw_placeholder), from the source rect into
     // the destination.
     double sx = a.size() == 9 ? o.sx : 0, sy = a.size() == 9 ? o.sy : 0, sw = a.size() == 9 ? o.sw : w, sh = a.size() == 9 ? o.sh : h;
