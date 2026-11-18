@@ -1026,10 +1026,11 @@ float TextBackend::text_width(int font, const std::string& text) {
     return width;
 }
 
-void TextBackend::text_advances(int font, const std::string& text, std::vector<float>& prefix) {
+bool TextBackend::text_advances(int font, const std::string& text, std::vector<float>& prefix) {
     prefix.assign(text.size() + 1, 0.0f);
     auto it = fonts_.find(font);
-    if (it == fonts_.end() || text.empty()) return;
+    if (it == fonts_.end()) return false;
+    if (text.empty()) return true;
     Font& f = it->second;
     std::vector<uint32_t> cps = utf8(text);
     std::vector<Face*> faceOf = faces_of(f, cps, options_, optionsId_);
@@ -1072,6 +1073,7 @@ void TextBackend::text_advances(int font, const std::string& text, std::vector<f
         b += n;
     }
     prefix[text.size()] = float(sum);
+    return true;
 }
 
 bool TextBackend::has_vertical_form(int font, const std::string& text) {

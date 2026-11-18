@@ -50,6 +50,16 @@ public:
     virtual void delete_font(int font) = 0;
     /// Advance width of `text` (UTF-8) in CSS px.
     virtual float text_width(int font, const std::string& text) = 0;
+    /// `text` shaped as one run, as a browser shapes a text node before it breaks it into lines, with the
+    /// fonts its fallback picks in that context: `prefix[b]` is the advance before byte `b` (text.size() + 1
+    /// entries, in CSS px; meaningful at character boundaries, NaN inside a cluster). False when the backend
+    /// does not shape runs: each piece of a line is then measured alone (text_width).
+    virtual bool text_advances(int /*font*/, const std::string& /*text*/, std::vector<float>& /*prefix*/) { return false; }
+    /// Whether the face `text` (one punctuation mark) is drawn with in `font` has a half-width form for it:
+    /// OpenType halt narrows its advance across, or (vertical) vhal its vertical form's advance down the
+    /// column. With one, a mark that punctuation compression halves is drawn in the font with halt; without,
+    /// its full-width glyph is moved back by the half it gives up.
+    virtual bool has_half_width_form(int /*font*/, const std::string& /*text*/, bool /*vertical*/) { return false; }
     /// Decodes a `data:` image (anything else is refused by the container before this) and keeps it
     /// under `id` for the painter; `w`/`h` get the intrinsic size in CSS px. False when undecodable.
     virtual bool load_image(int id, const std::string& url, float& w, float& h) = 0;

@@ -5,6 +5,8 @@
 #include <QFontDatabase>
 #include <QFontInfo>
 #include <QFontMetricsF>
+#include <QLocale>
+#include <QTextLayout>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QRadialGradient>
@@ -15,6 +17,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath>
+#include <limits>
 #include <optional>
 
 namespace twlite {
@@ -408,6 +411,44 @@ QStringList QtBackend::resolve_families(const std::string& families) {
         }
     }
     if (out.isEmpty()) out.push_back(QFontDatabase::systemFont(QFontDatabase::GeneralFont).family());
+    // CJK text the listed fonts lack falls back to a CJK font, in the order of the system's language, as a
+    // browser's does. Qt's own fallback goes by script: brackets and other CJK punctuation are Common, and on
+    // Linux it drew 「 and 」 in Noto Sans Mongolian (narrow, proportional) next to Noto Sans CJK's text.
+    static const QStringList cjk = [] {
+        const QLocale locale = QLocale::system();
+        const bool traditional = locale.script() == QLocale::TraditionalChineseScript;
+        const char* japanese[] = {"Noto Sans CJK JP", "Source Han Sans JP", "Hiragino Sans", "Yu Gothic UI", "Meiryo"};
+        const char* simplified[] = {"Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei"};
+        const char* trad[] = {"Noto Sans CJK TC", "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei"};
+        const char* korean[] = {"Noto Sans CJK KR", "Source Han Sans KR", "Apple SD Gothic Neo", "Malgun Gothic"};
+        std::vector<std::span<const char* const>> order;
+        switch (locale.language()) {
+        case QLocale::Chinese: order = traditional ? decltype(order){trad, simplified, japanese, korean} : decltype(order){simplified, trad, japanese, korean}; break;
+        case QLocale::Korean: order = {korean, japanese, simplified, trad}; break;
+        default: order = {japanese, simplified, trad, korean}; break;
+        }
+        QStringList found;
+        for (auto names : order)
+            for (const char* name : names)
+                if (QFontDatabase::hasFamily(name)) {
+                    found.push_back(name);
+                    break;
+                }
+        return found;
+    }();
+    if (cjk.isEmpty()) return out;
+    // Qt passes over a fontconfig alias (the system font is "Sans Serif" on Linux) when a real family is in the
+    // list. With only aliases, the alias alone would pick the font: so the family it stands for, before the CJK ones.
+    auto real = [](const QString& name) {
+        QFont alias;
+        alias.setFamilies({name});
+        return QRawFont::fromFont(alias).familyName();
+    };
+    if (std::none_of(out.begin(), out.end(), [&](const QString& name) { return real(name) == name; }))
+        for (QString& name : out)
+            if (QString family = real(name); !family.isEmpty()) name = family;
+    for (const QString& name : cjk)
+        if (!out.contains(name)) out.push_back(name);
     return out;
 }
 
@@ -475,6 +516,48 @@ float QtBackend::text_width(int font, const std::string& text) {
     if (f->widths.size() > 4096) f->widths.clear();
     f->widths.emplace(text, w);
     return w;
+}
+
+bool QtBackend::text_advances(int font, const std::string& text, std::vector<float>& prefix) {
+    Face* f = face(font);
+    if (!f) return false;
+    const QString s = QString::fromUtf8(text.data(), qsizetype(text.size()));
+    QTextLayout layout(s, f->font, &reference_);
+    QTextOption option;
+    option.setWrapMode(QTextOption::NoWrap);
+    layout.setTextOption(option);
+    layout.beginLayout();
+    QTextLine line = layout.createLine();
+    layout.endLayout();
+    if (!line.isValid()) return false;
+    // UTF-8 bytes to UTF-16 positions: an advance where a cursor may stand (a cluster starts), NaN elsewhere.
+    prefix.assign(text.size() + 1, std::numeric_limits<float>::quiet_NaN());
+    int u = 0;
+    for (size_t b = 0; b < text.size();) {
+        const unsigned char lead = (unsigned char)text[b];
+        size_t n = lead < 0x80 ? 1 : (lead >> 5) == 6 ? 2 : (lead >> 4) == 14 ? 3 : (lead >> 3) == 30 ? 4 : 1;
+        if (b + n > text.size()) n = text.size() - b;
+        if (layout.isValidCursorPosition(u)) prefix[b] = float(line.cursorToX(u) * f->scale);
+        u += n == 4 ? 2 : 1;
+        b += n;
+    }
+    prefix[text.size()] = float(line.cursorToX(int(s.size())) * f->scale);
+    return true;
+}
+
+bool QtBackend::has_half_width_form(int font, const std::string& text, bool vertical) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+    Face* f = face(font);
+    if (!f || vertical) return false;
+    QFont half = f->font;
+    half.setFeature(QFont::Tag("halt"), 1);
+    const QString s = QString::fromUtf8(text.data(), qsizetype(text.size()));
+    const qreal narrow = QFontMetricsF(half, &reference_).horizontalAdvance(s);
+    return narrow > 0 && narrow < QFontMetricsF(f->font, &reference_).horizontalAdvance(s) * 0.75;
+#else
+    (void)font, (void)text, (void)vertical;
+    return false;
+#endif
 }
 
 bool QtBackend::load_image(int id, const std::string& url, float& w, float& h) {

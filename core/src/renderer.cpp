@@ -1795,6 +1795,22 @@ public:
         if (it == fonts_.end() || !text) return 0;
         return litehtml::pixel_t(it->second.width(backend_, text));
     }
+    // A text node shaped as one run by the backend, so that a piece cut from it (a punctuation mark halved by
+    // compression, which is drawn alone) measures what it does in the run: a backend may draw a lone 「 in
+    // another font (Qt on Linux: a Mongolian one, 6 px where the run gives it 15). Not with letter-spacing
+    // or word-spacing, which text_width adds per piece.
+    bool text_advances(const std::string& text, litehtml::uint_ptr h, std::vector<litehtml::pixel_t>& prefix) override {
+        auto it = fonts_.find(h);
+        if (it == fonts_.end() || it->second.letter_spacing != 0 || it->second.word_spacing != 0) return false;
+        std::vector<float> advances;
+        if (!backend_.text_advances(it->second.handle, text, advances) || advances.size() != text.size() + 1) return false;
+        prefix.assign(advances.begin(), advances.end());
+        return true;
+    }
+    bool has_half_width_form(const char* text, litehtml::uint_ptr h, bool vertical) override {
+        auto it = fonts_.find(h);
+        return it != fonts_.end() && text && backend_.has_half_width_form(it->second.handle, text, vertical);
+    }
     void draw_text(litehtml::uint_ptr, const char* text, litehtml::uint_ptr h, litehtml::web_color color, const litehtml::position& pos) override {
         if (litehtml::g_paint_trace) return;
         auto it = fonts_.find(h);
