@@ -4065,6 +4065,57 @@ int main() {
               "ruby: the annotation over the base, the base on the line's baseline");
     }
 
+    // ── Ruby on the first line of a box that starts a formatting context (a table cell): as Chromium 156, the line
+    // moves down by what of the annotation's overflow its padding-top does not hold, so that the annotation stays in
+    // the cell. A paragraph's first line does not move (its annotation hangs over the paragraph's top). ──
+    {
+        StubBackend rb;  // 8 px a byte at any size
+        struct Box {
+            Rect box;
+            float rt_top = -1;  // the annotation's em box top (its baseline less 0.8 em: the stub's em box)
+        };
+        auto layout = [&](const std::string& tag, int padding, bool ruby) {
+            Renderer d(300, 1, false, rb);
+            const std::string style = "margin:0;padding:" + std::to_string(padding) + "px;background:#010203;font-size:20px;line-height:24px";
+            std::string ops = R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html"},{"op":"el","id":3,"tag":"head","adopt":"head"},
+                {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;padding-top:40px"]]},)J";
+            if (tag == "td")
+                ops += R"J({"op":"el","id":10,"tag":"table","attrs":[["style","border-spacing:0"]]},{"op":"ins","parent":4,"id":10,"before":null},
+                    {"op":"el","id":11,"tag":"tr"},{"op":"ins","parent":10,"id":11,"before":null},
+                    {"op":"el","id":12,"tag":"td","attrs":[["style",")J" + style + R"J("]]},{"op":"ins","parent":11,"id":12,"before":null},)J";
+            else
+                ops += R"J({"op":"el","id":12,"tag":"p","attrs":[["style",")J" + style + R"J("]]},{"op":"ins","parent":4,"id":12,"before":null},)J";
+            if (ruby)
+                ops += R"J({"op":"el","id":13,"tag":"ruby"},{"op":"ins","parent":12,"id":13,"before":null},
+                    {"op":"text","id":14,"data":"BB"},{"op":"ins","parent":13,"id":14,"before":null},
+                    {"op":"el","id":15,"tag":"rt"},{"op":"ins","parent":13,"id":15,"before":null},
+                    {"op":"text","id":16,"data":"RR"},{"op":"ins","parent":15,"id":16,"before":null},
+                    {"op":"text","id":17,"data":"c"},{"op":"ins","parent":12,"id":17,"before":null}]})J";
+            else
+                ops += R"J({"op":"text","id":17,"data":"BBc"},{"op":"ins","parent":12,"id":17,"before":null}]})J";
+            d.receive(parse(ops));
+            Box out;
+            for (const Command& c : d.paint()) {
+                if (c.kind == Cmd::FillRect && c.color.r == 1 && c.color.g == 2 && c.color.b == 3) out.box = c.rect;
+                if (c.kind == Cmd::Text && c.text == "RR") out.rt_top = c.y - 8;
+            }
+            return out;
+        };
+        auto show = [](const Box& b) {
+            return "box " + std::to_string(b.box.y) + "+" + std::to_string(b.box.h) + " rt " + std::to_string(b.rt_top);
+        };
+        const Box plain = layout("td", 0, false), cell = layout("td", 0, true);
+        const float grown = cell.box.h - plain.box.h;
+        check(cell.rt_top >= 0 && grown > 0 && cell.rt_top >= cell.box.y - 0.01f,
+              "ruby on a cell's first line: the cell grows and the annotation stays inside it (plain " + show(plain) + ", ruby " + show(cell) + ")");
+        const Box plain4 = layout("td", 4, false), cell4 = layout("td", 4, true);
+        check(std::fabs((cell4.box.h - plain4.box.h) - std::max(0.0f, grown - 4)) < 0.01f && cell4.rt_top >= cell4.box.y - 0.01f,
+              "padding-top holds the annotation's overflow first: 4 px less growth with padding: 4px (" + show(plain4) + " / " + show(cell4) + ")");
+        const Box para = layout("p", 0, false), para_ruby = layout("p", 0, true);
+        check(std::fabs(para_ruby.box.h - para.box.h) < 0.01f && para_ruby.rt_top < para_ruby.box.y,
+              "ruby on a paragraph's first line: the paragraph keeps its height, the annotation over its top (" + show(para) + " / " + show(para_ruby) + ")");
+    }
+
     // ── CJK line breaks: 。　 stays together and the ideographic space hangs; （abc） is one word ──
     {
         StubBackend jb;  // 8 px a byte: a kana or ideograph is 24 px
