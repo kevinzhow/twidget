@@ -1,4 +1,4 @@
-// The 2D canvas interpreter: the `canvas` op's command list (widget-sandbox's docs/protocol.md, "Canvas commands")
+// The 2D canvas interpreter: the `canvas` op's command list (the cards' renderer protocol, "Canvas commands")
 // becomes CanvasOps a Backend draws. All state lives here (the transform, the state stack,
 // styles, paths, Path2D and gradient objects, clips), so a backend only executes resolved
 // geometry. Ported from TwidgetRenderer's WidgetCanvas.swift, whose CoreGraphics calls became this

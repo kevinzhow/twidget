@@ -15,7 +15,7 @@ dropped by LiteHTML's sanitizer, and a host's own schemes only reach the host's 
 
 **Widgets follow widget profile 1 instead**, which is narrower: `data:` PNG, JPEG, GIF and WebP, and inline
 SVG. `data:image/svg+xml` draws the placeholder there and `icon:` URLs never reach the renderer, since
-widget-sandbox's validator drops them (widget-sandbox's `docs/profile-v1.md`).
+the validator drops them (profile 1 in Telegram's public widget guide).
 
 ## `data:` URLs
 
