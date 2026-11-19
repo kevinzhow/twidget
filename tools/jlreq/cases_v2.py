@@ -37,10 +37,11 @@ CASES = {
     "p-comma-period": dict(mode="h", body="<p>表3，次の例．「あ」，（い）．</p>",
         chrome_css="", ref=("chrome", "p{text-spacing-trim:trim-both}", None),
         ref_note="Chromium text-spacing-trim: trim-both（，．按句读点压缩）", viv_css=""),
-    "p-kanji-num": dict(mode="v", body="<p>二、三日おきに三・五倍の量を飲む。</p>",
+    # One line that fits without line adjustment (which would squeeze 、・ as well).
+    "p-kanji-num": dict(mode="v", body="<p>二、三日おきに三・五倍飲む</p>",
         chrome_css="",
         ref=("chrome", ".t{margin-inline-end:-0.5em}.d{margin-inline:-0.25em}",
-             "<p>二<span class=t>、</span>三日おきに三<span class=d>・</span>五倍の量を飲む。</p>"),
+             "<p>二<span class=t>、</span>三日おきに三<span class=d>・</span>五倍飲む</p>"),
         ref_note="按规则手排：位取り读点后紧排、小数点中点前后紧排（margin），Chromium 绘制"),
     "p-dividing": dict(mode="h", body="<p>なんだ！そうか。本当？うそだ！」と言った。</p>",
         chrome_css="",
@@ -122,6 +123,11 @@ CASES = {
         ref=("chrome", "ruby{ruby-overhang:none}", "<p>その" + R("東京", "とうきょう") + "と<ruby>紫<rt>あじ</rt>陽<rt>さ</rt>花<rt>い</rt></ruby>と" +
              hs("承", "うけたまわ", 0.5, 0.5) + "る。</p>"),
         ref_note="按规则：熟語ルビ某字 ≥3 假名时按グループルビ（東京）；承 的ルビ掛前后假名各一个ルビ字；Chromium 绘制"),
+    # 3.3.7 (Appendix F): きゅう over 胡 overhangs 瓜, whose り leaves a quarter em free each side.
+    "r-jukugo-room": dict(mode="h", body="<p>その<ruby>胡<rt>きゅう</rt>瓜<rt>り</rt></ruby>を切る。</p>",
+        chrome_css="",
+        ref=("chrome", "ruby{ruby-overhang:none}", "<p>その" + hs("胡", "きゅう", 0.25, 0.25) + R("瓜", "り") + "を切る。</p>"),
+        ref_note="按规则手排：きゅう 两侧各超出 1/4 字，前侧掛 の，后侧掛进 瓜 的 り 留下的空（附录 F），Chromium 绘制"),
     "r-short": dict(mode="h", body="<p>この" + R("東京都庁", "とう") + "の例。</p>",
         chrome_css="",
         ref=("chrome", "rt.c{ruby-align:space-between;padding:0 5px}", "<p>この<ruby>東京都庁<rt class=c>とう</rt></ruby>の例。</p>"),
