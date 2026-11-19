@@ -36,7 +36,8 @@ def lay_out(cli, xhtml, work):
                         "--dump-doc", doc], capture_output=True, timeout=300, env=dict(os.environ, TWR_OVERFULL="1"))
     if r.returncode != 0 or not os.path.exists(doc):
         return None, 0
-    overfull = sum(1 for ln in r.stderr.decode(errors="replace").splitlines() if ln.startswith("OVERFULL ") and ln.endswith(" 0"))
+    overfull = sum(1 for ln in r.stderr.decode(errors="replace").splitlines()
+                   if ln.startswith("OVERFULL ") and ln.split(" ")[2:3] == ["0"])
     ops = []
     for ln in open(doc, encoding="utf-8", errors="replace"):
         parts = ln.rstrip("\n").split(" ", 7)

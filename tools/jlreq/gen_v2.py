@@ -131,7 +131,7 @@ def fig(src, width, cap):
 p = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
      "<title>JLReq 对照报告 v2</title><style>%s</style></head><body><main>" % CSS,
      "<h1>JLReq 对照报告 v2：参考排版、Chromium、我们</h1>",
-     '<p class="mut">2026-11-19 · 任务 #oyomi:#38 · %s · %s · 我们：twidget d5abdfa（第 2 批之后）、3e0f21a（main，第 1 批之后）与 9e7730b（第 1 批之前）经 reader-cli</p>' % (CHROME, VIV)]
+     '<p class="mut">2026-11-19 · 任务 #oyomi:#38 · %s · %s · 我们：twidget 39b4432 的引擎（第 2 批之后）、3e0f21a（main，第 1 批之后）与 9e7730b（第 1 批之前）经 reader-cli</p>' % (CHROME, VIV)]
 p.append("<p>v1 只有“我们”的截图，没有正确的参考。v2 为 %d 条（全部缺失/部分条目和第 1、2 批）各配四样东西："
          "JLReq 原图（W3C）；同一测试句按规则排对的参考排版（能用实现了该规则的渲染器就用它，否则在 Chromium 中按规则的几何量手排，每条注明做法）；"
          "Chromium 用该规则对应的 CSS 渲染并给出结论；我们的渲染（该条所在批次之前，与现在）。</p>" % len(rows))
