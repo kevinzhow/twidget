@@ -428,6 +428,16 @@ void run(bool vertical, bool half_forms) {
     expect(84, "かきAくけ", "か@0 き@16 A@34 く@52 け@68", "3.8.3: squeezed to an eighth em to fit");
     expect(400, "か「A」き", "か@0 「@24 A@32 」@48 き@64", "3.2.6 ④: none next to brackets");
     if (!vertical) expect(400, "第12回", "第@0 1@20 2@36 回@56", "3.2.6 ④: a number's quarter ems");
+    // A table measures its columns with the quarter em: the cell 注1 is not squeezed back into a column measured
+    // without it (jlreq-in-japanese's footnote tables).
+    {
+        Laid l;
+        lay_out_body(l, vertical, half_forms, 400,
+                     "<table style=\"border-spacing:0\"><tr><td style=\"padding:0;white-space:nowrap\">注1</td>"
+                     "<td style=\"padding:0\">あ</td></tr></table>");
+        check(drawn(l.c.glyphs, half_forms) == "注@0 1@20 あ@36",
+              mode + "3.2.6 ④: a table's column measured with the quarter em: " + drawn(l.c.glyphs, half_forms));
+    }
 
     // Selecting a trimmed character highlights its half; the next one starts where its ink does.
     {
