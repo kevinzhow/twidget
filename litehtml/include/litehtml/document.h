@@ -62,6 +62,16 @@ namespace litehtml
         half_em,  ///< ③
     };
 
+    /// Line adjustment (JLReq 3.8). jlreq: a line over-full by no more than the adjustable space of its punctuation
+    /// squeezes that space in JLReq's order to take the character in (追込み) before it pushes it on (追出し), and a
+    /// justified line widens no gap next to brackets, 、。 or middle dots (3.1.11 ②), Latin gaps first (3.8.4). even:
+    /// the line breaks where the character does not fit, and justify spreads the space evenly over every gap.
+    enum class line_adjustment : uint8_t
+    {
+        jlreq,
+        even,
+    };
+
     class document : public std::enable_shared_from_this<document>
     {
       public:
@@ -169,6 +179,7 @@ namespace litehtml
         bool                                    m_vertical = false;
         bool                                    m_cjk_segment_breaks = false;
         paragraph_brackets                      m_paragraph_brackets = paragraph_brackets::full_em;
+        line_adjustment                         m_line_adjustment    = line_adjustment::jlreq;
         bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
@@ -289,6 +300,8 @@ namespace litehtml
         /// The paragraph-start bracket scheme (JLReq 3.1.5 ① or ③) this document is laid out with; ① by default.
         void                         set_paragraph_brackets(paragraph_brackets scheme) { m_paragraph_brackets = scheme; }
         paragraph_brackets           get_paragraph_brackets() const { return m_paragraph_brackets; }
+        void                         set_line_adjustment(line_adjustment mode) { m_line_adjustment = mode; }
+        line_adjustment              get_line_adjustment() const { return m_line_adjustment; }
         bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;

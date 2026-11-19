@@ -166,13 +166,15 @@ struct Laid {
 };
 
 // <p>html</p> in a line (column) `length` px long, text-align `align`.
-void lay_out(Laid& l, bool vertical, bool half_forms, float length, const std::string& html, const char* align = "justify") {
+void lay_out(Laid& l, bool vertical, bool half_forms, float length, const std::string& html, const char* align = "justify",
+             line_adjustment adjustment = line_adjustment::jlreq) {
     l.c.half_forms = half_forms;
     if (vertical) l.c.h = length;
     l.doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
                                            "><body style=\"margin:0;font-size:16px;line-height:20px\"><p style=\"margin:0;text-align:" +
                                            align + "\">" + html + "</p></body></html>",
                                        &l.c);
+    l.doc->set_line_adjustment(adjustment);
     l.doc->render(pixel_t(vertical ? 400 : length));
     l.doc->draw(0, 0, 0, nullptr);
 }
@@ -188,6 +190,18 @@ void lay_out_body(Laid& l, bool vertical, bool half_forms, float length, const s
     l.doc->set_paragraph_brackets(scheme);
     l.doc->render(pixel_t(vertical ? 400 : length));
     l.doc->draw(0, 0, 0, nullptr);
+}
+
+// The characters of each line, lines split by "|".
+std::string line_texts(const std::vector<Glyph>& glyphs) {
+    std::string out;
+    float mid = glyphs.empty() ? 0 : glyphs.front().mid;
+    for (const auto& g : glyphs) {
+        if (std::abs(g.mid - mid) >= 1) out += "|";
+        mid = g.mid;
+        out += g.c;
+    }
+    return out;
 }
 
 // Where selecting the `n`th drawn character (from `from` px into its ink, 2 px before the end of `ink_length`)
@@ -236,8 +250,8 @@ void run(bool vertical, bool half_forms) {
     expect(400, "あ」「い", "あ@0 」@16 「*@32 い@40", "」「: the opening one halves");
     expect(400, "あ<span>。</span>「い", "あ@0 。@16 「*@32 い@40", "a pair across elements");
     // A wrapped line ending with 。 gives up its second half: justified, its ink ends at the line's end and the other
-    // characters take the 8 px between them (5 gaps). Before <br> and on the last line, 。 stays full width.
-    expect(96, "あいうえお。かきく", "あ@0 い@17.6 う@35.2 え@52.8 お@70.4 。*@88 | か@0 き@16 く@32",
+    // characters take the 8 px between them (the 4 gaps not next to 。, JLReq 3.1.11 ②). Before <br> and on the last line, 。 stays full width.
+    expect(96, "あいうえお。かきく", "あ@0 い@18 う@36 え@54 お@72 。*@88 | か@0 き@16 く@32",
            "。 ending a wrapped line");
     expect(96, "あいうえお。<br>かき。", "あ@0 い@16 う@32 え@48 お@64 。@80 | か@0 き@16 。@32",
            "。 before <br> and ending the paragraph");
@@ -309,6 +323,61 @@ void run(bool vertical, bool half_forms) {
                                                                selected(l, vertical, 2, 8, -6));
         check(selected(l, vertical, 3, 16) == "24+16", mode + "selecting か after it: " + selected(l, vertical, 3, 16));
     }
+
+    // JLReq 3.8 line adjustment (document::set_line_adjustment, jlreq by default). A line over-full by no more than its
+    // punctuation's adjustable space takes the character in, squeezing that space (追込み, 3.8.2), before it pushes
+    // anything on to the next line (追出し): first the half em after a closing bracket or 、。 ending the line, then the
+    // quarters around a middle dot ending it, then those around middle dots inside it, then the half em before opening
+    // brackets and after closing brackets and 、 inside it (3.8.3), each step evenly; the half em after 。 inside a line
+    // stays. Expanding, a line puts no space before or after brackets, 、。 and middle dots (3.1.11 ②), and widens first
+    // Latin word spaces (an eighth em each side at most), then where Japanese meets Latin (half an em at most), then the
+    // other gaps between Japanese characters (a quarter em at most), then all of these evenly (3.8.4).
+    auto expect2 = [&](float length, const std::string& html, const std::string& want_half, const std::string& want_full,
+                       const std::string& what) {
+        Laid l;
+        lay_out(l, vertical, half_forms, length, html);
+        const std::string got = drawn(l.c.glyphs, half_forms);
+        const std::string w = half_forms ? want_half : want_full;
+        check(got == w, mode + what + ": " + got + "\n     want " + w);
+    };
+    // JLReq Fig. 89 ②→③, 15 em lines: 、「 and 」と are 1.5 em each, and the line is half an em over; the half ems after
+    // 、 and after 」 go to a quarter each and とよばれ stays on the line.
+    expect(240, "仮製本には、「がんだれ」とよばれる様式がある。",
+           "仮@0 製@16 本@32 に@48 は@64 、@80 「*@92 が@100 ん@116 だ@132 れ@148 」@164 と@176 よ@192 ば@208 れ@224 | "
+           "る@0 様@16 式@32 が@48 あ@64 る@80 。@96",
+           "3.8.3: JLReq Fig. 89 ③, 、「 and 」 squeezed to a quarter em");
+    {
+        Laid l;
+        lay_out(l, vertical, half_forms, 240, "仮製本には、「がんだれ」とよばれる様式がある。");
+        check(selected(l, vertical, 5, 12) == "80+12", mode + "selecting 、 squeezed by a quarter: " + selected(l, vertical, 5, 12));
+        check(selected(l, vertical, 11, 12) == "164+12", mode + "selecting 」 squeezed by a quarter: " + selected(l, vertical, 11, 12));
+        Laid even;
+        lay_out(even, vertical, half_forms, 240, "仮製本には、「がんだれ」とよばれる様式がある。", "justify", line_adjustment::even);
+        check(line_texts(even.c.glyphs) == "仮製本には、「がんだれ」とよば|れる様式がある。",
+              mode + "line_adjustment::even pushes れ on, as before: " + line_texts(even.c.glyphs));
+    }
+    // JLReq Fig. 89 ④→⑤: 「前 does not fit even with 「's half em gone, so 「 starts the next line and the 14 characters
+    // before it share the em (13 gaps).
+    expect(240, "書籍では主体となる本文の前に「前付」がつく。",
+           "書@0 籍@17.2 で@34.5 は@51.7 主@68.9 体@86.2 と@103.4 な@120.6 る@137.8 本@155.1 文@172.3 の@189.5 前@206.8 "
+           "に@224 | 「*@0 前@8 付@24 」@40 が@56 つ@72 く@88 。@104",
+           "3.8.2: JLReq Fig. 89 ⑤, 「 too long to squeeze in goes on");
+    // The half em after 。 inside a line stays (3.8.3, note), and expanding, the gaps before and after 。 take nothing.
+    expect(104, "あいう。えおかき", "あ@0 い@18.7 う@37.3 。@53.3 え@69.3 お@88 | か@0 き@16",
+           "3.8.3: 。 inside a line keeps its half em; 3.1.11 ②: no space next to it");
+    // Middle dots inside the line before brackets: 8 px over takes both quarters of ・; 12 px over, 「's half em by 4 more.
+    expect2(120, "あい・うえ「おかきく", "あ@0 い@16 ・*@32 う@40 え@56 「@80 お@88 か@104 | き@0 く@16",
+            "あ@0 い@16 ・@28 う@40 え@56 「@80 お@88 か@104 | き@0 く@16", "3.8.3: a middle dot's quarters before brackets");
+    expect2(116, "あい・うえ「おかきく", "あ@0 い@16 ・*@32 う@40 え@56 「@76 お@84 か@100 | き@0 く@16",
+            "あ@0 い@16 ・@28 う@40 え@56 「@76 お@84 か@100 | き@0 く@16", "3.8.3: then the half em before 「");
+    // A middle dot ending a line gives up both quarters when the line needs them.
+    expect2(88, "あいうえお・か", "あ@0 い@16 う@32 え@48 お@64 ・*@80 | か@0", "あ@0 い@16 う@32 え@48 お@64 ・@76 | か@0",
+            "3.8.3: a middle dot ending a line");
+    // A paragraph's last line a little too long fits with its 。's half em (3.8.1, note).
+    expect(88, "あいうえお。", "あ@0 い@16 う@32 え@48 お@64 。*@80", "3.8.1: a paragraph's last line squeezed to fit");
+    // Expanding: where Japanese meets Latin before the gaps between kana (3.8.4 b, c), and Latin word spaces first (a).
+    expect(88, "かきAくけこ", "か@0 き@16 A@36 く@56 け@72 | こ@0", "3.8.4: Japanese–Latin gaps before kana ones");
+    expect(120, "かきA Bくけこ", "か@0 き@16 A@34 B@70 く@88 け@104 | こ@0", "3.8.4: word spaces first");
 
     // Selecting a trimmed character highlights its half; the next one starts where its ink does.
     {
