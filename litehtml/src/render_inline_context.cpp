@@ -1058,7 +1058,10 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
                 item->get_el()->src_el()->get_content_size(sz, self_size.render_width);
                 item->get_el()->pos() = sz;
                 text_item->compress(cjk::line_middle, cjk::line_middle);
-                item->set_rendered_min_width(sz.width);
+                // Measured as it is set where compression adds space (the Japanese–Latin quarter em, ？！'s space), so
+                // that a table or a shrink-to-fit box makes room for it; as the text alone where compression takes
+                // space away, as before.
+                item->set_rendered_min_width(std::max(sz.width, item->get_el()->pos().width));
                 auto text = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el());
                 const auto wrapping = text_item->css().get_wrapping();
                 const auto whitespace = text_item->css().get_white_space();
