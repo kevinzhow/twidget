@@ -7,8 +7,8 @@ their text. Per book, counts only (no book text, so it can run on copyrighted bo
   lines         lines after
   breaks        lines whose text changed (where the line breaks moved)
   spacing       lines with the same text whose characters moved (squeezed or spread differently)
-  overflow      lines reaching past the column's end (the page less the margin before its lines, or where most lines
-                end), not counting a U+3000 that hangs there (before / after)
+  overflow      line boxes wider than their line, as the engine sees them (reader-clis with the measurement probe),
+                not counting a U+3000 that hangs past the end (before / after)
   bracket_gap   brackets and 、。 with space added on their blank side beyond their own half em (and the chapter's usual
                 gap between two kana or kanji, a book's letter-spacing) (before / after)
 
@@ -28,11 +28,15 @@ def wide(c):
 
 
 def lay_out(cli, xhtml, work):
+    """The drawn text ops, and how many line boxes are wider than their line (a reader-cli built with the measurement
+    probe in line_box::finish prints OVERFULL <px> <hangs> for each, with TWR_OVERFULL set; a hanging U+3000 is not
+    counted)."""
     doc = os.path.join(work, "doc.txt")
     r = subprocess.run([cli, xhtml, os.path.join(work, "p"), "--width", "390", "--height", "700", "--pages", "none",
-                        "--dump-doc", doc], capture_output=True, timeout=300)
+                        "--dump-doc", doc], capture_output=True, timeout=300, env=dict(os.environ, TWR_OVERFULL="1"))
     if r.returncode != 0 or not os.path.exists(doc):
-        return None
+        return None, 0
+    overfull = sum(1 for ln in r.stderr.decode(errors="replace").splitlines() if ln.startswith("OVERFULL ") and ln.endswith(" 0"))
     ops = []
     for ln in open(doc, encoding="utf-8", errors="replace"):
         parts = ln.rstrip("\n").split(" ", 7)
@@ -40,7 +44,7 @@ def lay_out(cli, xhtml, work):
             x, y, a, b, size = map(float, parts[1:6])
             ops.append((x, y, a, b, size, parts[6], parts[7]))
     os.remove(doc)
-    return ops
+    return ops, overfull
 
 
 def lines_of(ops, vertical):
@@ -96,11 +100,6 @@ def bracket_gaps(line, usual):
     return sum(1 for c0, c1, g in gaps_of(line) if g > usual + 0.5 and (c1 in OPENING or c0 in CLOSING))
 
 
-def line_end(line):
-    ends = [p + w for _, p, w in line if p is not None and w is not None]
-    return max(ends) if ends else None
-
-
 def spine(z):
     opf = re.search(r'full-path="([^"]+)"', z.read("META-INF/container.xml").decode()).group(1)
     s = z.read(opf).decode("utf-8", "replace")
@@ -136,7 +135,7 @@ def main():
                 raw = open(path, encoding="utf-8", errors="replace").read()
                 if len(JAPANESE.findall(raw)) < 50:
                     continue
-                ob, oa = lay_out(before, path, work), lay_out(after, path, work)
+                (ob, fb), (oa, fa) = lay_out(before, path, work), lay_out(after, path, work)
                 if ob is None or oa is None:
                     book["failed"] += 1
                     continue
@@ -145,19 +144,11 @@ def main():
                 tb, ta = [text_of(l) for l in lb], [text_of(l) for l in la]
                 book["chapters"] += 1
                 book["lines"] += len(la)
-                # The column's end: the page's (390 x 700) less the margin its lines start after, as if the same each
-                # side (ragged text may never reach it before), or where most lines end if further (justified text, a
-                # margin narrower at the end).
-                starts = [p for l in lb + la for _, p, _ in l[:1] if p is not None]
-                ends = collections.Counter(round(e) for e in (line_end(l) for l in lb + la) if e is not None)
-                column_end = max((700 if vertical else 390) - min(starts), ends.most_common(1)[0][0]) if starts else None
                 usual = usual_gap(lb + la)
                 for tag, lines in (("before", lb), ("after", la)):
                     book["bracket_gap_" + tag] += sum(bracket_gaps(l, usual) for l in lines)
-                    if column_end is not None:
-                        # Not a line whose U+3000 hangs past the end (CSS Text 3 §4.1.3, as before).
-                        book["overflow_" + tag] += sum(1 for l in lines if (line_end(l) or 0) > column_end + 1.5
-                                                       and not (l and l[-1][0] == "\u3000"))
+                book["overflow_before"] += fb
+                book["overflow_after"] += fa
                 for op, i0, i1, j0, j1 in difflib.SequenceMatcher(None, tb, ta, autojunk=False).get_opcodes():
                     if op == "equal":
                         for i, j in zip(range(i0, i1), range(j0, j1)):
