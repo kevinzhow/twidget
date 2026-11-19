@@ -88,6 +88,7 @@ namespace litehtml::cjk
         line_end_dot,
         middle_dot,
         bracket,
+        latin,  // the quarter em between Japanese and Latin, to an eighth (latin_space_after)
     };
     struct squeeze
     {
@@ -109,6 +110,10 @@ namespace litehtml::cjk
         japanese,
     };
     gap_kind justify_gap_kind(char32_t before, char32_t after);
+
+    // JLReq 3.2.6 ④: whether a quarter em goes after c, before next: between kana or kanji and a Latin letter or digit,
+    // either way round; none at a line's end (`at`), nor next to punctuation, spaces or full-width letters.
+    bool latin_space_after(char32_t c, char32_t next, uint8_t at);
 
     // Whether a ruby longer than its base may overhang c next to the base (JLReq 3.3.8 rule 2): hiragana (cl-15),
     // katakana (cl-16), the prolonged sound mark (cl-10) and small kana (cl-11); not iteration marks, kanji (rule 1)

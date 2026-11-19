@@ -818,7 +818,7 @@ litehtml::pixel_t litehtml::trim_shift(const std::vector<char_trim>& trims, size
 }
 
 std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::string& shown, char32_t before, char32_t after,
-                                                                uint8_t first, uint8_t last) const
+                                                                uint8_t first, uint8_t last, bool after_solid) const
 {
     std::vector<char_trim> out;
     element::ptr           el_parent = parent();
@@ -827,6 +827,8 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
     std::vector<std::pair<size_t, char32_t>> chars;
     for(size_t i = 0, n = 0; i < shown.size(); i += n)
         chars.push_back({i, code_point_at(shown, i, n)});
+    const bool    latin = get_document()->get_latin_spacing() == latin_spacing::quarter;
+    const pixel_t em    = el_parent->css().get_font_metrics().font_size;
     for(size_t k = 0; k < chars.size(); k++)
     {
         const char32_t prev = k ? chars[k - 1].second : before;
@@ -837,12 +839,18 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
                        [&](const cjk::span& t) { return t.from <= chars[k].first && chars[k].first < t.to; }))
             continue;
         const cjk::trim t   = cjk::compression(prev, chars[k].second, next, at);
-        if(t.start == 0 && t.end == 0)
+        // JLReq 3.2.6 ④: a quarter em after it where Japanese meets Latin, not before a tate-chu-yoko token.
+        const bool next_upright = k + 1 < chars.size()
+                                      ? std::any_of(m_tate_chu_yoko.begin(), m_tate_chu_yoko.end(),
+                                                    [&](const cjk::span& s) { return s.from <= chars[k + 1].first && chars[k + 1].first < s.to; })
+                                      : after_solid;
+        const bool space = latin && !next_upright && cjk::latin_space_after(chars[k].second, next, at);
+        if(t.start == 0 && t.end == 0 && !space)
             continue;
         const size_t  from    = chars[k].first;
         const size_t  to      = k + 1 < chars.size() ? chars[k + 1].first : shown.size();
         const pixel_t advance = char_advance(shown, from, to);
-        out.push_back({from, advance * pixel_t(t.start), advance * pixel_t(t.end)});
+        out.push_back({from, advance * pixel_t(t.start), advance * pixel_t(t.end) - (space ? em / 4_px : 0_px)});
     }
     return out;
 }
@@ -861,9 +869,15 @@ std::vector<litehtml::char_squeeze> litehtml::el_text::squeezable(const std::str
     std::vector<char_squeeze> out;
     if(!parent() || shown.empty())
         return out;
+    const pixel_t em = parent()->css().get_font_metrics().font_size;
     for(size_t i = 0, n = 0; i < shown.size(); i += n)
     {
         const char32_t c = code_point_at(shown, i, n);
+        // The quarter em between Japanese and Latin after it (compression's negative end): to an eighth, last (3.8.3).
+        for(const auto& t : trims)
+            if(t.at == i && t.end < 0_px && !(i + n == shown.size() && (last & cjk::line_end)))
+                if(const pixel_t room = std::min(-t.end, em / 4_px) - em / 8_px; room > 0_px)
+                    out.push_back({i, 0_px, room, cjk::squeeze_step::latin});
         if(!(cjk::classify(c) & (cjk::opening | cjk::closing | cjk::middle_dot | cjk::full_stop_comma)))
             continue;
         if(std::any_of(m_tate_chu_yoko.begin(), m_tate_chu_yoko.end(),
@@ -887,7 +901,7 @@ void litehtml::render_text::compress(uint8_t first, uint8_t last)
     const pixel_t was  = trim_shift(trims, SIZE_MAX);
     auto          text = std::dynamic_pointer_cast<el_text>(src_el());
     if(text && !is_fragment && !text->is_white_space() && !text->is_break())
-        trims = text->compression(text->display_text(), before, after, first, last);
+        trims = text->compression(text->display_text(), before, after, first, last, after_solid);
     else
         trims.clear();
     pos().width += was - trim_shift(trims, SIZE_MAX);

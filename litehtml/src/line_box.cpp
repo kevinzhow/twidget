@@ -800,7 +800,9 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         };
         constexpr float none = std::numeric_limits<float>::infinity();
         fill([](cjk::gap_kind k) { return k == cjk::gap_kind::word_space; }, 1.0f / 8);
-        fill([](cjk::gap_kind k) { return k == cjk::gap_kind::latin; }, 1.0f / 2);
+        // Japanese–Latin gaps up to half an em: a quarter more where the quarter of 3.2.6 ④ is already there.
+        const bool quarter = m_items.front()->get_el()->src_el()->get_document()->get_latin_spacing() == latin_spacing::quarter;
+        fill([](cjk::gap_kind k) { return k == cjk::gap_kind::latin; }, quarter ? 1.0f / 4 : 1.0f / 2);
         fill([](cjk::gap_kind k) { return k == cjk::gap_kind::japanese; }, 1.0f / 4);
         fill([](cjk::gap_kind k) { return k != cjk::gap_kind::avoided; }, none);
         even = std::all_of(gaps.begin(), gaps.end(), [&](const gap& g) { return std::abs(g.add - gaps.front().add) < 0.001f; });
@@ -1477,7 +1479,8 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next) co
     if(auto part = squeezable_text(next))
     {
         auto       text  = std::dynamic_pointer_cast<el_text>(part->src_el());
-        const auto ended = text->compression(text->display_text(), part->before, part->after, cjk::line_middle, cjk::line_end);
+        const auto ended = text->compression(text->display_text(), part->before, part->after, cjk::line_middle, cjk::line_end,
+                                             part->after_solid);
         room += trim_shift(ended, SIZE_MAX) - trim_shift(part->trims, SIZE_MAX);
         auto qs = squeeze_of(*part, cjk::line_middle, cjk::line_end);
         if(!qs.empty() && qs.front().at == 0)
@@ -1541,7 +1544,8 @@ void litehtml::line_box::squeeze(pixel_t over, bool wraps)
         first = false;
     }
     std::vector<pixel_t> take_start(places.size(), 0_px), take_end(places.size(), 0_px);
-    for(auto step : {cjk::squeeze_step::line_end_dot, cjk::squeeze_step::middle_dot, cjk::squeeze_step::bracket})
+    for(auto step : {cjk::squeeze_step::line_end_dot, cjk::squeeze_step::middle_dot, cjk::squeeze_step::bracket,
+                     cjk::squeeze_step::latin})
     {
         pixel_t room = 0_px;
         for(const auto& p : places)

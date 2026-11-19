@@ -103,6 +103,9 @@ namespace litehtml
         // and, as negative ends, what justify widens a gap by where its gaps do not all take the same (justify_gap 0).
         std::vector<char_trim> trims;
         char32_t               before = 0, after = 0;
+        // What follows it is set solid against it, with no Latin space (JLReq 3.2.6 ④): a text starting with a
+        // tate-chu-yoko token (a Japanese character there), or an inline box (a ruby, an image).
+        bool                   after_solid = false;
         // How far a ruby next to it overhangs its first and its last character (line_box, JLReq 3.3.8): of a mark's
         // space, what line adjustment may no longer squeeze.
         pixel_t                ruby_over_start = 0, ruby_over_end = 0;

@@ -257,6 +257,32 @@ namespace litehtml::cjk
         return gap_kind::japanese;
     }
 
+    namespace
+    {
+        // Kana and kanji (cl-15, cl-16, cl-19; ー, 々, 〆): not punctuation, not full-width letters.
+        bool kana_or_kanji(char32_t c)
+        {
+            return (c >= 0x3041 && c <= 0x3096) || (c >= 0x309D && c <= 0x309F) || (c >= 0x30A1 && c <= 0x30FA) ||
+                   (c >= 0x30FC && c <= 0x30FF) || c == 0x3005 || c == 0x3006 || c == 0x3007 || (c >= 0x31F0 && c <= 0x31FF) ||
+                   (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF) ||
+                   (c >= 0x20000 && c <= 0x3134F);
+        }
+
+        // A Latin letter or digit (cl-24, cl-27): ASCII, Latin-1 and Extended, Greek, Cyrillic.
+        bool latin_alnum(char32_t c)
+        {
+            return (c >= '0' && c <= '9') || ((c | 0x20) >= 'a' && (c | 0x20) <= 'z') ||
+                   (c >= 0xC0 && c <= 0x24F && c != 0xD7 && c != 0xF7) || (c >= 0x370 && c <= 0x3FF) || (c >= 0x400 && c <= 0x4FF);
+        }
+    } // namespace
+
+    bool latin_space_after(char32_t c, char32_t next, uint8_t at)
+    {
+        if(at & line_end)
+            return false;
+        return (kana_or_kanji(c) && latin_alnum(next)) || (latin_alnum(c) && kana_or_kanji(next));
+    }
+
     bool ruby_may_overhang(char32_t c)
     {
         if(c >= 0x3041 && c <= 0x3096)  // hiragana, small ones too

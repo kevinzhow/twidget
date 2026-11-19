@@ -304,12 +304,24 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
                 continue;
             if(auto text = std::dynamic_pointer_cast<render_text>(events[kids[k]].first))
             {
-                text->before = before;
-                text->after  = 0;
+                text->before        = before;
+                text->after         = 0;
+                text->after_solid = false;
                 for(size_t n = k + 1; n < kids.size(); n++)
                     if(!gone[n])
                     {
                         text->after = first[n];
+                        text->after_solid = !events[kids[n]].first->src_el()->is_text();
+                        // A tate-chu-yoko token starting the next text (vertical text): a Japanese character there.
+                        if(auto next = std::dynamic_pointer_cast<el_text>(events[kids[n]].first->src_el());
+                           next && next->parent() && next->parent()->css().is_vertical_rl())
+                        {
+                            const std::string& shown = next->display_text();
+                            const auto         tcy   = next->parent()->css().combines_upright()
+                                                           ? std::vector<cjk::span>{{0, shown.size()}}
+                                                           : cjk::tate_chu_yoko(shown, 0, shown.size());
+                            text->after_solid = !tcy.empty() && tcy.front().from == 0;
+                        }
                         break;
                     }
             }
