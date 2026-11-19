@@ -304,6 +304,13 @@ if(TWIDGET_BUILD_TESTS)
         target_compile_options(twidget_punctuation_tests PRIVATE /utf-8)
     endif()
     add_test(NAME twidget_punctuation COMMAND twidget_punctuation_tests)
+    # litehtml's ruby overhang (JLReq 3.3.8): how far a ruby longer than its base overhangs what is next to it.
+    add_executable(twidget_ruby_overhang_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ruby_overhang_tests.cpp")
+    target_link_libraries(twidget_ruby_overhang_tests PRIVATE twidget::litehtml)
+    if(MSVC)
+        target_compile_options(twidget_ruby_overhang_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME twidget_ruby_overhang COMMAND twidget_ruby_overhang_tests)
     # litehtml's tate-chu-yoko (縦中横) in vertical text: which tokens stand upright in one em, where they are drawn,
     # where the column breaks and justify spreads, and what selection highlights.
     add_executable(twidget_tate_chu_yoko_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/tate_chu_yoko_tests.cpp")
