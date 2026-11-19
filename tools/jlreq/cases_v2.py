@@ -65,13 +65,14 @@ CASES = {
         ref=("chrome", ".o{margin-left:-0.25em}.c{margin-right:-0.25em}.e{margin-right:-0.5em}p{white-space:nowrap}",
              "<p>あいう<span class=o>「</span>えお<span class=c>」</span>かきくけこさし<span class=e>。</span><br>すせそたちつてと</p>"),
         ref_note="按规则手排：追込み——行末 。 去后二分，行中 「 前、」 后二分各压到四分（3.8.3 ⑤），Chromium 绘制"),
-    # 13 characters and 「 that may not end the line: 追出し, the line widened by an em, but not next to 、
-    # (3.1.11 ②-2): ten gaps of a tenth of an em.
-    "j-expand": dict(mode="h", body="<p>あいう、えおかきくけこさし「すせそ</p>",
+    # 13 characters and 「 that may not end the line: 「す does not fit even with 「's half em squeezed (。's half em
+    # inside a line is not squeezed, 3.8.3), so 追出し: the line widened by an em, but not next to 。 (3.1.11 ②-2): ten
+    # gaps of a tenth of an em.
+    "j-expand": dict(mode="h", body="<p>あいう。えおかきくけこさし「すせそ</p>",
         chrome_css="p{text-justify:inter-character}",
         ref=("chrome", "p{white-space:nowrap}.g{margin-inline-end:0.1em}",
-             "<p><span class=g>あ</span><span class=g>い</span>う、<span class=g>え</span><span class=g>お</span><span class=g>か</span><span class=g>き</span><span class=g>く</span><span class=g>け</span><span class=g>こ</span><span class=g>さ</span>し<br>「すせそ</p>"),
-        ref_note="按规则手排：追出し后多出的 1 字只加在假名汉字之间（10 处各 0.1 字），、 前后不加（3.1.11 ②），Chromium 绘制"),
+             "<p><span class=g>あ</span><span class=g>い</span>う。<span class=g>え</span><span class=g>お</span><span class=g>か</span><span class=g>き</span><span class=g>く</span><span class=g>け</span><span class=g>こ</span><span class=g>さ</span>し<br>「すせそ</p>"),
+        ref_note="按规则手排：「す 压不进（行中 。 的二分不压），追出し后多出的 1 字只加在假名汉字之间（10 处各 0.1 字），。 前后不加（3.1.11 ②），Chromium 绘制"),
     "l-latin": dict(mode="h", body="<p>これはEPUB 3の例で、W3Cの規格です。</p>",
         chrome_css="p{text-autospace:normal}",
         ref=("chrome", ".q{margin:0 0.25em}",
@@ -92,8 +93,15 @@ CASES = {
     "r-adjacent": dict(mode="h", body="<p>あ" + SHUN + SHUN + "い、「" + SHUN + "」と、……" + SHUN + "・と。</p>",
         chrome_css="",
         ref=("chrome", "ruby{ruby-overhang:none}", "<p>あ" + hs("旬", "しゅん", 0.25, 0) + hs("旬", "しゅん", 0, 0.25) + "い、「" +
-             hs("旬", "しゅん", 0, 0.25) + "」と、……" + hs("旬", "しゅん", 0.25, 0.25) + "・と。</p>"),
-        ref_note="按规则手排：相邻ルビ之间不掛（规则 2 注）；掛 」（规则 6）、……（规则 4）、・（规则 5）各 1/4 字，不掛「（规则 6 注），Chromium 绘制"),
+             hs("旬", "しゅん", 0.25, 0.25) + "」と、……" + hs("旬", "しゅん", 0.25, 0.25) + "・と。</p>"),
+        ref_note="按规则手排：相邻ルビ之间不掛（规则 2 注）；掛「与 」的字面（规则 6 正文）、……（规则 4）、・（规则 5）各 1/4 字，Chromium 绘制"),
+    # Rule 3: into the half em after 」 and 、 before the ruby, and before 「 after it.
+    # One line that fits without squeezing (line adjustment would also squeeze 」 and 、 to take more in).
+    "r-punct": dict(mode="h", body="<p>「あ」" + SHUN + "に。の" + SHUN + "「い」と、" + SHUN + "</p>",
+        chrome_css="",
+        ref=("chrome", "ruby{ruby-overhang:none}", "<p>「あ」" + hs("旬", "しゅん", 0.25, 0.25) + "に。の" + hs("旬", "しゅん", 0.25, 0.25) +
+             "「い」と、" + hs("旬", "しゅん", 0.25, 0) + "</p>"),
+        ref_note="按规则手排：ルビ掛进 」、 后和「 前的二分空（规则 3），另一侧掛假名，各 1/4 字，Chromium 绘制"),
     "r-edge": dict(mode="v",
         body="<p>" + SHUN + "のあいうえおかきくけこさしすせそたちつてとなにぬねの" + SHUN + "はひふ</p>",
         chrome_css="",
