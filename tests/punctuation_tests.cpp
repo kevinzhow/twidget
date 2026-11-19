@@ -167,7 +167,8 @@ struct Laid {
 
 // <p>html</p> in a line (column) `length` px long, text-align `align`.
 void lay_out(Laid& l, bool vertical, bool half_forms, float length, const std::string& html, const char* align = "justify",
-             line_adjustment adjustment = line_adjustment::jlreq, latin_spacing spacing = latin_spacing::quarter) {
+             line_adjustment adjustment = line_adjustment::jlreq, latin_spacing spacing = latin_spacing::quarter,
+             dividing_space dividing = dividing_space::full_em) {
     l.c.half_forms = half_forms;
     if (vertical) l.c.h = length;
     l.doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
@@ -176,6 +177,7 @@ void lay_out(Laid& l, bool vertical, bool half_forms, float length, const std::s
                                        &l.c);
     l.doc->set_line_adjustment(adjustment);
     l.doc->set_latin_spacing(spacing);
+    l.doc->set_dividing_space(dividing);
     l.doc->render(pixel_t(vertical ? 400 : length));
     l.doc->draw(0, 0, 0, nullptr);
 }
@@ -438,6 +440,26 @@ void run(bool vertical, bool half_forms) {
                      "<td style=\"padding:0\">あ</td></tr></table>");
         check(drawn(l.c.glyphs, half_forms) == "注@0 A@20 あ@36",
               mode + "3.2.6 ④: a table's column measured with the quarter em: " + drawn(l.c.glyphs, half_forms));
+    }
+
+    // JLReq 3.1.3: 、 between kanji numerals (二、三日) and ・ as their decimal point (三・五) are set solid.
+    expect(400, "二、三日", "二@0 、*@16 三@24 日@40", "3.1.3: 、 between kanji numerals, solid");
+    expect2(400, "三・五倍", "三@0 ・*@16 五@24 倍@40", "三@0 ・@12 五@24 倍@40", "3.1.3: ・ between kanji numerals, solid");
+    expect(400, "二、さん", "二@0 、@16 さ@32 ん@48", "3.1.3: not before kana");
+    // JLReq 3.1.6 ① (document::set_dividing_space, full_em by default): a full-width space after ？！ ending a sentence
+    // when the book has none; none before a closing bracket, a U+3000 the book has, a particle that goes on the
+    // sentence (と, って …), nor at a line's end.
+    expect(400, "なんだ！そうか", "な@0 ん@16 だ@32 ！@48 そ@80 う@96 か@112", "3.1.6 ①: a full-width space after ！");
+    expect(400, "本当？と言う", "本@0 当@16 ？@32 と@48 言@64 う@80", "3.1.6 ①: none before と");
+    expect(400, "えっ！」と", "え@0 っ@16 ！@32 」@48 と@64", "3.1.6 ①: none before 」");
+    expect(400, "あ！　い", "あ@0 ！@16 　@32 い@48", "3.1.6 ①: none where the book has U+3000");
+    expect(64, "あいう！そこ", "あ@0 い@16 う@32 ！@48 | そ@0 こ@16", "3.1.6 ①: none at a line's end");
+    {
+        Laid none;
+        lay_out(none, vertical, half_forms, 400, "なんだ！そうか", "justify", line_adjustment::jlreq, latin_spacing::quarter,
+                dividing_space::none);
+        check(drawn(none.c.glyphs, half_forms) == "な@0 ん@16 だ@32 ！@48 そ@64 う@80 か@96",
+              mode + "dividing_space::none: as before: " + drawn(none.c.glyphs, half_forms));
     }
 
     // Selecting a trimmed character highlights its half; the next one starts where its ink does.

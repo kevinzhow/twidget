@@ -100,6 +100,15 @@ namespace litehtml
         none,
     };
 
+    /// The space after ？！ ending a sentence (JLReq 3.1.6 ①). full_em: a full-width space when the book has none (not
+    /// before a closing bracket, a U+3000, a particle going on with the sentence, nor at a line's end). none: as the
+    /// book has it.
+    enum class dividing_space : uint8_t
+    {
+        full_em,
+        none,
+    };
+
     class document : public std::enable_shared_from_this<document>
     {
       public:
@@ -211,6 +220,7 @@ namespace litehtml
         ruby_overhang                           m_ruby_overhang      = ruby_overhang::punctuation;
         ruby_breaking                           m_ruby_breaking      = ruby_breaking::per_base;
         latin_spacing                           m_latin_spacing      = latin_spacing::quarter;
+        dividing_space                          m_dividing_space     = dividing_space::full_em;
         bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
@@ -339,6 +349,8 @@ namespace litehtml
         ruby_breaking                get_ruby_breaking() const { return m_ruby_breaking; }
         void                         set_latin_spacing(latin_spacing mode) { m_latin_spacing = mode; }
         latin_spacing                get_latin_spacing() const { return m_latin_spacing; }
+        void                         set_dividing_space(dividing_space mode) { m_dividing_space = mode; }
+        dividing_space               get_dividing_space() const { return m_dividing_space; }
         bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;
