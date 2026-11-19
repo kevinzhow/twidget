@@ -577,13 +577,27 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         }
     }
 
-    // JLReq 3.8.2: a line over-full squeezes its punctuation (can_hold let it take its last piece so); an ideographic
-    // space hanging past its end does not count.
+    // JLReq 3.8.2: a line over-full squeezes its punctuation (can_hold let it take its last piece so), measured as
+    // can_hold measured it: an ideographic space hanging past its end does not count, and its last piece is as wide as
+    // it is drawn ending a line (shaped again without its kerning with the next piece, el_text::line_end_extra).
     const bool jlreq = !m_items.empty() && adjusts(m_items.front().get());
     if(jlreq)
     {
-        const line_box_item* end  = last_content_item();
-        const pixel_t        over = m_width - (end ? hang_of(end) : 0_px) - (m_right - m_left);
+        const line_box_item* end = nullptr;
+        for(auto it = m_items.rbegin(); it != m_items.rend() && !end; ++it)
+        {
+            const auto type = (*it)->get_type();
+            const auto src  = (*it)->get_el()->src_el();
+            if(type == line_box_item::type_inline_start || type == line_box_item::type_inline_end ||
+               type == line_box_item::type_inline_continue || ((src->is_white_space() || src->is_break()) && (*it)->width() <= 0_px))
+                continue;
+            end = it->get();
+        }
+        pixel_t extra = end ? -hang_of(end) : 0_px;
+        if(auto part = squeezable_text(end))
+            if(auto text = std::dynamic_pointer_cast<el_text>(part->src_el()); text && !text->ends_with_soft_hyphen())
+                extra += text->line_end_extra();
+        const pixel_t over = m_width + extra - (m_right - m_left);
         if(over > 0.01_px)
             squeeze(over, !last_box && !finished_with_break);
     }
