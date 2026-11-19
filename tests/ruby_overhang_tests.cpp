@@ -175,6 +175,22 @@ std::string lay_out(bool vertical, float length, const std::string& html, ruby_o
 
 std::string r(const std::string& base, const std::string& ruby) { return "<ruby>" + base + "<rt>" + ruby + "</rt></ruby>"; }
 
+// The block position of each line of base text, in order (an annotation is not a line of its own).
+std::vector<float> line_positions(bool vertical, float length, const std::string& html) {
+    Stub c;
+    if (vertical) c.h = length;
+    auto doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                                              "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0\">" + html +
+                                              "</p></body></html>",
+                                          &c);
+    doc->render(pixel_t(vertical ? 400 : length));
+    doc->draw(0, 0, 0, nullptr);
+    std::vector<float> lines;
+    for (const auto& d : c.drawn)
+        if (!d.ruby && (lines.empty() || std::abs(lines.back() - d.y) > 0.5f)) lines.push_back(d.y);
+    return lines;
+}
+
 void run(bool vertical) {
     const std::string mode = vertical ? "vertical: " : "horizontal: ";
     // `horizontal`: what horizontal text draws when it differs (a word whose characters are not trimmed is drawn whole:
@@ -273,6 +289,21 @@ void run(bool vertical) {
     // A word inside white-space: nowrap does not break between its bases: it goes on whole, not past the line's end.
     expect(72, "あいう<span style=\"white-space:nowrap\">" + kanji + "</span>え",
            "あ@0 い@16 う@32 ^かん@0 | 漢@0 ^じ@20 字@16 え@32", "3.3.7: a word in white-space: nowrap goes on whole");
+    // JLReq 3.3.2 / 3.2.2: ruby sits in the space between lines, so a line with ruby, or with a jukugo word split at
+    // its end or start, keeps the pitch line-height gives (32 px; an 8 px annotation fits in its 8 px half-leading).
+    for (const auto& [html, what] : std::vector<std::pair<std::string, std::string>>{
+             {"あいうえおかきくけこさしすせそた", "no ruby"},
+             {"あいうえおか" + r("旬", "しゅん") + "きくけこさしすせ", "a group ruby inside the second line"},
+             {"あいうえ" + kanji + "おかきくけこさしすせ", "a jukugo word split between the first two lines"}}) {
+        const auto lines = line_positions(vertical, 80, html);
+        std::string got;
+        bool        even = lines.size() >= 3;
+        for (size_t i = 0; i < lines.size(); i++) {
+            got += (i ? " " : "") + std::to_string(int(std::lround(lines[i])));
+            if (i && std::abs(lines[i] - lines[i - 1] - 32) > 0.5f) even = false;
+        }
+        check(even, mode + "3.3.2: line pitch stays 32 px with " + what + ": lines at " + got);
+    }
     // The overhang counts when the line breaks: の旬にあ fits in four ems.
     expect(64, "の" + shun + "にあ", "の@0 ^しゅん@12 旬@16 に@32 あ@48", "the line holds what the overhang makes room for");
     // Line edges (a, b): at a line's head the base and its ruby start together; at a wrapped line's end they end
