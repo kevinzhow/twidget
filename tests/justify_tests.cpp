@@ -172,6 +172,7 @@ void run(bool vertical, line_adjustment adjustment) {
                                               text + "</p></body></html>",
                                           &c);
     doc->set_line_adjustment(adjustment);
+    doc->set_latin_spacing(latin_spacing::none);  // justify's spreading alone (3.2.6 ④: punctuation_tests)
     doc->render(pixel_t(vertical ? 300 : line_length));
     doc->draw(0, 0, 0, nullptr);
     if (c.glyphs.empty()) {

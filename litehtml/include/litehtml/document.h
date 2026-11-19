@@ -91,6 +91,15 @@ namespace litehtml
         whole,
     };
 
+    /// The space between Japanese and Latin text (JLReq 3.2.6 ④). quarter: a quarter em between kana or kanji and a
+    /// Latin letter or digit, none at a line's end nor next to punctuation; line adjustment squeezes it to an eighth em
+    /// and widens it (3.8.3, 3.8.4 b). none: they meet solid, as before.
+    enum class latin_spacing : uint8_t
+    {
+        quarter,
+        none,
+    };
+
     class document : public std::enable_shared_from_this<document>
     {
       public:
@@ -201,6 +210,7 @@ namespace litehtml
         line_adjustment                         m_line_adjustment    = line_adjustment::jlreq;
         ruby_overhang                           m_ruby_overhang      = ruby_overhang::punctuation;
         ruby_breaking                           m_ruby_breaking      = ruby_breaking::per_base;
+        latin_spacing                           m_latin_spacing      = latin_spacing::quarter;
         bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
@@ -327,6 +337,8 @@ namespace litehtml
         ruby_overhang                get_ruby_overhang() const { return m_ruby_overhang; }
         void                         set_ruby_breaking(ruby_breaking mode) { m_ruby_breaking = mode; }
         ruby_breaking                get_ruby_breaking() const { return m_ruby_breaking; }
+        void                         set_latin_spacing(latin_spacing mode) { m_latin_spacing = mode; }
+        latin_spacing                get_latin_spacing() const { return m_latin_spacing; }
         bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;

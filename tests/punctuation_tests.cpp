@@ -167,7 +167,7 @@ struct Laid {
 
 // <p>html</p> in a line (column) `length` px long, text-align `align`.
 void lay_out(Laid& l, bool vertical, bool half_forms, float length, const std::string& html, const char* align = "justify",
-             line_adjustment adjustment = line_adjustment::jlreq) {
+             line_adjustment adjustment = line_adjustment::jlreq, latin_spacing spacing = latin_spacing::quarter) {
     l.c.half_forms = half_forms;
     if (vertical) l.c.h = length;
     l.doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
@@ -175,6 +175,7 @@ void lay_out(Laid& l, bool vertical, bool half_forms, float length, const std::s
                                            align + "\">" + html + "</p></body></html>",
                                        &l.c);
     l.doc->set_line_adjustment(adjustment);
+    l.doc->set_latin_spacing(spacing);
     l.doc->render(pixel_t(vertical ? 400 : length));
     l.doc->draw(0, 0, 0, nullptr);
 }
@@ -407,9 +408,26 @@ void run(bool vertical, bool half_forms) {
               mode + "nothing to squeeze, a line 0.005 px short breaks as before: " + line_texts(jl.c.glyphs) + "\n     even " +
                   line_texts(ev.c.glyphs));
     }
-    // Expanding: where Japanese meets Latin before the gaps between kana (3.8.4 b, c), and Latin word spaces first (a).
-    expect(88, "かきAくけこ", "か@0 き@16 A@36 く@56 け@72 | こ@0", "3.8.4: Japanese–Latin gaps before kana ones");
-    expect(120, "かきA Bくけこ", "か@0 き@16 A@34 B@70 く@88 け@104 | こ@0", "3.8.4: word spaces first");
+    // Expanding: where Japanese meets Latin (on its quarter em, 3.2.6 ④) before the gaps between kana (3.8.4 b, c), and
+    // Latin word spaces first (a).
+    expect(96, "かきAくけこ", "か@0 き@16 A@40 く@64 け@80 | こ@0", "3.8.4: Japanese–Latin gaps before kana ones");
+    expect(128, "かきA Bくけこ", "か@0 き@16 A@38 B@74 く@96 け@112 | こ@0", "3.8.4: word spaces first");
+
+    // JLReq 3.2.6 ④ (document::set_latin_spacing, quarter by default): a quarter em between kana or kanji and Latin
+    // letters or digits, none at a line's end nor next to brackets and punctuation; line adjustment squeezes it to an
+    // eighth em, last (3.8.3), and widens it after word spaces (3.8.4 b). A tate-chu-yoko number is set as a Japanese
+    // character: none next to it.
+    expect(400, "かきAくけ", "か@0 き@16 A@36 く@56 け@72", "3.2.6 ④: a quarter em each side of a Latin letter");
+    {
+        Laid none;
+        lay_out(none, vertical, half_forms, 400, "かきAくけ", "justify", line_adjustment::jlreq, latin_spacing::none);
+        check(drawn(none.c.glyphs, half_forms) == "か@0 き@16 A@32 く@48 け@64",
+              mode + "latin_spacing::none: as before: " + drawn(none.c.glyphs, half_forms));
+    }
+    expect(52, "かきAく", "か@0 き@16 A@36 | く@0", "3.2.6 ④: none at a line's end");
+    expect(84, "かきAくけ", "か@0 き@16 A@34 く@52 け@68", "3.8.3: squeezed to an eighth em to fit");
+    expect(400, "か「A」き", "か@0 「@24 A@32 」@48 き@64", "3.2.6 ④: none next to brackets");
+    if (!vertical) expect(400, "第12回", "第@0 1@20 2@36 回@56", "3.2.6 ④: a number's quarter ems");
 
     // Selecting a trimmed character highlights its half; the next one starts where its ink does.
     {
