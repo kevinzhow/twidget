@@ -72,6 +72,15 @@ namespace litehtml
         even,
     };
 
+    /// Ruby overhang (JLReq 3.3.8): a ruby longer than its base overhangs the kana next to it (rule 2), never a kanji
+    /// (rule 1); punctuation: also into the half em of 」、。 before it and 「 after it (rule 3), onto …… ―― (rule 4), middle
+    /// dots (rule 5), and 「 before it or 」、。 after it (rule 6), each up to one ruby character.
+    enum class ruby_overhang : uint8_t
+    {
+        punctuation,
+        kana,
+    };
+
     class document : public std::enable_shared_from_this<document>
     {
       public:
@@ -180,6 +189,7 @@ namespace litehtml
         bool                                    m_cjk_segment_breaks = false;
         paragraph_brackets                      m_paragraph_brackets = paragraph_brackets::full_em;
         line_adjustment                         m_line_adjustment    = line_adjustment::jlreq;
+        ruby_overhang                           m_ruby_overhang      = ruby_overhang::punctuation;
         bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
@@ -302,6 +312,8 @@ namespace litehtml
         paragraph_brackets           get_paragraph_brackets() const { return m_paragraph_brackets; }
         void                         set_line_adjustment(line_adjustment mode) { m_line_adjustment = mode; }
         line_adjustment              get_line_adjustment() const { return m_line_adjustment; }
+        void                         set_ruby_overhang(ruby_overhang mode) { m_ruby_overhang = mode; }
+        ruby_overhang                get_ruby_overhang() const { return m_ruby_overhang; }
         bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;
