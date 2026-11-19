@@ -285,6 +285,13 @@ void run(bool vertical) {
            "line-edge b: a ruby that fits only with its whole excess over the kana before it ends the line there");
     expect(80, "あいう漢" + shun + "おか", "あ@0 い@16 う@32 漢@48 ^しゅん@0 | 旬@0 お@16 か@32",
            "line-edge b: after a kanji it does not fit, and starts the next line");
+    // Group ruby at the line edges (3.3.8 c, d): its reading flush with the line's head (or, ending a wrapped line, its
+    // end, overhanging the kana before it by a ruby character), its bases spaced 1:1 between them and at the other end,
+    // not space-around's 1:2:1.
+    const std::string tokyo = r("東京", "とうきょうと");
+    expect(400, tokyo + "のあ", "^とうきょうと@0 東@0 京@24 の@40 あ@56", "line-edge c: a group ruby at the line's head, 1:1");
+    expect(80, "あい" + tokyo + "うえ", "あ@0 い@16 ^とうきょうと@24 東@32 京@56 | う@0 え@16",
+           "line-edge d: a group ruby ending a wrapped line, 1:1");
     // JLReq's rules are for Japanese: a ruby over Latin text (IDPF hefty-water's 2H₂ under "hydrogen") stays as
     // CSS lays it out, its base centred, also at a line's head and next to kana.
     expect(400, r("ab", "abcdefgh") + "の", "^abcdefgh@0 a@8 b@40 の@64", "a ruby over Latin text: no line-edge alignment, no overhang");
