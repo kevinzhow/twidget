@@ -1,0 +1,7 @@
+# The fixed visual sample (TASK.md "Process change", Kevin e83b22db): run after each change during development, the
+# full corpus once a batch before its PRs. One VT case id a line (tool/visual/run.dart --only), phone, default settings;
+# 46 pages in all. All public books.
+books-compat-g34013--phone--default          # 11 pages: vertical, ruby-dense, ？！ before kana (Gutenberg, public domain)
+idpf-jlreq-in-japanese--phone--default       # 17 pages: horizontal Japanese, tables, Latin and digits in Japanese text
+w3c-css-epub-text-underline-position--phone--default  # 8 pages: English, vertical underline left and right
+w3c-css-epub-text-emphasis--phone--default   # 10 pages: text-emphasis (傍点), horizontal and vertical
