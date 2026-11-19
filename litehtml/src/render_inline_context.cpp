@@ -356,7 +356,9 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
                     joined = no_break_opportunity(at->src_el(), following->src_el(), across);
                 else if((is_piece(following) || is_ruby(following)) && !following->src_el()->is_space() &&
                         !at->src_el()->is_space())
-                    joined = cjk::no_break_between(edge_char(at->src_el(), false), edge_char(following->src_el(), true));
+                    // As can_hold asks (no_break_opportunity): also no break inside white-space: nowrap, as between
+                    // the pairs of a word of ruby.
+                    joined = no_break_opportunity(at->src_el(), following->src_el(), true);
                 if(!joined)
                     break;
                 pixel_t width = 0_px;
