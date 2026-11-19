@@ -77,9 +77,42 @@ namespace litehtml::cjk
     // line that wraps. Nothing else is trimmed (・：； keep their ems).
     trim compression(char32_t prev, char32_t c, char32_t next, uint8_t at);
 
+    // Line adjustment (JLReq 3.8.3): what a line over-full by a little may still take from c, in its ems, beyond what
+    // compression took (`taken`): before its glyph and after it, and at which step. In the middle of a line, the
+    // quarters before and after a middle dot (step middle_dot) and the half em before an opening bracket and after a
+    // closing bracket or 、 (step bracket), never the half em after 。 nor anything at a paragraph's start; ending a
+    // line, a middle dot's quarters (step line_end_dot; a closing bracket's and 、。's half em is compression's there).
+    enum class squeeze_step : uint8_t
+    {
+        none,
+        line_end_dot,
+        middle_dot,
+        bracket,
+    };
+    struct squeeze
+    {
+        float        start = 0;
+        float        end   = 0;
+        squeeze_step step  = squeeze_step::none;
+    };
+    squeeze squeezable(char32_t c, trim taken, uint8_t at);
+
+    // What text-align: justify may widen a justifiable gap by, in JLReq 3.8.4's order: a Latin word space first, then
+    // where Japanese meets Latin, then between Japanese characters; never next to brackets, 、。, middle dots, ？！,
+    // hyphens and U+3000 (3.1.11 ②: avoided, unless the line has no other gap). 0: an inline box, as a Japanese
+    // character.
+    enum class gap_kind : uint8_t
+    {
+        avoided,
+        word_space,
+        latin,
+        japanese,
+    };
+    gap_kind justify_gap_kind(char32_t before, char32_t after);
+
     // Whether a ruby longer than its base may overhang c next to the base (JLReq 3.3.8 rule 2): hiragana (cl-15),
-    // katakana (cl-16), the prolonged sound mark (cl-10) and small kana (cl-11); not iteration marks, the middle dot,
-    // kanji (rule 1), punctuation (rules 3 to 6 are not done) nor anything else.
+    // katakana (cl-16), the prolonged sound mark (cl-10) and small kana (cl-11); not iteration marks, kanji (rule 1)
+    // nor anything else. Punctuation (rules 3 to 6) is line_box::overhang_room's, by what compression left of it.
     bool ruby_may_overhang(char32_t c);
 
     // Bytes [from, to) of a text.

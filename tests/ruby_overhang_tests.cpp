@@ -3,8 +3,12 @@
 //
 // JLReq 3.3.8: a ruby longer than its base may overhang the characters next to the base by up to one ruby character
 // (rule 2: hiragana, katakana, the prolonged sound mark, small kana), never a kanji (rule 1) nor another ruby (rule 2,
-// note); where it may not, the base is spaced (3.3.5: the ruby centred on its base). At a line's head the base and its
-// ruby start together and at a line's end they end together (line-edge a, b); a ruby never reaches past the line.
+// note); where it may not, the base is spaced (3.3.5: the ruby centred on its base). Next to punctuation
+// (document::set_ruby_overhang, punctuation by default): into the half em after 」、。 before it or before 「 after it
+// (rule 3, no further than that space), onto …… and ―― (rule 4) and middle dots (rule 5), and onto 「 before it or
+// 」、。 after it, no further than that character (rule 6); each up to one ruby character. A space a ruby overhangs is
+// no longer there for line adjustment to squeeze (rule 3, note). At a line's head the base and its ruby start together
+// and at a line's end they end together (line-edge a, b); a ruby never reaches past the line.
 //
 // The stub measures a character as wide as its font's size (16 px text, 8 px ruby: rt is font-size 50%), breaks a line
 // between any two characters the CJK rule set does not keep together, and records what it draws along the line: each
@@ -154,13 +158,14 @@ std::string format(const std::vector<Drawn>& drawn) {
 }
 
 // <p>html</p>, left-aligned, in a line (column) `length` px long.
-std::string lay_out(bool vertical, float length, const std::string& html) {
+std::string lay_out(bool vertical, float length, const std::string& html, ruby_overhang overhang = ruby_overhang::punctuation) {
     Stub c;
     if (vertical) c.h = length;
     auto doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
                                               "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0\">" +
                                               html + "</p></body></html>",
                                           &c);
+    doc->set_ruby_overhang(overhang);
     doc->render(pixel_t(vertical ? 400 : length));
     doc->draw(0, 0, 0, nullptr);
     return format(c.drawn);
@@ -170,9 +175,13 @@ std::string r(const std::string& base, const std::string& ruby) { return "<ruby>
 
 void run(bool vertical) {
     const std::string mode = vertical ? "vertical: " : "horizontal: ";
-    auto expect = [&](float length, const std::string& html, const std::string& want, const std::string& what) {
+    // `horizontal`: what horizontal text draws when it differs (a word whose characters are not trimmed is drawn whole:
+    // あ」@0, where vertical text draws あ@0 」@16).
+    auto expect = [&](float length, const std::string& html, const std::string& want, const std::string& what,
+                      const std::string& horizontal = "") {
         const std::string got = lay_out(vertical, length, html);
-        check(got == want, mode + what + ": " + got + "\n     want " + want);
+        const std::string w = !vertical && !horizontal.empty() ? horizontal : want;
+        check(got == w, mode + what + ": " + got + "\n     want " + w);
     };
     const std::string shun = r("旬", "しゅん");
 
@@ -187,8 +196,47 @@ void run(bool vertical) {
            "rule 2: no more than one ruby character a side, the rest spaces the base");
     expect(400, "あ" + shun + shun + "い", "あ@0 ^しゅん@12 旬@16 ^しゅん@36 旬@40 い@56",
            "rule 2 note: a ruby does not overhang the ruby next to it");
-    expect(400, "あ「" + shun + "」", "あ@0 「@16 ^しゅん@32 旬@36 」@56", "next to brackets: no overhang (rules 3 and 6 not yet)");
+    expect(400, "あ「" + shun + "」", "あ@0 「@16 ^しゅん@28 旬@32 」@48", "rule 6: onto 「 before and 」 after, 旬 set solid");
+    {
+        const std::string got = lay_out(vertical, 400, "あ「" + shun + "」", ruby_overhang::kana);
+        check(got == "あ@0 「@16 ^しゅん@32 旬@36 」@56", mode + "ruby_overhang::kana: no overhang next to brackets, as before: " + got);
+    }
     expect(400, "の" + r("旬", "しゅん") + "あ", "の@0 ^しゅん@12 旬@16 あ@32", "a following あ");
+    // Rules 3 to 6 (JLReq Fig. 135, 136): the half em after 」、。 before the ruby and before 「 after it; ……, ・; 」、。
+    // after it and 「 before it, onto the mark itself.
+    expect(400, "あ」" + shun + "に", "あ@0 」@16 ^しゅん@28 旬@32 に@48", "rule 3: into the half em after 」",
+           "あ」@0 ^しゅん@28 旬@32 に@48");
+    expect(400, "あ、" + shun + "に", "あ@0 、@16 ^しゅん@28 旬@32 に@48", "rule 3: into the half em after 、",
+           "あ、@0 ^しゅん@28 旬@32 に@48");
+    expect(400, "あ。" + shun + "に", "あ@0 。@16 ^しゅん@28 旬@32 に@48", "rule 3: into the half em after 。",
+           "あ。@0 ^しゅん@28 旬@32 に@48");
+    expect(400, "の" + shun + "「あ", "の@0 ^しゅん@12 旬@16 「@32 あ@48", "rule 3: into the half em before 「",
+           "の@0 ^しゅん@12 旬@16 「あ@32");
+    expect(400, "の" + shun + "、あ", "の@0 ^しゅん@12 旬@16 、@32 あ@48", "rule 6: onto 、 after it");
+    expect(400, "あ……" + shun + "……い", "あ@0 …@16 …@32 ^しゅん@44 旬@48 …@64 …@80 い@96", "rule 4: onto ……",
+           "あ@0 ……@16 ^しゅん@44 旬@48 ……@64 い@96");
+    expect(400, "あ・" + shun + "・い", "あ@0 ・@16 ^しゅん@28 旬@32 ・@48 い@64", "rule 5: onto middle dots",
+           "あ・@0 ^しゅん@28 旬@32 ・@48 い@64");
+    // No further than one ruby character, the half em of rule 3, nor the mark itself (rule 6): the rest spaces the base.
+    const std::string shunshun = r("旬", "しゅんしゅん");
+    expect(400, "あ」" + shunshun + "「い", "あ@0 」@16 ^しゅんしゅん@24 旬@40 「@64 い@80", "rule 3: no further than the half em",
+           "あ」@0 ^しゅんしゅん@24 旬@40 「い@64");
+    expect(400, "あ「" + shunshun + "」", "あ@0 「@16 ^しゅんしゅん@24 旬@40 」@64", "rule 6: no further than the mark itself");
+    // Group and jukugo ruby: by the base's outer gaps, the first pair's before and the last pair's after.
+    expect(400, "あ「" + r("東京", "とうきょうと") + "」", "あ@0 「@16 ^とうきょうと@28 東@32 京@56 」@72", "rules 3 to 6: a group ruby");
+    expect(400, "あ「<ruby>旬<rt>しゅん</rt>旬<rt>しゅん</rt></ruby>」", "あ@0 「@16 ^しゅん@28 旬@32 ^しゅん@52 旬@56 」@72",
+           "rules 3 to 6: a ruby of two pairs (jukugo)");
+    // Line edges: at a line's head the excess goes after the base, into 「's half em; at a wrapped line's end the
+    // whole excess before it, into 、's.
+    expect(400, shun + "「あ", "^しゅん@0 旬@0 「@16 あ@32", "line-edge a: at the line's head, into the half em before 「",
+           "^しゅん@0 旬@0 「あ@16");
+    expect(80, "あいう、" + shun + "えお", "あ@0 い@16 う@32 、@48 ^しゅん@56 旬@64 | え@0 お@16",
+           "line-edge b: at a wrapped line's end, into the half em after 、", "あ@0 い@16 う、@32 ^しゅん@56 旬@64 | え@0 お@16");
+    // Rule 3, note: what a ruby overhangs of 」's half em is not squeezed for the line (JLReq 3.8.3) as well.
+    expect(124, "あ」" + shun + "にいうえお", "あ@0 」@16 ^しゅん@24 旬@28 に@44 い@60 う@76 え@92 お@108",
+           "rule 3: line adjustment squeezes only what the ruby leaves of the half em");
+    expect(120, "あ」" + shun + "にいうえお", "あ@0 」@16 ^しゅん@28 旬@32 に@48 い@64 う@80 え@96 | お@0",
+           "rule 3: not what the ruby overhangs", "あ」@0 ^しゅん@28 旬@32 に@48 い@64 う@80 え@96 | お@0");
     expect(400, "の" + r("漢字", "かんじい") + "に", "の@0 ^かんじい@16 漢@16 字@32 に@48", "a ruby no longer than its base: as before");
     expect(400, "あ" + r("東京", "とうきょうと") + "い", "あ@0 ^とうきょうと@12 東@16 京@40 い@56",
            "a group ruby longer than its base overhangs by its base's outer gaps");

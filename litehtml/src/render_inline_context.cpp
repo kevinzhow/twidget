@@ -1010,6 +1010,7 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
                 text_item->hyphen = false;
                 text_item->justify_gap = 0_px;
                 text_item->trims.clear();
+                text_item->ruby_over_start = text_item->ruby_over_end = 0_px;
                 litehtml::size sz;
                 item->get_el()->src_el()->get_content_size(sz, self_size.render_width);
                 item->get_el()->pos() = sz;

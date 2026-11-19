@@ -101,7 +101,16 @@ namespace litehtml
             return 0_px;
         if(bytes >= run.shown.size())
             return run.box.width;
-        const pixel_t spread = justify_shift(run.shown, bytes, run.justify_gap, after_gap) - trim_shift(run.trims, bytes);
+        pixel_t spread = justify_shift(run.shown, bytes, run.justify_gap, after_gap) - trim_shift(run.trims, bytes);
+        // What line adjustment widens a gap by inside a piece is the end of the character before it, negative
+        // (render_text::trims): as at justify's gaps, the boundary there is two places, and the first is before it.
+        if(!after_gap)
+            for(const auto& t : run.trims)
+            {
+                const unsigned char c0 = run.shown[t.at];
+                if(t.end < 0_px && t.at + (c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4) == bytes)
+                    spread += t.end;
+            }
         return run.text->advance_to(run.shown, bytes) + spread;
     }
 
@@ -126,23 +135,23 @@ namespace litehtml
         }
         if(!best)
             return {};
-        // The character boundary nearest the point along the line.
+        // The character boundary nearest the point along the line: in a character, the nearer of its edges; in a
+        // justified gap (a boundary there is two places, the end of the character before it and the start of the one
+        // after), that boundary.
         const pixel_t target = lx - best->box.x;
         size_t        bytes = 0;
-        pixel_t       prev  = 0_px;
+        pixel_t       prev  = 0_px;  // where the character before boundary i starts
         for(size_t i = 1; i <= best->shown.size(); i++)
         {
             if(continuation(best->shown, i))
                 continue;
-            // A boundary at a justified gap is nearest in the middle of the gap.
-            pixel_t a = (advance(*best, i, false) + advance(*best, i, true)) / 2_px;
-            if(a >= target)
-            {
-                bytes = target - prev <= a - target ? bytes : i;
-                return {best->text, best->offset + bytes};
-            }
+            const pixel_t end = advance(*best, i, false), next = advance(*best, i, true);
+            if(target < end)
+                return {best->text, best->offset + (target - prev <= end - target ? bytes : i)};
+            if(target <= next)
+                return {best->text, best->offset + i};
             bytes = i;
-            prev  = a;
+            prev  = next;
         }
         return {best->text, best->offset + best->shown.size()};
     }

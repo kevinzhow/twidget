@@ -12,6 +12,7 @@
 #include "utf8_strings.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace
 {
@@ -83,6 +84,73 @@ namespace
         for(size_t k = 1; k < n && at + k < s.size(); k++)
             c = (c << 6) | (static_cast<unsigned char>(s[at + k]) & 0x3F);
         return c;
+    }
+
+    // The code point at text[i], and its length in bytes.
+    char32_t decode_at(const std::string& text, size_t i, size_t& n)
+    {
+        const unsigned char c0 = text[i];
+        n = std::min<size_t>(c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4, text.size() - i);
+        char32_t c = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
+        for(size_t k = 1; k < n; k++)
+            c = (c << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
+        return c;
+    }
+
+    // The text a line item shows when line adjustment may squeeze it: a whole text (not a fragment of a broken word,
+    // nor white space or a <br>); else none.
+    std::shared_ptr<litehtml::render_text> squeezable_text(const litehtml::line_box_item* item)
+    {
+        using namespace litehtml;
+        if(!item || item->get_type() != line_box_item::type_text_part)
+            return nullptr;
+        auto part = std::dynamic_pointer_cast<render_text>(item->get_el());
+        auto text = part ? std::dynamic_pointer_cast<el_text>(part->src_el()) : nullptr;
+        if(!text || part->is_fragment || text->is_white_space() || text->is_break())
+            return nullptr;
+        return part;
+    }
+
+    // What line adjustment may squeeze from a text (el_text::squeezable) at `first` and `last`, less what a ruby next to
+    // it overhangs (JLReq 3.3.8 rule 3, note).
+    std::vector<litehtml::char_squeeze> squeeze_of(const litehtml::render_text& part, uint8_t first, uint8_t last)
+    {
+        using namespace litehtml;
+        auto text = std::dynamic_pointer_cast<el_text>(part.src_el());
+        if(!text)
+            return {};
+        const std::string& shown = text->display_text();
+        auto               out   = text->squeezable(shown, part.trims, first, last);
+        size_t             back  = shown.size() - 1;
+        while(back > 0 && (static_cast<unsigned char>(shown[back]) & 0xC0) == 0x80)
+            back--;
+        for(auto& q : out)
+        {
+            if(q.at == 0)
+                q.start = std::max(0_px, q.start - part.ruby_over_start);
+            if(q.at == back)
+                q.end = std::max(0_px, q.end - part.ruby_over_end);
+        }
+        return out;
+    }
+
+    // CSS Text 3 §4.1.3, as Chromium: an ideographic space ending a line hangs (。　 at a paragraph's turn, which the
+    // CJK line breaking keeps with the text before it): how far, when `item` ends the line.
+    litehtml::pixel_t hang_of(const litehtml::line_box_item* item)
+    {
+        using namespace litehtml;
+        if(auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get()))
+        {
+            const std::string& shown = text->display_text();
+            if(shown.size() > 3 && shown.compare(shown.size() - 3, 3, "\xE3\x80\x80") == 0 && text->parent())
+                return text->get_document()->container()->text_width("\xE3\x80\x80", text->parent()->css().get_font());
+        }
+        return 0_px;
+    }
+
+    bool adjusts(const litehtml::line_box_item* item)
+    {
+        return item->get_el()->src_el()->get_document()->get_line_adjustment() == litehtml::line_adjustment::jlreq;
     }
 } // namespace
 
@@ -315,6 +383,17 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
         }
         if(r.single)
             r.single->overlap_before = overlap;
+        // What it overhangs of the text before it, or (a text after a ruby) of its own start: not to be squeezed too.
+        if(overlap > 0_px)
+        {
+            ruby_sides other;
+            if(ruby_of(item.get(), other))
+            {
+                if(auto text = squeezable_text(last_content_item()))
+                    text->ruby_over_end = overlap;
+            } else if(auto text = squeezable_text(item.get()))
+                text->ruby_over_start = overlap;
+        }
         m_width -= overlap;
         item->place_to(m_left + m_width, m_top);
         m_width  += item->width();
@@ -461,12 +540,13 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
                        !((*b)->get_el()->src_el()->is_white_space() && (*b)->width() <= 0_px))
                         prev = b->get();
                 }
-                ruby_sides    other;
-                const bool    onto  = prev && !ruby_of(prev, other) && cjk::ruby_may_overhang(edge_of(prev, true));
-                const pixel_t want  = onto ? std::min(pair->base_start + pair->base_shift, pair->ruby_em) : 0_px;
+                const pixel_t room  = overhang_room(prev, true, pair->ruby_em);
+                const pixel_t want  = room >= 0_px ? std::min(pair->base_start + pair->base_shift, room) : 0_px;
                 const pixel_t extra = std::max(0_px, want - pair->overlap_before);
                 if(extra > 0_px)
                 {
+                    if(auto text = squeezable_text(prev))
+                        text->ruby_over_end += extra;
                     pair->overlap_before += extra;
                     m_width              -= extra;
                     for(auto after = m_items.rbegin();; ++after)
@@ -525,6 +605,31 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         }
     }
 
+    // JLReq 3.8.2: a line over-full squeezes its punctuation (can_hold let it take its last piece so), measured as
+    // can_hold measured it: an ideographic space hanging past its end does not count, and its last piece is as wide as
+    // it is drawn ending a line (shaped again without its kerning with the next piece, el_text::line_end_extra).
+    const bool jlreq = !m_items.empty() && adjusts(m_items.front().get());
+    if(jlreq)
+    {
+        const line_box_item* end = nullptr;
+        for(auto it = m_items.rbegin(); it != m_items.rend() && !end; ++it)
+        {
+            const auto type = (*it)->get_type();
+            const auto src  = (*it)->get_el()->src_el();
+            if(type == line_box_item::type_inline_start || type == line_box_item::type_inline_end ||
+               type == line_box_item::type_inline_continue || ((src->is_white_space() || src->is_break()) && (*it)->width() <= 0_px))
+                continue;
+            end = it->get();
+        }
+        pixel_t extra = end ? -hang_of(end) : 0_px;
+        if(auto part = squeezable_text(end))
+            if(auto text = std::dynamic_pointer_cast<el_text>(part->src_el()); text && !text->ends_with_soft_hyphen())
+                extra += text->line_end_extra();
+        const pixel_t over = m_width + extra - (m_right - m_left);
+        if(over > 0.01_px)
+            squeeze(over, !last_box && !finished_with_break);
+    }
+
     pixel_t spacing_x = 0_px; // Number of pixels to distribute between elements
     pixel_t shift_x   = 0_px; // Shift elements by X to apply the text-align
 
@@ -570,13 +675,27 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
     // (cjk::justifiable_gap), as stone_engine does: between two texts' characters and inside a text (its
     // render_text::justify_gap at each), never inside a Latin word or number, nor inside …… or ――. An inline box (an
     // image, an inline-block, a ruby) has a gap each side. Inline starts and ends take none: the gap after a text goes
-    // after the ends that follow it.
-    std::vector<int> gaps_before(m_items.size(), 0), gaps_inside(m_items.size(), 0);
-    int              gaps = 0;
+    // after the ends that follow it. With JLReq line adjustment (3.8.4), the gaps next to brackets, 、。 and the like take
+    // none while there are others (3.1.11 ②), and Latin word spaces fill first (an eighth em each side), then where
+    // Japanese meets Latin (half an em), then the gaps between Japanese characters (a quarter em), then all of these
+    // evenly; where that comes to the same at every gap, or the line has no Japanese text, it is spread as evenly as
+    // before.
+    struct gap
+    {
+        size_t        item;    // the item it goes before, or (inside) the text it is in
+        size_t        at;      // inside a text: the byte of the character after it
+        bool          inside;
+        cjk::gap_kind kind;
+        pixel_t       em;
+        float         add = 0;
+    };
+    std::vector<gap> gaps;
+    bool             japanese_text = false;
     if(spacing_x != 0_px)
     {
         enum { nothing, text, box } before = nothing;  // what came last: a text, an inline box, or neither yet
         char32_t last = 0;                             // the last text's last character
+        char32_t last_kind = 0;                        // the same, 0 when a tate-chu-yoko token ends it
         int      slot = -1;                            // the item the gap after it goes before
         size_t i = 0;
         for(auto it = m_items.begin(); it != m_items.end(); ++it, ++i)
@@ -590,35 +709,139 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             }
             auto part = std::dynamic_pointer_cast<render_text>((*it)->get_el());
             auto src  = part ? dynamic_cast<const el_text*>(part->src_el().get()) : nullptr;
-            const std::u32string chars =
-                src ? std::u32string(utf8_to_utf32(part->is_fragment ? part->fragment_text : src->display_text())) : U"";
+            const std::string& shown = src ? (part->is_fragment ? part->fragment_text : src->display_text()) : std::string();
+            const std::u32string chars = src ? std::u32string(utf8_to_utf32(shown)) : U"";
             if(src && chars.empty())
                 continue;
+            // Japanese text on the line: kana, kanji, CJK and full-width forms (not — … ※, which the rule set counts as
+            // Japanese script and Latin text uses too).
+            japanese_text = japanese_text || std::any_of(chars.begin(), chars.end(), [](char32_t c) {
+                return c >= 0x2E80 && cjk::script_of(c) == cjk::script::japanese;
+            });
             if(slot < 0)
                 slot = int(i);
+            const auto&   el = (*it)->get_el()->src_el();
+            const pixel_t em = (src && el->parent() ? el->parent()->css() : el->css()).get_font_metrics().font_size;
+            // A tate-chu-yoko token stands in its em as a Japanese character does (0, as a box, to justify_gap_kind).
+            const auto& tcy = src && !part->is_fragment ? src->tate_chu_yoko() : std::vector<cjk::span>();
+            auto        in_tcy = [&](size_t at) {
+                return std::any_of(tcy.begin(), tcy.end(), [&](const cjk::span& t) { return t.from <= at && at < t.to; });
+            };
             if(before != nothing && (before == box || !src || cjk::justifiable_gap(last, chars.front())))
-            {
-                gaps_before[slot]++;
-                gaps++;
-            }
+                gaps.push_back({size_t(slot), 0, false,
+                                cjk::justify_gap_kind(before == box ? 0 : last_kind, src && !in_tcy(0) ? chars.front() : 0), em});
             before = src ? text : box;
             slot   = -1;
             if(!src)
                 continue;
-            last = chars.back();
+            last      = chars.back();
+            last_kind = in_tcy(shown.size() - 1) ? 0 : last;
             // stone's isJustifiableGapTbRl: none inside a tate-chu-yoko token, its characters set together in one em.
-            for(size_t gap : cjk::justifiable_gaps(part->is_fragment ? part->fragment_text : src->display_text()))
+            for(size_t at : cjk::justifiable_gaps(shown))
                 if(part->is_fragment || std::none_of(src->tate_chu_yoko().begin(), src->tate_chu_yoko().end(),
-                                                     [&](const cjk::span& t) { return t.from < gap && gap < t.to; }))
-                    gaps_inside[i]++;
-            gaps += gaps_inside[i];
+                                                     [&](const cjk::span& t) { return t.from < at && at < t.to; }))
+                {
+                    size_t         n = 0, back = at;
+                    do
+                        back--;
+                    while(back > 0 && (static_cast<unsigned char>(shown[back]) & 0xC0) == 0x80);
+                    const char32_t prev = in_tcy(back) ? 0 : decode_at(shown, back, n);
+                    gaps.push_back({i, at, true, cjk::justify_gap_kind(prev, in_tcy(at) ? 0 : decode_at(shown, at, n)), em});
+                }
         }
-        if(gaps == 0)
+        if(gaps.empty())
             spacing_x = 0_px;  // nowhere to put the space: one word, or one 縦中横
     }
 
+    // Each gap's share: evenly, or in JLReq 3.8.4's order.
+    const float offj = static_cast<float>(spacing_x) / std::max(1.f, static_cast<float>(gaps.size()));
+    bool        even = true;
+    if(jlreq && japanese_text && std::any_of(gaps.begin(), gaps.end(), [](const gap& g) { return g.kind != cjk::gap_kind::avoided; }))
+    {
+        float left = static_cast<float>(spacing_x);
+        auto  fill = [&](auto takes, float most) {  // each gap `takes` up to `most` of its em, in proportion to its em
+            float ems = 0;
+            for(const auto& g : gaps)
+                if(takes(g.kind))
+                    ems += float(g.em);
+            if(ems <= 0 || left <= 0)
+                return;
+            const float per_em = std::min(most, left / ems);
+            for(auto& g : gaps)
+                if(takes(g.kind))
+                    g.add += per_em * float(g.em);
+            left -= per_em * ems;
+        };
+        constexpr float none = std::numeric_limits<float>::infinity();
+        fill([](cjk::gap_kind k) { return k == cjk::gap_kind::word_space; }, 1.0f / 8);
+        fill([](cjk::gap_kind k) { return k == cjk::gap_kind::latin; }, 1.0f / 2);
+        fill([](cjk::gap_kind k) { return k == cjk::gap_kind::japanese; }, 1.0f / 4);
+        fill([](cjk::gap_kind k) { return k != cjk::gap_kind::avoided; }, none);
+        even = std::all_of(gaps.begin(), gaps.end(), [&](const gap& g) { return std::abs(g.add - gaps.front().add) < 0.001f; });
+    }
+    // What each item moves on by before it, and what goes inside each text: the even share at each gap, as
+    // justify_gap inside; else each gap's own, inside a text after the character before it as a negative trim
+    // (render_text::trims).
+    std::vector<float> add_before(m_items.size(), 0), add_inside(m_items.size(), 0);
+    std::vector<render_text*> parts;
+    for(const auto& item : m_items)
+        parts.push_back(item->get_type() == line_box_item::type_text_part ? dynamic_cast<render_text*>(item->get_el().get()) : nullptr);
+    if(even)
+    {
+        std::vector<int> gaps_before(m_items.size(), 0), gaps_inside(m_items.size(), 0);
+        for(const auto& g : gaps)
+            (g.inside ? gaps_inside : gaps_before)[g.item]++;
+        for(size_t i = 0; i < m_items.size(); i++)
+        {
+            add_before[i] = offj * float(gaps_before[i]);
+            add_inside[i] = offj * float(gaps_inside[i]);
+            if(gaps_inside[i])
+            {
+                parts[i]->justify_gap  = pixel_t(offj);
+                parts[i]->pos().width += pixel_t(add_inside[i]);
+            }
+        }
+    } else
+    {
+        std::vector<int> fragment_gaps(m_items.size(), 0);
+        for(const auto& g : gaps)
+        {
+            if(!g.inside)
+            {
+                add_before[g.item] += g.add;
+                continue;
+            }
+            render_text* part = parts[g.item];
+            if(part->is_fragment)
+            {
+                // A piece of a word broken because it overflowed is drawn without trims: its gaps share alike.
+                add_inside[g.item] += g.add;
+                fragment_gaps[g.item]++;
+                continue;
+            }
+            if(g.add == 0)
+                continue;
+            const std::string& shown = static_cast<const el_text*>(part->src_el().get())->display_text();
+            size_t             back  = g.at;
+            do
+                back--;
+            while(back > 0 && (static_cast<unsigned char>(shown[back]) & 0xC0) == 0x80);
+            auto t = std::find_if(part->trims.begin(), part->trims.end(), [&](const char_trim& c) { return c.at == back; });
+            if(t == part->trims.end())
+                t = part->trims.insert(part->trims.end(), {back, 0_px, 0_px});
+            t->end             -= pixel_t(g.add);
+            part->pos().width  += pixel_t(g.add);
+            add_inside[g.item] += g.add;
+        }
+        for(size_t i = 0; i < m_items.size(); i++)
+            if(fragment_gaps[i])
+            {
+                parts[i]->justify_gap  = pixel_t(add_inside[i] / float(fragment_gaps[i]));
+                parts[i]->pos().width += pixel_t(add_inside[i]);
+            }
+    }
+
     int   counter = 0;
-    float offj    = static_cast<float>(spacing_x) / std::max(1.f, static_cast<float>(gaps));
     float cixx    = 0.0f;
 
     std::optional<pixel_t> line_height;
@@ -677,15 +900,9 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         m_rendered_width.min_width      = std::max(m_rendered_width.min_width, lbi->get_rendered_min_width());
         if(spacing_x != 0_px)
         {
-            cixx         += offj * float(gaps_before[counter]);
+            cixx         += add_before[counter];
             lbi->pos().x += pixel_t(cixx);
-            if(gaps_inside[counter])
-            {
-                auto part          = std::static_pointer_cast<render_text>(lbi->get_el());
-                part->justify_gap  = pixel_t(offj);
-                part->pos().width += pixel_t(offj * float(gaps_inside[counter]));
-                cixx              += offj * float(gaps_inside[counter]);
-            }
+            cixx         += add_inside[counter];
         }
         counter++;
         if((align == text_align_right || spacing_x != 0_px) && counter == static_cast<int>(m_items.size()))
@@ -1180,15 +1397,7 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
                 return true;
         }
 
-        // CSS Text 3 §4.1.3, as Chromium: an ideographic space ending the line hangs (。　 at a paragraph's turn,
-        // which the CJK line breaking keeps with the text before it).
-        pixel_t hang = 0_px;
-        if(auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get()))
-        {
-            const std::string& shown = text->display_text();
-            if(shown.size() > 3 && shown.compare(shown.size() - 3, 3, "\xE3\x80\x80") == 0 && text->parent())
-                hang = text->get_document()->container()->text_width("\xE3\x80\x80", text->parent()->css().get_font());
-        }
+        const pixel_t hang = hang_of(item.get());
         // Shaped as one run, a piece ending the line is shaped again without its kerning with the next piece (as
         // Blink reshapes a line's end): it must fit with that width.
         pixel_t end_extra = 0_px;
@@ -1196,16 +1405,159 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
         if(trailing <= 0_px && !(part && part->is_fragment))
             if(auto text = dynamic_cast<const el_text*>(item->get_el()->src_el().get()))
                 end_extra = text->line_end_extra();
-        if(m_left + m_width - ruby_overlap(item.get()) + item->width() + end_extra - hang + trailing > m_right &&
-           ruby_end_overlap(item.get(), end_extra - hang + trailing) < 0_px)
+        const pixel_t over = m_left + m_width - ruby_overlap(item.get()) + item->width() + end_extra - hang + trailing - m_right;
+        if(over > 0_px && ruby_end_overlap(item.get(), end_extra - hang + trailing) < 0_px)
         {
-            return false;
+            // JLReq 3.8.2: squeezed, the line may still take it (追込み) before it goes on (追出し).
+            // (A tolerance for rounding, only where there is something to squeeze: a line with none breaks as before.)
+            if(!adjusts(item.get()))
+                return false;
+            const pixel_t room = squeeze_room(item.get());
+            return room > 0_px && over <= room + 0.01_px;
         }
     }
 
     return true;
 }
 
+
+litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next) const
+{
+    // The texts placed are all in the middle of the line now (the first one's first character at its start), and
+    // `next` ends it: the half em compression takes from its last closing bracket or 、。 there, and what squeezable
+    // gives of the rest.
+    // A ruby `next` is, or `next` after a ruby, overhangs the mark next to it by ruby_overlap: not to squeeze too.
+    ruby_sides    r;
+    const pixel_t overhang      = ruby_overlap(next);
+    const bool    next_is_ruby  = ruby_of(next, r);
+    const auto    last_text     = squeezable_text(last_content_item());
+    pixel_t       room          = 0_px;
+    bool          first         = true;
+    for(const auto& item : m_items)
+    {
+        auto part = squeezable_text(item.get());
+        if(!part)
+        {
+            first = first && item->get_type() == line_box_item::type_inline_start;
+            continue;
+        }
+        auto qs = squeeze_of(*part, first ? cjk::line_start : cjk::line_middle, cjk::line_middle);
+        if(next_is_ruby && part == last_text && !qs.empty())
+            qs.back().end = std::max(0_px, qs.back().end - overhang);
+        for(const auto& q : qs)
+            room += q.start + q.end;
+        first = false;
+    }
+    if(auto part = squeezable_text(next))
+    {
+        auto       text  = std::dynamic_pointer_cast<el_text>(part->src_el());
+        const auto ended = text->compression(text->display_text(), part->before, part->after, cjk::line_middle, cjk::line_end);
+        room += trim_shift(ended, SIZE_MAX) - trim_shift(part->trims, SIZE_MAX);
+        auto qs = squeeze_of(*part, cjk::line_middle, cjk::line_end);
+        if(!qs.empty() && qs.front().at == 0)
+            qs.front().start = std::max(0_px, qs.front().start - overhang);
+        for(const auto& q : qs)
+            room += q.start + q.end;
+    }
+    return room;
+}
+
+void litehtml::line_box::squeeze(pixel_t over, bool wraps)
+{
+    // The last thing the line shows; a text's last character ends it.
+    std::shared_ptr<render_text> last;
+    for(auto it = m_items.rbegin(); it != m_items.rend() && !last; ++it)
+    {
+        const auto type = (*it)->get_type();
+        if(type == line_box_item::type_inline_start || type == line_box_item::type_inline_end ||
+           type == line_box_item::type_inline_continue)
+            continue;
+        if(((*it)->get_el()->src_el()->is_white_space() || (*it)->get_el()->src_el()->is_break()) && (*it)->width() <= 0_px)
+            continue;  // a <br> after the last text: that text still ends the line
+        last = squeezable_text(it->get());
+        // Step 2 on a line that does not wrap (wrapped, compression took it already): a paragraph's last line a little
+        // too long (3.8.1, note) ends without the half em after its closing bracket or 、。 too.
+        if(last && !wraps)
+        {
+            const pixel_t was = last->pos().width;
+            last->compress(first_text_part(std::next(it).base()) ? start_position() : cjk::line_middle, cjk::line_end);
+            const pixel_t less = was - last->pos().width;
+            m_width -= less;
+            over    -= less;
+            for(auto after = m_items.rbegin(); after != it; ++after)
+                (*after)->pos().x -= less;
+        }
+        break;
+    }
+    if(over <= 0_px)
+        return;
+
+    // Then, each step evenly over its places: the quarters of a middle dot ending the line (all of them), of middle
+    // dots inside it, the half ems of brackets and 、 inside it (JLReq 3.8.3).
+    struct place
+    {
+        render_text*       part;
+        char_squeeze       q;
+    };
+    std::vector<place> places;
+    bool               first = true;
+    for(const auto& item : m_items)
+    {
+        auto part = squeezable_text(item.get());
+        if(!part)
+        {
+            first = first && item->get_type() == line_box_item::type_inline_start;
+            continue;
+        }
+        for(const auto& q : squeeze_of(*part, first ? start_position() : cjk::line_middle,
+                                       part == last ? cjk::line_end : cjk::line_middle))
+            places.push_back({part.get(), q});
+        first = false;
+    }
+    std::vector<pixel_t> take_start(places.size(), 0_px), take_end(places.size(), 0_px);
+    for(auto step : {cjk::squeeze_step::line_end_dot, cjk::squeeze_step::middle_dot, cjk::squeeze_step::bracket})
+    {
+        pixel_t room = 0_px;
+        for(const auto& p : places)
+            if(p.q.step == step)
+                room += p.q.start + p.q.end;
+        if(room <= 0_px || over <= 0_px)
+            continue;
+        const float share = step == cjk::squeeze_step::line_end_dot ? 1.0f : std::min(1.0f, float(over / room));
+        for(size_t k = 0; k < places.size(); k++)
+            if(places[k].q.step == step)
+            {
+                take_start[k] = places[k].q.start * pixel_t(share);
+                take_end[k]   = places[k].q.end * pixel_t(share);
+            }
+        over -= room * pixel_t(share);
+    }
+
+    // Each text gives up what its characters do; what comes after it moves back as much.
+    pixel_t shift = 0_px;
+    for(const auto& item : m_items)
+    {
+        item->pos().x -= shift;
+        auto part = squeezable_text(item.get());
+        if(!part)
+            continue;
+        pixel_t less = 0_px;
+        for(size_t k = 0; k < places.size(); k++)
+        {
+            if(places[k].part != part.get() || (take_start[k] <= 0_px && take_end[k] <= 0_px))
+                continue;
+            auto t = std::find_if(part->trims.begin(), part->trims.end(), [&](const char_trim& c) { return c.at == places[k].q.at; });
+            if(t == part->trims.end())
+                t = part->trims.insert(part->trims.end(), {places[k].q.at, 0_px, 0_px});
+            t->start += take_start[k];
+            t->end   += take_end[k];
+            less     += take_start[k] + take_end[k];
+        }
+        part->pos().width -= less;
+        m_width           -= less;
+        shift             += less;
+    }
+}
 
 const litehtml::line_box_item* litehtml::line_box::last_content_item() const
 {
@@ -1235,14 +1587,50 @@ litehtml::pixel_t litehtml::line_box::ruby_overlap(const line_box_item* item) co
     {
         // Laid out again before it is placed: its base where it was laid out.
         const pixel_t before = r.single ? r.single->base_start : r.before;
-        ruby_sides    other;
-        if(ruby_of(prev, other) || !cjk::ruby_may_overhang(edge_of(prev, true)))
-            return 0_px;
-        return std::max(0_px, std::min(before, r.em));
+        return std::max(0_px, std::min(before, overhang_room(prev, true, r.em)));
     }
-    if(ruby_of(prev, r) && cjk::ruby_may_overhang(edge_of(item, false)))
-        return std::max(0_px, std::min(r.after, r.em));
+    if(ruby_of(prev, r))
+        return std::max(0_px, std::min(r.after, overhang_room(item, false, r.em)));
     return 0_px;
+}
+
+litehtml::pixel_t litehtml::line_box::overhang_room(const line_box_item* item, bool before_ruby, pixel_t ruby_em) const
+{
+    ruby_sides other;
+    if(!item || ruby_of(item, other))
+        return -1_px;
+    const char32_t c = edge_of(item, before_ruby);
+    if(cjk::ruby_may_overhang(c))
+        return ruby_em;
+    if(item->get_el()->src_el()->get_document()->get_ruby_overhang() != ruby_overhang::punctuation)
+        return -1_px;
+    const cjk::classes is = cjk::classify(c);
+    if(!(is & (cjk::opening | cjk::closing | cjk::full_stop_comma | cjk::middle_dot | cjk::inseparable)))
+        return -1_px;
+    auto part = squeezable_text(item);
+    auto text = part ? std::dynamic_pointer_cast<el_text>(part->src_el()) : nullptr;
+    if(!text)
+        return -1_px;
+    // The mark's advance and what compression trims of it.
+    const std::string& shown = text->display_text();
+    size_t             at    = 0, n = 0;
+    if(before_ruby)
+        for(at = shown.size() - 1; at > 0 && (static_cast<unsigned char>(shown[at]) & 0xC0) == 0x80; at--)
+            ;
+    decode_at(shown, at, n);
+    const pixel_t advance = text->char_advance(shown, at, at + n);
+    pixel_t       start = 0_px, end = 0_px;
+    for(const auto& t : part->trims)
+        if(t.at == at)
+            start = t.start, end = t.end;
+    if(is & cjk::middle_dot)  // rule 5: its quarter on that side and half a ruby character
+        return std::min(ruby_em, std::max(0_px, advance / 4_px - (before_ruby ? end : start)) + ruby_em / 2_px);
+    if(is & cjk::inseparable)  // rule 4
+        return std::min(ruby_em, advance);
+    const bool space_side = before_ruby ? !(is & cjk::opening) : bool(is & cjk::opening);
+    if(space_side)  // rule 3: the half em after 」、。 before the ruby, before 「 after it
+        return std::min(ruby_em, std::max(0_px, advance / 2_px - (before_ruby ? end : start)));
+    return std::min(ruby_em, advance / 2_px);  // rule 6: onto 「 before it, 」、。 after it, not past the mark
 }
 
 litehtml::pixel_t litehtml::line_box::ruby_end_overlap(const line_box_item* item, pixel_t extra) const
@@ -1256,12 +1644,11 @@ litehtml::pixel_t litehtml::line_box::ruby_end_overlap(const line_box_item* item
     const pixel_t width = item->width();
     if(m_left + m_width - ruby_overlap(item) + width + extra <= m_right)
         return -1_px;
-    const line_box_item* prev = last_content_item();
-    ruby_sides           other;
-    if(!prev || ruby_of(prev, other) || !cjk::ruby_may_overhang(edge_of(prev, true)))
+    const pixel_t room = overhang_room(last_content_item(), true, r.em);
+    if(room < 0_px)
         return -1_px;
     const pixel_t excess = r.single->base_start + (r.single->pos().width - r.single->base_end);
-    const pixel_t overlap = std::max(0_px, std::min(excess, r.em));
+    const pixel_t overlap = std::max(0_px, std::min(excess, room));
     return m_left + m_width - overlap + width + extra <= m_right ? overlap : -1_px;
 }
 
