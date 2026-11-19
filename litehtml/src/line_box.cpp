@@ -1408,8 +1408,8 @@ void litehtml::line_box::squeeze(pixel_t over, bool wraps)
         if(type == line_box_item::type_inline_start || type == line_box_item::type_inline_end ||
            type == line_box_item::type_inline_continue)
             continue;
-        if((*it)->get_el()->src_el()->is_white_space() && (*it)->width() <= 0_px)
-            continue;
+        if(((*it)->get_el()->src_el()->is_white_space() || (*it)->get_el()->src_el()->is_break()) && (*it)->width() <= 0_px)
+            continue;  // a <br> after the last text: that text still ends the line
         last = squeezable_text(it->get());
         // Step 2 on a line that does not wrap (wrapped, compression took it already): a paragraph's last line a little
         // too long (3.8.1, note) ends without the half em after its closing bracket or 、。 too.
