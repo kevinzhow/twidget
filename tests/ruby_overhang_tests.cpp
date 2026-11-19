@@ -270,6 +270,9 @@ void run(bool vertical) {
         const std::string got = lay_out(vertical, 104, "あ" + kanji + "いうえお", ruby_overhang::punctuation, ruby_breaking::per_base, "justify");
         check(got == want, mode + "3.1.11 ②-7: justify puts no space between a word's bases: " + got + "\n     want " + want);
     }
+    // A word inside white-space: nowrap does not break between its bases: it goes on whole, not past the line's end.
+    expect(72, "あいう<span style=\"white-space:nowrap\">" + kanji + "</span>え",
+           "あ@0 い@16 う@32 ^かん@0 | 漢@0 ^じ@20 字@16 え@32", "3.3.7: a word in white-space: nowrap goes on whole");
     // The overhang counts when the line breaks: の旬にあ fits in four ems.
     expect(64, "の" + shun + "にあ", "の@0 ^しゅん@12 旬@16 に@32 あ@48", "the line holds what the overhang makes room for");
     // Line edges (a, b): at a line's head the base and its ruby start together; at a wrapped line's end they end
