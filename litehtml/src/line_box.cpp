@@ -650,7 +650,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
     // after the ends that follow it. With JLReq line adjustment (3.8.4), the gaps next to brackets, 、。 and the like take
     // none while there are others (3.1.11 ②), and Latin word spaces fill first (an eighth em each side), then where
     // Japanese meets Latin (half an em), then the gaps between Japanese characters (a quarter em), then all of these
-    // evenly; where that comes to the same at every gap, it is spread as evenly as before.
+    // evenly; where that comes to the same at every gap, or the line has no Japanese text, it is spread as evenly as
+    // before.
     struct gap
     {
         size_t        item;    // the item it goes before, or (inside) the text it is in
@@ -661,6 +662,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         float         add = 0;
     };
     std::vector<gap> gaps;
+    bool             japanese_text = false;
     if(spacing_x != 0_px)
     {
         enum { nothing, text, box } before = nothing;  // what came last: a text, an inline box, or neither yet
@@ -683,6 +685,11 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             const std::u32string chars = src ? std::u32string(utf8_to_utf32(shown)) : U"";
             if(src && chars.empty())
                 continue;
+            // Japanese text on the line: kana, kanji, CJK and full-width forms (not — … ※, which the rule set counts as
+            // Japanese script and Latin text uses too).
+            japanese_text = japanese_text || std::any_of(chars.begin(), chars.end(), [](char32_t c) {
+                return c >= 0x2E80 && cjk::script_of(c) == cjk::script::japanese;
+            });
             if(slot < 0)
                 slot = int(i);
             const auto&   el = (*it)->get_el()->src_el();
@@ -721,7 +728,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
     // Each gap's share: evenly, or in JLReq 3.8.4's order.
     const float offj = static_cast<float>(spacing_x) / std::max(1.f, static_cast<float>(gaps.size()));
     bool        even = true;
-    if(jlreq && !gaps.empty() && std::any_of(gaps.begin(), gaps.end(), [](const gap& g) { return g.kind != cjk::gap_kind::avoided; }))
+    if(jlreq && japanese_text && std::any_of(gaps.begin(), gaps.end(), [](const gap& g) { return g.kind != cjk::gap_kind::avoided; }))
     {
         float left = static_cast<float>(spacing_x);
         auto  fill = [&](auto takes, float most) {  // each gap `takes` up to `most` of its em, in proportion to its em
