@@ -121,6 +121,8 @@ namespace litehtml
         uint32_t source_utf16() const { return m_src_utf16; }
         void compute_styles(bool recursive) override;
         const std::string& display_text() const { return m_use_transformed ? m_transformed_text : m_text; }
+        /// Cross-axis centre for a selection band, in laid-out coordinates.
+        pixel_t selection_center(const std::string& shown, const position& box) const;
         std::shared_ptr<text_breaker> breaker();
         /// The direction of the text's first strong character: 1 right to left, -1 left to right, 0 none
         /// (digits, punctuation, spaces, symbols).

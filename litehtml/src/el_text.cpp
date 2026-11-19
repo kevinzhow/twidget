@@ -266,6 +266,29 @@ namespace
         return advance;
     }
 
+    litehtml::pixel_t snap_text_top(litehtml::pixel_t top, const litehtml::font_metrics& fm)
+    {
+        const float px = float(fm.device_pixel);
+        const float k  = px > 0 && px < 1 ? 1.0f / px : litehtml::pixel_snap_scale();
+        return std::round(top.value() * k) / k;
+    }
+
+    // Upright text uses the central baseline of the faces that draw the run, including fallback faces.
+    litehtml::pixel_t central_baseline(litehtml::document_container* container, const std::string& text,
+                                      const litehtml::css_properties& css, litehtml::pixel_t baseline)
+    {
+        using namespace litehtml;
+        const auto& fm = css.get_font_metrics();
+        pixel_t ascent = fm.ascent, descent = fm.descent;
+        pixel_t used_ascent = 0_px, used_descent = 0_px;
+        if(container->text_used_extents(text.c_str(), css.get_font(), used_ascent, used_descent))
+        {
+            ascent  = std::max(ascent, used_ascent);
+            descent = std::max(descent, used_descent);
+        }
+        return baseline - (ascent - descent) / 2_px;
+    }
+
     // Vertical text (document::vertical()): the page's turn already makes a run sideways, so runs of sideways
     // characters are drawn as horizontal text is; each upright character is turned back about its em box's centre
     // and drawn with the font's vertical forms, and so is each tate-chu-yoko token, its characters side by side. The em
@@ -283,20 +306,7 @@ namespace
         const pixel_t       em          = fm.font_size;
         const auto          orientation = css.get_text_orientation();
         const pixel_t       baseline    = pos.y + pos.height - fm.descent;
-        // Upright glyphs are centred on the central baseline, halfway between the ascent and descent the line makes
-        // room for (the fonts the text is drawn with, fallback fonts too: text_used_extents, as line-height: normal
-        // counts them), as Blink lays vertical text out on its central baseline. The primary font's em box alone
-        // (Roboto, for Japanese drawn in Noto Sans CJK) put them about 3 CSS px off a browser's.
-        pixel_t ascent = fm.ascent, descent = fm.descent;
-        {
-            pixel_t used_ascent = 0_px, used_descent = 0_px;
-            if(container->text_used_extents(text.c_str(), font, used_ascent, used_descent))
-            {
-                ascent  = std::max(ascent, used_ascent);
-                descent = std::max(descent, used_descent);
-            }
-        }
-        const pixel_t       cy          = baseline - (ascent - descent) / 2_px;
+        const pixel_t       cy          = central_baseline(container, text, css, baseline);
         size_t              run         = 0;  // start of the sideways run not drawn yet
         // text-orientation: upright gives each character an em; mixed keeps the advances.
         const bool all_upright = orientation == text_orientation_upright;
@@ -650,6 +660,33 @@ std::shared_ptr<litehtml::text_breaker> litehtml::el_text::breaker()
     return m_breaker;
 }
 
+litehtml::pixel_t litehtml::el_text::selection_center(const std::string& shown, const position& box) const
+{
+    const auto& style = parent()->css();
+    const auto& fm = style.get_font_metrics();
+    auto* doc = doc_ptr();
+    auto* container = doc->container();
+    const pixel_t top = doc->vertical() ? snap_text_top(box.y, css().get_font_metrics()) : box.y;
+    const pixel_t baseline = top + box.height - fm.descent;
+    if(doc->vertical() && style.is_vertical_rl())
+    {
+        const auto orientation = style.get_text_orientation();
+        if(orientation == text_orientation_upright || !m_tate_chu_yoko.empty())
+            return central_baseline(container, shown, style, baseline);
+        if(orientation == text_orientation_mixed)
+            for(size_t i = 0, n = 0; i < shown.size(); i += n)
+            {
+                const auto cp = code_point_at(shown, i, n);
+                if(drawn_upright(container, orientation, cp, shown.substr(i, n), style.get_font()))
+                    return central_baseline(container, shown, style, baseline);
+            }
+    }
+    pixel_t center;
+    if(!container->text_ideographic_center(shown, style.get_font(), center))
+        center = fm.em_top() - fm.font_size / 2_px;
+    return baseline - center;
+}
+
 void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
                              const std::shared_ptr<render_item>& ri)
 {
@@ -669,13 +706,8 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
     position pos  = ri->pos();
     pos.x        += x;
     pos.y        += y;
-    {
-        // The line's top on a device pixel, as Chromium paints text (twidget: the font's device_pixel; boxes keep
-        // pixel_snap_scale()).
-        const float px = float(css().get_font_metrics().device_pixel);
-        const float k  = px > 0 && px < 1 ? 1.0f / px : pixel_snap_scale();
-        pos.y          = std::round(pos.y.value() * k) / k;
-    }
+    // The line's top is on a device pixel, as Chromium paints text.
+    pos.y = snap_text_top(pos.y, css().get_font_metrics());
 
     position ink = pos;
     {

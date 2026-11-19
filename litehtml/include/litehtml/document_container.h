@@ -66,6 +66,8 @@ namespace litehtml
         /// by the half it gives up.
         virtual bool has_half_width_form(const char* /*text*/, uint_ptr /*hFont*/, bool /*vertical*/) { return false; }
         virtual bool text_used_extents(const char* /*text*/, uint_ptr /*hFont*/, pixel_t& /*ascent*/, pixel_t& /*descent*/) { return false; }
+        /// Ideographic em-box centre above the horizontal baseline of the face drawing this run.
+        virtual bool text_ideographic_center(const std::string& /*text*/, uint_ptr /*font*/, pixel_t& /*center*/) { return false; }
         virtual void               draw_text(litehtml::uint_ptr hdc, const char* text, litehtml::uint_ptr hFont,
                                              litehtml::web_color color, const litehtml::position& pos)              = 0;
         virtual pixel_t            pt_to_px(float pt) const                                                         = 0;

@@ -188,8 +188,21 @@ namespace litehtml
         size_t r0, o0, r1, o1;
         if(!ordered(a, b, r0, o0, r1, o1))
             return out;
-        bool    open = false;
         position line;
+        std::vector<position> bands;
+        bool has_text = false;
+        auto finish_line = [&] {
+            for(auto& band : bands)
+            {
+                if(band.width <= 0_px)
+                    continue;
+                band.y -= line.height / 2_px;
+                band.height = line.height;
+                out.push_back(to_page(band));
+            }
+            bands.clear();
+            has_text = false;
+        };
         for(size_t i = r0; i <= r1; i++)
         {
             const auto& r = m_runs[i];
@@ -199,21 +212,50 @@ namespace litehtml
             const pixel_t start = advance(r, from, true), end = advance(r, to, false);
             position      part(r.box.x + start, r.box.y, end - start, r.box.height);
             // Runs of one line join: the same row (a ruby pair's centring leaves gaps between them).
-            if(open && std::abs(float(part.y - line.y)) < float(line.height) / 2 && part.x >= line.x)
+            if(!bands.empty() && std::abs(float(part.y - line.y)) < float(line.height) / 2 && part.x >= line.x)
             {
                 pixel_t top = std::min(line.y, part.y), bottom = std::max(line.bottom(), part.bottom());
                 line.width  = std::max(line.right(), part.right()) - line.x;
                 line.y      = top;
                 line.height = bottom - top;
+            }
+            else
+            {
+                finish_line();
+                line = part;
+            }
+
+            // Keep the line's selection thickness. Adjacent runs with the same centre share a rectangle.
+            // At a change of centre, split at the next run's start so justified gaps stay covered and the
+            // painter never tints a pixel twice.
+            const bool space = r.text->is_space();
+            if(space && !bands.empty())
+            {
+                bands.back().width = line.right() - bands.back().x;
                 continue;
             }
-            if(open)
-                out.push_back(to_page(line));
-            line = part;
-            open = true;
+            const pixel_t center = r.text->selection_center(r.shown, r.box);
+            if(!bands.empty() && (!has_text || std::abs(float(bands.back().y - center)) < 0.01f))
+            {
+                // Leading whitespace takes the centre of the first visible run.
+                if(!has_text)
+                    bands.back().y = center;
+                bands.back().width = line.right() - bands.back().x;
+            }
+            else
+            {
+                pixel_t start = part.x;
+                if(!bands.empty())
+                {
+                    auto& last = bands.back();
+                    start = std::max(start, last.x);
+                    last.width = start - last.x;
+                }
+                bands.emplace_back(start, center, line.right() - start, 0_px);
+            }
+            has_text = has_text || !space;
         }
-        if(open)
-            out.push_back(to_page(line));
+        finish_line();
         return out;
     }
 
