@@ -379,6 +379,12 @@ void run(bool vertical, bool half_forms) {
             "3.8.3: a middle dot ending a line");
     // A paragraph's last line a little too long fits with its 。's half em (3.8.1, note).
     expect(88, "あいうえお。", "あ@0 い@16 う@32 え@48 お@64 。*@80", "3.8.1: a paragraph's last line squeezed to fit");
+    // A <br> after the line's last text (Aozora-made books end every line with one): 。 before it still ends the line,
+    // so its half em is still what the line squeezes.
+    expect(88, "あいうえお。<br/>", "あ@0 い@16 う@32 え@48 お@64 。*@80", "3.8.1: squeezed to fit before a final <br>");
+    expect(88, "あいうえお。<br/>かき", "あ@0 い@16 う@32 え@48 お@64 。*@80 | か@0 き@16", "3.8.2: squeezed to fit before a <br>");
+    expect(88, "かき。<br/>\n\u00a0いうえお。<br/>\n", "か@0 き@16 。@32 | \u00a0@0 い@16 う@32 え@48 お@64 。*@80",
+           "3.8.1: after a no-break space, before a final <br> and a new line");
     // An ideographic space hanging past the line's end (after 。) is not squeezed for: 」 keeps its half em.
     expect(88, "「あ」いう。　えお", "「*@0 あ@8 」@24 い@40 う@56 。@72 　@88 | え@0 お@16",
            "3.8.2: an ideographic space hanging past the end is no reason to squeeze");
