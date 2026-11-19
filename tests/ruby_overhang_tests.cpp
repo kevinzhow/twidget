@@ -175,19 +175,28 @@ std::string lay_out(bool vertical, float length, const std::string& html, ruby_o
 
 std::string r(const std::string& base, const std::string& ruby) { return "<ruby>" + base + "<rt>" + ruby + "</rt></ruby>"; }
 
-// The block position of each line of base text, in order (an annotation is not a line of its own).
-std::vector<float> line_positions(bool vertical, float length, const std::string& html) {
+// What was drawn of the base text (not annotations): (text, block position), in order.
+std::vector<std::pair<std::string, float>> base_drawn(bool vertical, float length, const std::string& html,
+                                                      const char* line_height = "32px") {
     Stub c;
     if (vertical) c.h = length;
     auto doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
-                                              "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0\">" + html +
-                                              "</p></body></html>",
+                                              "><body style=\"margin:0;font-size:16px;line-height:" + line_height +
+                                              "\"><p style=\"margin:0\">" + html + "</p></body></html>",
                                           &c);
     doc->render(pixel_t(vertical ? 400 : length));
     doc->draw(0, 0, 0, nullptr);
-    std::vector<float> lines;
+    std::vector<std::pair<std::string, float>> out;
     for (const auto& d : c.drawn)
-        if (!d.ruby && (lines.empty() || std::abs(lines.back() - d.y) > 0.5f)) lines.push_back(d.y);
+        if (!d.ruby) out.emplace_back(d.text, d.y);
+    return out;
+}
+
+// The block position of each line of base text, in order (an annotation is not a line of its own).
+std::vector<float> line_positions(bool vertical, float length, const std::string& html) {
+    std::vector<float> lines;
+    for (const auto& [text, y] : base_drawn(vertical, length, html))
+        if (lines.empty() || std::abs(lines.back() - y) > 0.5f) lines.push_back(y);
     return lines;
 }
 
@@ -303,6 +312,20 @@ void run(bool vertical) {
             if (i && std::abs(lines[i] - lines[i - 1] - 32) > 0.5f) even = false;
         }
         check(even, mode + "3.3.2: line pitch stays 32 px with " + what + ": lines at " + got);
+    }
+    // A line moved down to make room for the annotations (line-height 16px: none between lines) moves a split word's
+    // pairs with it, once: 漢 stays on the first line's baseline with え, 字 on the second's with お.
+    {
+        const auto drawn = base_drawn(vertical, 80, "あいうえ" + kanji + "おかきくけこ", "16px");
+        auto at = [&](const std::string& t) {
+            for (const auto& [text, y] : drawn)
+                if (text.find(t) != std::string::npos) return y;
+            return -1.f;
+        };
+        std::string got;
+        for (const auto& [text, y] : drawn) got += text + "@" + std::to_string(int(std::lround(y))) + " ";
+        check(std::abs(at("漢") - at("え")) < 0.5f && std::abs(at("字") - at("お")) < 0.5f && at("お") > at("え") + 15,
+              mode + "a moved line moves a split word's pairs once, with the rest of the line: " + got);
     }
     // The overhang counts when the line breaks: の旬にあ fits in four ems.
     expect(64, "の" + shun + "にあ", "の@0 ^しゅん@12 旬@16 に@32 あ@48", "the line holds what the overhang makes room for");
