@@ -388,6 +388,16 @@ void run(bool vertical, bool half_forms) {
     // An ideographic space hanging past the line's end (after 。) is not squeezed for: 」 keeps its half em.
     expect(88, "「あ」いう。　えお", "「*@0 あ@8 」@24 い@40 う@56 。@72 　@88 | え@0 お@16",
            "3.8.2: an ideographic space hanging past the end is no reason to squeeze");
+    // A line of Latin text justifies as it did, evenly, even with — or … in it (the CJK rule set's Japanese script, but
+    // no Japanese text on the line).
+    {
+        Laid jl, ev;
+        lay_out(jl, vertical, half_forms, 200, "ab cd\u2014ef gh ij kl mn op qr st", "justify");
+        lay_out(ev, vertical, half_forms, 200, "ab cd\u2014ef gh ij kl mn op qr st", "justify", line_adjustment::even);
+        check(drawn(jl.c.glyphs, half_forms) == drawn(ev.c.glyphs, half_forms),
+              mode + "a Latin line with an em dash justifies evenly: " + drawn(jl.c.glyphs, half_forms) + "\n     even " +
+                  drawn(ev.c.glyphs, half_forms));
+    }
     // Expanding: where Japanese meets Latin before the gaps between kana (3.8.4 b, c), and Latin word spaces first (a).
     expect(88, "かきAくけこ", "か@0 き@16 A@36 く@56 け@72 | こ@0", "3.8.4: Japanese–Latin gaps before kana ones");
     expect(120, "かきA Bくけこ", "か@0 き@16 A@34 B@70 く@88 け@104 | こ@0", "3.8.4: word spaces first");
