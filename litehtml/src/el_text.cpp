@@ -827,7 +827,8 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
     std::vector<std::pair<size_t, char32_t>> chars;
     for(size_t i = 0, n = 0; i < shown.size(); i += n)
         chars.push_back({i, code_point_at(shown, i, n)});
-    const bool    latin = get_document()->get_latin_spacing() == latin_spacing::quarter;
+    const bool    latin    = get_document()->get_latin_spacing() == latin_spacing::quarter;
+    const bool    dividing = get_document()->get_dividing_space() == dividing_space::full_em;
     const pixel_t em    = el_parent->css().get_font_metrics().font_size;
     for(size_t k = 0; k < chars.size(); k++)
     {
@@ -845,12 +846,14 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
                                                     [&](const cjk::span& s) { return s.from <= chars[k + 1].first && chars[k + 1].first < s.to; })
                                       : after_solid;
         const bool space = latin && !next_upright && cjk::latin_space_after(chars[k].second, next, at);
-        if(t.start == 0 && t.end == 0 && !space)
+        // JLReq 3.1.6 ①: a full-width space after ？！ ending a sentence, where the book has none.
+        const bool full = dividing && cjk::dividing_space_after(chars[k].second, next, at);
+        if(t.start == 0 && t.end == 0 && !space && !full)
             continue;
         const size_t  from    = chars[k].first;
         const size_t  to      = k + 1 < chars.size() ? chars[k + 1].first : shown.size();
         const pixel_t advance = char_advance(shown, from, to);
-        out.push_back({from, advance * pixel_t(t.start), advance * pixel_t(t.end) - (space ? em / 4_px : 0_px)});
+        out.push_back({from, advance * pixel_t(t.start), advance * pixel_t(t.end) - (space ? em / 4_px : 0_px) - (full ? em : 0_px)});
     }
     return out;
 }
@@ -875,7 +878,8 @@ std::vector<litehtml::char_squeeze> litehtml::el_text::squeezable(const std::str
         const char32_t c = code_point_at(shown, i, n);
         // The quarter em between Japanese and Latin after it (compression's negative end): to an eighth, last (3.8.3).
         for(const auto& t : trims)
-            if(t.at == i && t.end < 0_px && !(i + n == shown.size() && (last & cjk::line_end)))
+            if(t.at == i && t.end < 0_px && !(i + n == shown.size() && (last & cjk::line_end)) &&
+               !cjk::dividing_space_after(c, U'あ', cjk::line_middle))  // not ？！'s full-width space, which stays
                 if(const pixel_t room = std::min(-t.end, em / 4_px) - em / 8_px; room > 0_px)
                     out.push_back({i, 0_px, room, cjk::squeeze_step::latin});
         if(!(cjk::classify(c) & (cjk::opening | cjk::closing | cjk::middle_dot | cjk::full_stop_comma)))

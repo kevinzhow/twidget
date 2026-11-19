@@ -1,6 +1,7 @@
 #include "cjk_rules.h"
 
 #include <algorithm>
+#include <string_view>
 #include <iterator>
 
 namespace litehtml::cjk
@@ -157,6 +158,12 @@ namespace litehtml::cjk
         constexpr classes first_half  = closing | full_stop_comma;
         constexpr classes punctuation = opening | first_half | middle_dot;
         const classes     is          = classify(c);
+        // JLReq 3.1.3: in kanji numerals, a place or approximation 、 and a decimal ・ are set solid.
+        auto numeral = [](char32_t x) {
+            return x == 0x3007 || std::u32string_view(U"一二三四五六七八九十百千万億兆").find(x) != std::u32string_view::npos;
+        };
+        if((c == 0x3001 || c == 0x30FB) && numeral(prev) && numeral(next))
+            return c == 0x3001 ? trim{0, 0.5f} : trim{0.25f, 0.25f};
         // JLReq 3.1.5 ①: a wrapped line's opening bracket is flush with the line head (天ツキ); one that starts a
         // paragraph keeps its first half there (the paragraph's indent before it is line_box's).
         if((is & opening) && (((at & line_start) && !(at & paragraph_start)) || (classify(prev) & punctuation)))
@@ -275,6 +282,16 @@ namespace litehtml::cjk
                    (c >= 0xC0 && c <= 0x24F && c != 0xD7 && c != 0xF7) || (c >= 0x370 && c <= 0x3FF) || (c >= 0x400 && c <= 0x4FF);
         }
     } // namespace
+
+    bool dividing_space_after(char32_t c, char32_t next, uint8_t at)
+    {
+        if((at & line_end) || !(c == 0xFF01 || c == 0xFF1F || c == 0x203C || (c >= 0x2047 && c <= 0x2049)))
+            return false;
+        // Particles that go on with the sentence after ？！ (何？って, 本当？と, ええ！かな).
+        if(std::u32string_view(U"とっってかのもやにをはがねよなぞわ").find(next) != std::u32string_view::npos)
+            return false;
+        return kana_or_kanji(next) || (classify(next) & opening);
+    }
 
     bool latin_space_after(char32_t c, char32_t next, uint8_t at)
     {
