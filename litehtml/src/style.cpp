@@ -87,6 +87,7 @@ namespace litehtml
 
         {_text_decoration_style_,  style_text_decoration_style_strings },
         {_text_emphasis_position_, style_text_emphasis_position_strings},
+        {_text_underline_position_, style_text_underline_position_strings},
     };
 
     std::map<string_id, std::vector<string_id>>& shorthands = *new std::map<string_id, std::vector<string_id>>{
@@ -518,6 +519,8 @@ namespace litehtml
             name = _text_emphasis_color_;
         if(name == __webkit_text_emphasis_position_ || name == __epub_text_emphasis_position_)
             name = _text_emphasis_position_;
+        if(name == __webkit_text_underline_position_ || name == __epub_text_underline_position_)
+            name = _text_underline_position_;
         // text-combine-upright: digits 2 is digits (CSS Writing Modes 4): two digits in one em, as the automatic rule
         // sets them (cjk::tate_chu_yoko). digits 3 and digits 4 are not supported.
         if(name == _text_combine_upright_ && value.size() == 2 && value[0].ident() == "digits" && value[1].type == NUMBER &&
@@ -917,6 +920,10 @@ namespace litehtml
 
         case _text_emphasis_position_:
             parse_text_emphasis_position(value, important);
+            break;
+
+        case _text_underline_position_:
+            parse_text_underline_position(value, important);
             break;
 
             //  =============================  FLEX  =============================
@@ -2252,6 +2259,23 @@ namespace litehtml
             }
         }
         add_parsed_property(_text_emphasis_position_, property_value(val, important));
+    }
+
+    // text-underline-position: auto | [from-font | under] || [left | right] (CSS Text Decoration 4 §2.3).
+    void style::parse_text_underline_position(const css_token_vector& tokens, bool important)
+    {
+        int val = 0;
+        for(const auto& token : tokens)
+        {
+            if(token.type != IDENT)
+                return;
+            auto idx = css_values(style_text_underline_position_strings).value_index(token.ident());
+            if(!idx.has_value())
+                return;
+            if(idx.value() > 0)
+                val |= 1 << (idx.value() - 1);
+        }
+        add_parsed_property(_text_underline_position_, property_value(val, important));
     }
 
     // https://developer.mozilla.org/en-US/docs/Web/CSS/flex

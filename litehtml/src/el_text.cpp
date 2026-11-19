@@ -310,7 +310,7 @@ namespace
     {
         using namespace litehtml;
         auto*               container   = doc->container();
-        const uint_ptr      font        = css.get_font();
+        const uint_ptr      font        = css.get_font_undecorated();  // the lines are drawn along the column
         const uint_ptr      upright     = css.get_font_upright();
         const font_metrics& fm          = css.get_font_metrics();
         const pixel_t       em          = fm.font_size;
@@ -394,6 +394,45 @@ namespace
             run = i + n;
         }
         flush(text.size());
+    }
+
+    // The text's decorations in vertical text, one line along the column for the whole piece, as Chromium 156 draws
+    // vertical Japanese: the underline on the right (JLReq's 傍線; text-underline-position: left puts it on the left),
+    // the overline on the other side, line-through on the central baseline. In the line's frame (before the page's
+    // turn) the column's right is its top.
+    void draw_vertical_lines(litehtml::document* doc, litehtml::uint_ptr hdc, const std::string& text,
+                             const litehtml::css_properties& css, litehtml::web_color color, const litehtml::position& pos)
+    {
+        using namespace litehtml;
+        const int lines = css.get_text_decoration_line();
+        if(lines == text_decoration_line_none || pos.width <= 0_px)
+            return;
+        auto*               container = doc->container();
+        const font_metrics& fm        = css.get_font_metrics();
+        const pixel_t       em        = fm.font_size;
+        const pixel_t       cy        = central_baseline(container, text, css, pos.y + pos.height - fm.descent);
+        const auto&         given     = css.get_text_decoration_thickness();
+        pixel_t thickness = std::max(1_px, em / 14_px);
+        if(!given.is_predefined())
+            thickness = std::max(1_px, given.calc_percent(em));
+        web_color line_color = css.get_text_decoration_color();
+        if(line_color == web_color::current_color)
+            line_color = color;
+        const int  where      = css.get_text_underline_position();
+        const bool under_left = (where & text_underline_position_left) && !(where & text_underline_position_right);
+        const pixel_t right   = cy - em / 2_px - thickness - thickness;  // a line's width from the em box
+        const pixel_t left    = cy + em / 2_px + thickness;
+        auto line = [&](pixel_t y) {
+            background_layer layer;
+            layer.border_box = layer.clip_box = layer.origin_box = position(pos.x, y, pos.width, thickness);
+            container->draw_solid_fill(hdc, layer, line_color);
+        };
+        if(lines & text_decoration_line_underline)
+            line(under_left ? left : right);
+        if(lines & text_decoration_line_overline)
+            line(under_left ? right : left);
+        if(lines & text_decoration_line_line_through)
+            line(cy - thickness / 2_px);
     }
 } // namespace
 
@@ -761,6 +800,7 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
                     static const std::vector<cjk::span> no_tokens;
                     const auto& tcy = text_item && text_item->is_fragment ? no_tokens : m_tate_chu_yoko;
                     draw_vertical(doc, hdc, shown, el_parent->css(), color, pos, gap, trims, tcy);
+                    draw_vertical_lines(doc, hdc, shown, el_parent->css(), color, pos);
                     draw_emphasis(doc, hdc, shown, el_parent->css(), pos, true, gap, trims, tcy);
                 } else if(text_item && text_item->hyphen)
                 {

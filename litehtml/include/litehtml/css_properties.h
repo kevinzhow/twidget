@@ -64,6 +64,7 @@ namespace litehtml
         uint_ptr              m_font_half      = 0;  // the font with halt (vert and vhal in vertical text): half-width marks
         text_combine          m_text_combine   = text_combine_none;
         hyphens               m_hyphens        = hyphens_initial;
+        uint_ptr              m_font_undecorated = 0;  // vertical text with decorations: m_font without them
         uint_ptr              m_font_emphasis  = 0;  // text-emphasis: the marks' font, half the size (vert in vertical text)
         font_metrics          m_emphasis_metrics;
         style_display         m_display        = display_inline;
@@ -106,6 +107,7 @@ namespace litehtml
         std::string           m_text_emphasis_style;
         web_color             m_text_emphasis_color;
         int                   m_text_emphasis_position = 0;
+        int                   m_text_underline_position = text_underline_position_auto;
         font_metrics          m_font_metrics;
         int                   m_shared_id = 0;
         text_transform        m_text_transform = text_transform_none;
@@ -214,6 +216,10 @@ namespace litehtml
         bool combines_upright() const { return m_text_combine == text_combine_all || m_text_combine == text_combine_horizontal; }
         hyphens get_hyphens() const { return m_hyphens; }
         uint_ptr get_font_emphasis() const { return m_font_emphasis; }
+        // Vertical text with decorations: the font without them, for its sideways runs and tate-chu-yoko (the upright
+        // and half-width fonts of vertical text have none either); el_text draws the lines along the column.
+        uint_ptr get_font_undecorated() const { return m_font_undecorated ? m_font_undecorated : get_font(); }
+        int      get_text_underline_position() const { return m_text_underline_position; }
         const font_metrics& get_emphasis_metrics() const { return m_emphasis_metrics; }
         /// The font upright glyphs of vertical text are drawn with: get_font() with OpenType vert (vertical forms).
         uint_ptr get_font_upright() const { return m_font_upright ? m_font_upright : get_font(); }

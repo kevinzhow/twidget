@@ -839,6 +839,20 @@ namespace litehtml
     };
 
     // ==========================================================
+    // CSS Property: text-underline-position (auto is none of these)
+    // ==========================================================
+    inline constexpr auto style_text_underline_position_strings = split_css_values<5>("auto;from-font;under;left;right");
+
+    enum text_underline_position
+    {
+        text_underline_position_auto      = 0x00,
+        text_underline_position_from_font = 0x01,
+        text_underline_position_under     = 0x02,
+        text_underline_position_left      = 0x04,
+        text_underline_position_right     = 0x08,
+    };
+
+    // ==========================================================
     // CSS Property: radial-extent
     // ==========================================================
     inline constexpr auto radial_extent_strings =

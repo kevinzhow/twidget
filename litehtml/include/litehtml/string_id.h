@@ -110,7 +110,8 @@ namespace litehtml
         _hyphens_, __webkit_hyphens_, __epub_hyphens_,
         __webkit_text_emphasis_, __webkit_text_emphasis_style_, __webkit_text_emphasis_color_,
         __webkit_text_emphasis_position_, __epub_text_emphasis_style_, __epub_text_emphasis_color_,
-        __epub_text_emphasis_position_,
+        __epub_text_emphasis_position_, _text_underline_position_, __webkit_text_underline_position_,
+        __epub_text_underline_position_,
 
         // some CSS dimensions
         _deg_, _grad_, _rad_, _turn_,

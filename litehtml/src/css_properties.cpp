@@ -571,6 +571,8 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
                                                      offset(m_text_emphasis_position));
     m_text_emphasis_color =
         get_color_property(el, _text_emphasis_color_, true, web_color::current_color, offset(m_text_emphasis_color));
+    m_text_underline_position = el->get_property<int>(_text_underline_position_, true, text_underline_position_auto,
+                                                      offset(m_text_underline_position));
 
     if(el->parent())
     {
@@ -701,7 +703,19 @@ void litehtml::css_properties::compute_font(const html_tag* el, const document::
     descr.emphasis_position    = m_text_emphasis_position;
 
     m_font = doc->get_font(descr, &m_font_metrics);
-    m_font_upright = 0;
+    m_font_upright     = 0;
+    m_font_undecorated = 0;
+    // Vertical text draws its decorations along the column itself (el_text): its glyphs, turned upright one by one,
+    // take fonts without them, or the container would underline each glyph across.
+    const bool vertical_lines = is_vertical_rl() && m_text_decoration_line != text_decoration_line_none;
+    if(vertical_lines)
+    {
+        font_description plain = descr;
+        plain.decoration_line  = text_decoration_line_none;
+        font_metrics fm;
+        m_font_undecorated = doc->get_font(plain, &fm);
+        descr.decoration_line = text_decoration_line_none;  // the upright and half-width fonts below
+    }
     if(is_vertical_rl())
     {
         // Upright glyphs of vertical text take their vertical forms (、。「」ー…) from OpenType vert.
