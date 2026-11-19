@@ -207,6 +207,56 @@ namespace litehtml::cjk
         return out;
     }
 
+    squeeze squeezable(char32_t c, trim taken, uint8_t at)
+    {
+        const classes is = classify(c);
+        if(at & line_end)
+            return (is & middle_dot) ? squeeze{0.25f - taken.start, 0.25f - taken.end, squeeze_step::line_end_dot} : squeeze{};
+        if(is & middle_dot)
+            return {0.25f - taken.start, 0.25f - taken.end, squeeze_step::middle_dot};
+        if((is & opening) && !(at & line_start) && taken.start < 0.5f)
+            return {0.5f - taken.start, 0, squeeze_step::bracket};
+        const bool full_stop = c == 0x3002 || c == 0xFF61;  // 。｡ (cl-06): its half em separates sentences
+        if((is & (closing | full_stop_comma)) && !full_stop && taken.end < 0.5f)
+            return {0, 0.5f - taken.end, squeeze_step::bracket};
+        return {};
+    }
+
+    namespace
+    {
+        // JLReq 3.1.11 ②: cl-01, cl-02, cl-03 (゠ 〜), cl-04 (！？ and the like), cl-05, cl-06, cl-07 and U+3000; the
+        // Japanese ones only (script_of), so that Latin text (its brackets, ! ? ‐ –) justifies as it did.
+        bool avoids_widening(char32_t c)
+        {
+            if(script_of(c) != script::japanese)
+                return false;
+            if(classify(c) & (opening | closing | middle_dot | full_stop_comma))
+                return true;
+            switch(c)
+            {
+            case 0x30A0: case 0x301C:                                                        // cl-03
+            case 0xFF01: case 0xFF1F: case 0x203C: case 0x2047: case 0x2048: case 0x2049:    // cl-04
+            case 0x3000:
+                return true;
+            default:
+                return false;
+            }
+        }
+    } // namespace
+
+    gap_kind justify_gap_kind(char32_t before, char32_t after)
+    {
+        if(avoids_widening(before) || avoids_widening(after))
+            return gap_kind::avoided;
+        if(before == 0 || after == 0)
+            return gap_kind::japanese;
+        if(is_space(before) || is_space(after))
+            return gap_kind::word_space;
+        if(script_of(before) == script::latin || script_of(after) == script::latin)
+            return gap_kind::latin;
+        return gap_kind::japanese;
+    }
+
     bool ruby_may_overhang(char32_t c)
     {
         if(c >= 0x3041 && c <= 0x3096)  // hiragana, small ones too

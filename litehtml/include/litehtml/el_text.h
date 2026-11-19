@@ -34,6 +34,15 @@ namespace litehtml
         pixel_t start, end;
     };
 
+    /// Line adjustment of one character of a piece (cjk::squeezable): its byte in the piece's text, the pixels of its
+    /// advance it may give up besides its compression before its glyph and after it, and at which step of JLReq 3.8.3.
+    struct char_squeeze
+    {
+        size_t            at;
+        pixel_t           start, end;
+        cjk::squeeze_step step;
+    };
+
     /// How much the characters of a piece before byte `at` give up (render_text::trims): the boundary at `at` is that
     /// much nearer the piece's start.
     pixel_t trim_shift(const std::vector<char_trim>& trims, size_t at);
@@ -116,6 +125,10 @@ namespace litehtml
         /// character, with its share of its advance (an em, upright in vertical text).
         std::vector<char_trim> compression(const std::string& shown, char32_t before, char32_t after, uint8_t first,
                                            uint8_t last) const;
+        /// Line adjustment of `shown` compressed by `trims` (cjk::squeezable), its first and last characters at `first`
+        /// and `last`: each character that may give up more, as compression measures it.
+        std::vector<char_squeeze> squeezable(const std::string& shown, const std::vector<char_trim>& trims, uint8_t first,
+                                             uint8_t last) const;
         const std::vector<cjk::span>& tate_chu_yoko() const { return m_tate_chu_yoko; }
         uint32_t source_pos() const { return m_src_pos; }
         uint32_t source_utf16() const { return m_src_utf16; }
@@ -138,6 +151,11 @@ namespace litehtml
 
       protected:
         void get_content_size(size& sz, pixel_t max_width) override;
+
+      private:
+        /// The advance of `shown`'s character at bytes [from, to) for compression and line adjustment: an em upright in
+        /// vertical text, else as measured.
+        pixel_t char_advance(const std::string& shown, size_t from, size_t to) const;
     };
 } // namespace litehtml
 

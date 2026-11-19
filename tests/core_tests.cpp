@@ -4084,9 +4084,10 @@ int main() {
         // あい。　う in 72 px: あい。　 | う (the space hangs past the end); before, the space began line 2.
         std::string got = lines_of("width:72px;margin:0", "\xE3\x81\x82\xE3\x81\x84\xE3\x80\x82\xE3\x80\x80\xE3\x81\x86");
         check(got == "\xE3\x81\x82\xE3\x81\x84\xE3\x80\x82\xE3\x80\x80|\xE3\x81\x86|", "the ideographic space after 。 ends the line and hangs (" + got + ")");
-        // あ（abcd） in 96 px: あ | （abcd）; before, （a stayed on line 1 and bcd） went on.
+        // あ（abcd） in 96 px (104 px wide): one line, （ and ） giving up their half ems (JLReq 3.8.2); before, （a stayed
+        // on line 1 and bcd） went on.
         got = lines_of("width:96px;margin:0", "\xE3\x81\x82\xEF\xBC\x88" "abcd\xEF\xBC\x89");
-        check(got == "\xE3\x81\x82|\xEF\xBC\x88" "abcd\xEF\xBC\x89|", "a bracketed Latin word is not broken after its first letter (" + got + ")");
+        check(got == "\xE3\x81\x82\xEF\xBC\x88" "abcd\xEF\xBC\x89|", "a bracketed Latin word is not broken after its first letter (" + got + ")");
     }
 
     // ── Vertical text (writing-mode: vertical-rl on the root): the page turned, upright CJK turned back ──

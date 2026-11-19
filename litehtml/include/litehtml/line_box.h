@@ -280,6 +280,9 @@ namespace litehtml
         /// How far a ruby that does not fit the line with ruby_overlap overlaps the kana before it to fit ending the
         /// line (JLReq 3.3.8 line-edge b: its whole excess, up to one ruby character); -1 when that does not apply.
         pixel_t ruby_end_overlap(const line_box_item* item, pixel_t extra) const;
+        /// How much a line that `next` ends may squeeze (JLReq 3.8.3): the punctuation of its texts in its middle, and
+        /// what `next` gives up ending it.
+        pixel_t squeeze_room(const line_box_item* next) const;
         bool    is_empty() const;
         pixel_t baseline() const;
         pixel_t top_margin() const;
@@ -303,6 +306,9 @@ namespace litehtml
         /// Whether no text (nor inline box) comes before `at` on the line: only inline starts and ends.
         bool           first_text_part(std::list<std::unique_ptr<line_box_item>>::const_iterator at) const;
         bool           is_break_only() const;
+        /// Squeezes a line `over` too long in JLReq 3.8.3's order (a line that does not wrap first gives up the half em
+        /// after its last closing bracket or 、。, as a wrapped one did), as far as it can.
+        void           squeeze(pixel_t over, bool wraps);
         static pixel_t calc_va_baseline(const va_context& current, vertical_align va, const font_metrics& new_font,
                                         pixel_t top, pixel_t bottom);
     };

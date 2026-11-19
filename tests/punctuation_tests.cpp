@@ -279,11 +279,12 @@ void run(bool vertical, bool half_forms) {
         check(got == w, mode + what + ": " + got + "\n     want " + w);
     };
     const std::string p0 = "<p style=\"margin:0\">", p1 = "<p style=\"margin:0;text-indent:1em\">", e = "</p>";
+    // (」 gives up its half em to take く in, JLReq 3.8.2.)
     expect_body(80, p0 + "　あいうえ" + e + p0 + "「かき」くけこさしす" + e,
-                "　@0 あ@16 い@32 う@48 え@64 | 「@16 か@24 き@40 」*@56 | く@0 け@16 こ@32 さ@48 し@64 | す@0",
+                "　@0 あ@16 い@32 う@48 え@64 | 「@16 か@24 き@40 」*@56 く@64 | け@0 こ@16 さ@32 し@48 す@64",
                 "3.1.5 ①: a paragraph that starts with 「 after one indented with U+3000: 「 full width after half an em");
-    expect_body(80, p0 + "「かき」くけこさ「しす" + e + p0 + "　あ" + e,
-                "「@16 か@24 き@40 」*@56 | く@0 け@16 こ@32 さ@48 | 「*@0 し@8 す@24 | 　@0 あ@16",
+    expect_body(80, p0 + "「かき」くけこさし「すせ" + e + p0 + "　あ" + e,
+                "「@16 か@24 き@40 」*@56 く@64 | け@0 こ@16 さ@32 し@48 | 「*@0 す@8 せ@24 | 　@0 あ@16",
                 "3.1.5 ①: the same paragraph's wrapped line starts with 「 flush (天ツキ)");
     expect_body(400, p1 + "あい" + e + "<p style=\"margin:0;text-indent:0\">「か」き</p>",
                 "あ@16 い@32 | 「@16 か@24 」@40 き@56",
@@ -375,6 +376,9 @@ void run(bool vertical, bool half_forms) {
             "3.8.3: a middle dot ending a line");
     // A paragraph's last line a little too long fits with its 。's half em (3.8.1, note).
     expect(88, "あいうえお。", "あ@0 い@16 う@32 え@48 お@64 。*@80", "3.8.1: a paragraph's last line squeezed to fit");
+    // An ideographic space hanging past the line's end (after 。) is not squeezed for: 」 keeps its half em.
+    expect(88, "「あ」いう。　えお", "「*@0 あ@8 」@24 い@40 う@56 。@72 　@88 | え@0 お@16",
+           "3.8.2: an ideographic space hanging past the end is no reason to squeeze");
     // Expanding: where Japanese meets Latin before the gaps between kana (3.8.4 b, c), and Latin word spaces first (a).
     expect(88, "かきAくけこ", "か@0 き@16 A@36 く@56 け@72 | こ@0", "3.8.4: Japanese–Latin gaps before kana ones");
     expect(120, "かきA Bくけこ", "か@0 き@16 A@34 B@70 く@88 け@104 | こ@0", "3.8.4: word spaces first");

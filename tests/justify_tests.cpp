@@ -123,14 +123,15 @@ struct Stub : document_container {
     void get_language(std::string& lang, std::string& culture) const override { lang = "ja"; culture.clear(); }
 };
 
-// Where a line's characters go: `line` is its text with "|" at each gap that takes a share of the free space and
-// nothing at the others; `gap` is the share. "あ@0 い@12 ..." (spaces are not drawn: draw_spaces is false).
-std::string expected(const std::string& line, float gap) {
+// Where a line's characters go: `line` is its text with a mark at each gap that takes a share of the free space and
+// nothing at the others: "|" between Japanese characters takes `gap`, "^" at a word space `space`, "~" where Japanese
+// meets Latin `latin`. "あ@0 い@12 ..." (spaces are not drawn: draw_spaces is false).
+std::string expected(const std::string& line, float gap, float space = -1, float latin = -1) {
     std::string out;
     float x = 0;
     for (auto [cp, at] : code_points(line)) {
-        if (cp == '|') {
-            x += gap;
+        if (cp == '|' || cp == '^' || cp == '~') {
+            x += cp == '|' || space < 0 ? gap : cp == '^' ? space : latin;
             continue;
         }
         if (cp != ' ') out += (out.empty() ? "" : " ") + utf8(line, at) + "@" + std::to_string(int(std::lround(x)));
@@ -148,15 +149,21 @@ std::string drawn_line(const std::vector<Glyph>& glyphs, float mid) {
     return out;
 }
 
-// One justified line of 188 px (18 characters, 144 px, and 11 gaps of 4 px), then a last line that stays as it is:
+// One justified line of 188 px (18 characters, 144 px, and 44 px for its 11 gaps), then a last line that stays as it
+// is:
 //   あ い…… う ␠ abc漢 字 123か―― き | defghijkけ こ   (the pieces)
+// Spread evenly (line_adjustment::even), each gap takes 4 px. In JLReq 3.8.4's order (jlreq), the two at the word
+// space take an eighth em first (2 px), the three where Latin meets Japanese up to half an em (8 px), and the six
+// between Japanese characters the 16 px left (8/3 px each, under a quarter em).
 const std::string text = "あい……う abc漢字123か――きdefghijkけこ";
-const std::string line1 = "あ|い|……|う| |abc|漢|字|123|か|――|き";
+const std::string line1 = "あ|い|……|う^ ^abc~漢|字~123~か|――|き";
 const std::string line2 = "defghijkけこ";
-const float line_length = 188, share = 4;
+const float line_length = 188;
 
-void run(bool vertical) {
-    const std::string mode = vertical ? "vertical: " : "horizontal: ";
+void run(bool vertical, line_adjustment adjustment) {
+    const bool even = adjustment == line_adjustment::even;
+    const std::string mode = std::string(vertical ? "vertical" : "horizontal") + (even ? ", even: " : ", JLReq: ");
+    const std::string want1 = even ? expected(line1, 4) : expected(line1, 8.0f / 3, 2, 8);
     Stub c;
     // Vertical text is laid out across and turned: the column is the page's height long.
     if (vertical) c.h = line_length;
@@ -164,6 +171,7 @@ void run(bool vertical) {
                                               "><body style=\"margin:0;font-size:16px;line-height:20px\"><p style=\"margin:0;text-align:justify\">" +
                                               text + "</p></body></html>",
                                           &c);
+    doc->set_line_adjustment(adjustment);
     doc->render(pixel_t(vertical ? 300 : line_length));
     doc->draw(0, 0, 0, nullptr);
     if (c.glyphs.empty()) {
@@ -172,10 +180,10 @@ void run(bool vertical) {
     }
     const float mid1 = c.glyphs.front().mid, mid2 = c.glyphs.back().mid;
 
-    // Equal gaps between Japanese characters; none inside abc, 123, …… or ――; one each side of the space, and where
-    // Latin meets Japanese (c漢, 字1, 3か), in one piece or between two.
+    // Gaps between Japanese characters; none inside abc, 123, …… or ――; one each side of the space, and where Latin
+    // meets Japanese (c漢, 字1, 3か), in one piece or between two.
     std::string got = drawn_line(c.glyphs, mid1);
-    check(got == expected(line1, share), mode + "the first line spread between its characters: " + got + "\n     want " + expected(line1, share));
+    check(got == want1, mode + "the first line spread between its characters: " + got + "\n     want " + want1);
     // The last line as it is.
     got = drawn_line(c.glyphs, mid2);
     check(mid2 != mid1 && got == expected(line2, 0), mode + "the last line is not justified: " + got);
@@ -210,8 +218,10 @@ void run(bool vertical) {
 } // namespace
 
 int main() {
-    run(false);
-    run(true);
+    for (auto adjustment : {line_adjustment::jlreq, line_adjustment::even}) {
+        run(false, adjustment);
+        run(true, adjustment);
+    }
 
     // A line that ends with <br> is not justified.
     {

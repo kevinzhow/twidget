@@ -98,7 +98,9 @@ namespace litehtml
         // Punctuation compression (cjk::compression): what its characters give up of their advances, in byte order; its
         // width is less by their sum. The characters next to it in its line's flow decide it (before, after; 0: none, at a
         // paragraph's edge, a <br> or an inline box), and where it is on its line: render_item_inline_context::place_inline
-        // sets it in the middle of a line, line_box trims it again as a line's first and as a wrapped line's last.
+        // sets it in the middle of a line, line_box trims it again as a line's first and as a wrapped line's last. Line
+        // adjustment (JLReq 3.8, line_box::finish) adds to them: what an over-full line squeezes from its punctuation,
+        // and, as negative ends, what justify widens a gap by where its gaps do not all take the same (justify_gap 0).
         std::vector<char_trim> trims;
         char32_t               before = 0, after = 0;
 

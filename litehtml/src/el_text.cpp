@@ -48,6 +48,16 @@ namespace
         return nullptr;
     }
 
+    // Whether a character trimmed by `t` of its `advance` is set half width: compression's half em, which the font's
+    // half-width form (halt, vhal) draws; line adjustment squeezes it by less or widens it (a negative trim), and it
+    // is drawn full width.
+    bool half_width(const litehtml::char_trim& t, litehtml::pixel_t advance)
+    {
+        using namespace litehtml;
+        const pixel_t off = t.start + t.end - advance / 2_px;
+        return t.start >= 0_px && t.end >= 0_px && off < 0.01_px && off > -0.01_px;
+    }
+
     // Horizontal text from pos, gap further on at each justifiable gap (render_text::justify_gap) and nearer by what
     // punctuation compression trims (render_text::trims); a trimmed mark drawn alone, with the font's half-width form
     // (`half`) when it has one, else full width moved back by the half it gives up.
@@ -72,7 +82,7 @@ namespace
             at.x += el.advance_to(text, from) + justify_shift(text, from, gap) - trim_shift(trims, from);
             if(const char_trim* t = trim_at(trims, from))
             {
-                if(container->has_half_width_form(part.c_str(), font, false))
+                if(half_width(*t, container->text_width(part.c_str(), font)) && container->has_half_width_form(part.c_str(), font, false))
                     f = half;
                 else
                     at.x -= t->start;
@@ -357,7 +367,8 @@ namespace
             pixel_t           back  = 0_px;
             if(const char_trim* t = trim_at(trims, i))
             {
-                if(container->has_half_width_form(glyph.c_str(), font, true))
+                if(half_width(*t, all_upright ? em : container->text_width(glyph.c_str(), upright)) &&
+                   container->has_half_width_form(glyph.c_str(), font, true))
                     f = css.get_font_half();
                 else
                     back = t->start;
@@ -781,7 +792,6 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
     element::ptr           el_parent = parent();
     if(!el_parent || shown.empty())
         return out;
-    const css_properties& css = el_parent->css();
     std::vector<std::pair<size_t, char32_t>> chars;
     for(size_t i = 0, n = 0; i < shown.size(); i += n)
         chars.push_back({i, code_point_at(shown, i, n)});
@@ -799,10 +809,43 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
             continue;
         const size_t  from    = chars[k].first;
         const size_t  to      = k + 1 < chars.size() ? chars[k + 1].first : shown.size();
-        const pixel_t advance = css.is_vertical_rl() && css.get_text_orientation() == text_orientation_upright
-                                    ? css.get_font_metrics().font_size
-                                    : get_document()->container()->text_width(shown.substr(from, to - from).c_str(), css.get_font());
+        const pixel_t advance = char_advance(shown, from, to);
         out.push_back({from, advance * pixel_t(t.start), advance * pixel_t(t.end)});
+    }
+    return out;
+}
+
+litehtml::pixel_t litehtml::el_text::char_advance(const std::string& shown, size_t from, size_t to) const
+{
+    const css_properties& css = parent()->css();
+    return css.is_vertical_rl() && css.get_text_orientation() == text_orientation_upright
+               ? css.get_font_metrics().font_size
+               : get_document()->container()->text_width(shown.substr(from, to - from).c_str(), css.get_font());
+}
+
+std::vector<litehtml::char_squeeze> litehtml::el_text::squeezable(const std::string& shown, const std::vector<char_trim>& trims,
+                                                                  uint8_t first, uint8_t last) const
+{
+    std::vector<char_squeeze> out;
+    if(!parent() || shown.empty())
+        return out;
+    for(size_t i = 0, n = 0; i < shown.size(); i += n)
+    {
+        const char32_t c = code_point_at(shown, i, n);
+        if(!(cjk::classify(c) & (cjk::opening | cjk::closing | cjk::middle_dot | cjk::full_stop_comma)))
+            continue;
+        if(std::any_of(m_tate_chu_yoko.begin(), m_tate_chu_yoko.end(),
+                       [&](const cjk::span& t) { return t.from <= i && i < t.to; }))
+            continue;
+        const pixel_t    advance = char_advance(shown, i, i + n);
+        cjk::trim        taken;
+        for(const auto& t : trims)
+            if(t.at == i && advance > 0_px)
+                taken = {float(t.start / advance), float(t.end / advance)};
+        const uint8_t    at = (i == 0 ? first : 0) | (i + n == shown.size() ? last : 0);
+        const cjk::squeeze q = cjk::squeezable(c, taken, at);
+        if(q.step != cjk::squeeze_step::none && (q.start > 0 || q.end > 0))
+            out.push_back({i, advance * pixel_t(q.start), advance * pixel_t(q.end), q.step});
     }
     return out;
 }
