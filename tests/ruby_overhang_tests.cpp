@@ -158,14 +158,16 @@ std::string format(const std::vector<Drawn>& drawn) {
 }
 
 // <p>html</p>, left-aligned, in a line (column) `length` px long.
-std::string lay_out(bool vertical, float length, const std::string& html, ruby_overhang overhang = ruby_overhang::punctuation) {
+std::string lay_out(bool vertical, float length, const std::string& html, ruby_overhang overhang = ruby_overhang::punctuation,
+                    ruby_breaking breaking = ruby_breaking::per_base, const char* align = "left") {
     Stub c;
     if (vertical) c.h = length;
     auto doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
-                                              "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0\">" +
-                                              html + "</p></body></html>",
+                                              "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0;text-align:" +
+                                              align + "\">" + html + "</p></body></html>",
                                           &c);
     doc->set_ruby_overhang(overhang);
+    doc->set_ruby_breaking(breaking);
     doc->render(pixel_t(vertical ? 400 : length));
     doc->draw(0, 0, 0, nullptr);
     return format(c.drawn);
@@ -242,6 +244,32 @@ void run(bool vertical) {
            "a group ruby longer than its base overhangs by its base's outer gaps");
     expect(400, "の<ruby>旬<rt>しゅん</rt>旬<rt>しゅん</rt></ruby>に", "の@0 ^しゅん@12 旬@16 ^しゅん@36 旬@40 に@56",
            "a ruby of two pairs overhangs by its first pair before and its last pair after");
+    // 熟語ルビ (one <ruby> of several pairs, document::set_ruby_breaking, per_base by default): a line may break between
+    // its base units, never inside one (JLReq 3.1.10 ⑦, 3.3.7); a pair whose reading is longer than its base overhangs
+    // the other bases of the word only where their own readings leave room, by up to one ruby character (3.3.7,
+    // Appendix F); each part of a word broken across lines is set by the line-edge rules (3.3.8 e–h); justify puts no
+    // space between the bases of one word (3.1.11 ②-7).
+    const std::string kanji = "<ruby>漢<rt>かん</rt>字<rt>じ</rt></ruby>";
+    expect(80, "あいうえ" + kanji + "お", "あ@0 い@16 う@32 え@48 ^かん@64 漢@64 ^じ@4 | 字@0 お@16",
+           "3.3.7: a line breaks between a word's base units");
+    {
+        const std::string got = lay_out(vertical, 80, "あいうえ" + kanji + "お", ruby_overhang::punctuation, ruby_breaking::whole);
+        check(got == "あ@0 い@16 う@32 え@48 ^かん@0 | 漢@0 ^じ@20 字@16 お@32",
+              mode + "ruby_breaking::whole: the word goes on whole, as before: " + got);
+    }
+    expect(80, "あいう" + kanji + "っ", "あ@0 い@16 う@32 ^かん@48 漢@48 ^じ@4 | 字@0 っ@16",
+           "3.3.7: っ, which may not start a line, takes 字 with it, not the whole word");
+    expect(400, "の<ruby>胡<rt>きゅう</rt>瓜<rt>り</rt></ruby>に", "の@0 ^きゅう@12 胡@16 ^り@36 瓜@32 に@48",
+           "3.3.7: きゅう overhangs 瓜, whose り leaves room, by its excess");
+    expect(400, "の<ruby>瓜<rt>り</rt>胡<rt>きゅう</rt></ruby>に", "の@0 ^り@20 瓜@16 ^きゅう@28 胡@32 に@48",
+           "3.3.7: and the other way round");
+    expect(64, "あいう<ruby>胡<rt>きゅう</rt>瓜<rt>り</rt></ruby>え", "あ@0 い@16 う@32 ^きゅう@40 胡@48 ^り@4 | 瓜@0 え@16",
+           "3.3.8 e–h: a word broken across lines, 胡 ending the line as a mono ruby does (line-edge b)");
+    {
+        const std::string want = "あ@0 ^かん@18 漢@18 ^じ@38 字@34 い@52 う@70 え@88 | お@0";
+        const std::string got = lay_out(vertical, 104, "あ" + kanji + "いうえお", ruby_overhang::punctuation, ruby_breaking::per_base, "justify");
+        check(got == want, mode + "3.1.11 ②-7: justify puts no space between a word's bases: " + got + "\n     want " + want);
+    }
     // The overhang counts when the line breaks: の旬にあ fits in four ems.
     expect(64, "の" + shun + "にあ", "の@0 ^しゅん@12 旬@16 に@32 あ@48", "the line holds what the overhang makes room for");
     // Line edges (a, b): at a line's head the base and its ruby start together; at a wrapped line's end they end

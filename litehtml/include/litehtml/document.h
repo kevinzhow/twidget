@@ -81,6 +81,16 @@ namespace litehtml
         kana,
     };
 
+    /// How a <ruby> of several base and annotation pairs (熟語ルビ, jukugo ruby) breaks across lines (JLReq 3.1.10 ⑦,
+    /// 3.3.7). per_base: between its base units, never inside one; a reading longer than its base overhangs the other
+    /// bases of the word where their readings leave room, by up to one ruby character. whole: the word is one
+    /// unbreakable inline box, as before.
+    enum class ruby_breaking : uint8_t
+    {
+        per_base,
+        whole,
+    };
+
     class document : public std::enable_shared_from_this<document>
     {
       public:
@@ -190,6 +200,7 @@ namespace litehtml
         paragraph_brackets                      m_paragraph_brackets = paragraph_brackets::full_em;
         line_adjustment                         m_line_adjustment    = line_adjustment::jlreq;
         ruby_overhang                           m_ruby_overhang      = ruby_overhang::punctuation;
+        ruby_breaking                           m_ruby_breaking      = ruby_breaking::per_base;
         bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
@@ -314,6 +325,8 @@ namespace litehtml
         line_adjustment              get_line_adjustment() const { return m_line_adjustment; }
         void                         set_ruby_overhang(ruby_overhang mode) { m_ruby_overhang = mode; }
         ruby_overhang                get_ruby_overhang() const { return m_ruby_overhang; }
+        void                         set_ruby_breaking(ruby_breaking mode) { m_ruby_breaking = mode; }
+        ruby_breaking                get_ruby_breaking() const { return m_ruby_breaking; }
         bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;
