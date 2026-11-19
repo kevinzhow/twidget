@@ -85,6 +85,20 @@ namespace litehtml
         }
         /// Whether its pairs are items of the line around it (ruby_breaking::per_base).
         bool split() const;
+        // Split, it is an inline element of the line around it, as a <span> (render_item_inline): its baselines are
+        // its font's, not those of the lines it has when laid out whole (JLReq 3.3.2: no extra line pitch).
+        pixel_t get_first_baseline() override
+        {
+            return split() ? span_baseline() : render_item_inline_context::get_first_baseline();
+        }
+        pixel_t get_last_baseline() override
+        {
+            return split() ? span_baseline() : render_item_inline_context::get_last_baseline();
+        }
+        pixel_t span_baseline() const
+        {
+            return src_el()->css().get_font_metrics().height - src_el()->css().get_font_metrics().base_line();
+        }
         std::shared_ptr<render_item> clone() override
         {
             return std::make_shared<render_item_ruby_word>(src_el());

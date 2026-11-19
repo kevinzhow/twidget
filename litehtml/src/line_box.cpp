@@ -98,6 +98,15 @@ namespace
         return pair && pair->in_word() ? pair : nullptr;
     }
 
+    // Whether a line item is the start, continuation or end of a word of ruby pairs that breaks between them.
+    bool word_split(const litehtml::line_box_item* item)
+    {
+        if(!item || item->get_type() == litehtml::line_box_item::type_text_part)
+            return false;
+        auto word = dynamic_cast<const litehtml::render_item_ruby_word*>(item->get_el().get());
+        return word && word->split();
+    }
+
     // Whether two line items are base units of the same word.
     bool same_word(const litehtml::line_box_item* a, const litehtml::line_box_item* b)
     {
@@ -977,8 +986,12 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         bool    is_top_bottom_box = false;
         bool    ignore            = false;
 
+        // A word of ruby pairs that breaks between them (render_item_ruby_word::split) puts its pairs on the line
+        // itself: its start and end are those of an inline element, as a <span>'s, not an inline-block's (whose
+        // baseline and height would be the word's laid out whole, annotations included, JLReq 3.3.2).
+        const bool split_word = word_split(lbi.get());
         // Align element by baseline
-        if(!is_one_of(lbi->get_el()->src_el()->css().get_display(), display_inline_text, display_inline))
+        if(!split_word && !is_one_of(lbi->get_el()->src_el()->css().get_display(), display_inline_text, display_inline))
         {
             // Apply margins, paddings and border for inline boxes
             content_offset = lbi->get_el()->content_offset_top();
@@ -1048,7 +1061,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             }
         } else
         {
-            if(!lbi->get_el()->src_el()->is_inline_box())
+            if(split_word || !lbi->get_el()->src_el()->is_inline_box())
             {
                 line_max_height.add_item(lbi.get());
                 const pixel_t leading = lbi->get_el()->css().line_height().computed_value - lbi->height();
@@ -1081,7 +1094,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             }
         }
 
-        if(!lbi->get_el()->src_el()->is_inline_box() && !lbi->get_el()->css().line_height().css_value.is_predefined())
+        if((split_word || !lbi->get_el()->src_el()->is_inline_box()) && !lbi->get_el()->css().line_height().css_value.is_predefined())
         {
             if(line_height.has_value())
             {
