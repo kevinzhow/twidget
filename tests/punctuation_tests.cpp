@@ -366,6 +366,9 @@ void run(bool vertical, bool half_forms) {
     // The half em after 。 inside a line stays (3.8.3, note), and expanding, the gaps before and after 。 take nothing.
     expect(104, "あいう。えおかき", "あ@0 い@18.7 う@37.3 。@53.3 え@69.3 お@88 | か@0 き@16",
            "3.8.3: 。 inside a line keeps its half em; 3.1.11 ②: no space next to it");
+    // 3.1.11 ②-1: a line that cannot squeeze (its 「 at the head, 」 before 。, 。 ending it) puts its 16 px between く
+    // and け, its only other gap (3.8.4 d), none next to 「, 」 or 。.
+    expect(72, "「くけ」。こさ", "「*@0 く@8 け@40 」*@56 。*@64 | こ@0 さ@16", "3.1.11 ②-1: no space next to brackets");
     // Middle dots inside the line before brackets: 8 px over takes both quarters of ・; 12 px over, 「's half em by 4 more.
     expect2(120, "あい・うえ「おかきく", "あ@0 い@16 ・*@32 う@40 え@56 「@80 お@88 か@104 | き@0 く@16",
             "あ@0 い@16 ・@28 う@40 え@56 「@80 お@88 か@104 | き@0 く@16", "3.8.3: a middle dot's quarters before brackets");
