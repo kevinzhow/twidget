@@ -398,6 +398,15 @@ void run(bool vertical, bool half_forms) {
               mode + "a Latin line with an em dash justifies evenly: " + drawn(jl.c.glyphs, half_forms) + "\n     even " +
                   drawn(ev.c.glyphs, half_forms));
     }
+    // With nothing to squeeze, a line a hair too short for its next piece breaks there, as before.
+    {
+        Laid jl, ev;
+        lay_out(jl, vertical, half_forms, 63.995f, "あいうえお", "justify");
+        lay_out(ev, vertical, half_forms, 63.995f, "あいうえお", "justify", line_adjustment::even);
+        check(line_texts(jl.c.glyphs) == line_texts(ev.c.glyphs),
+              mode + "nothing to squeeze, a line 0.005 px short breaks as before: " + line_texts(jl.c.glyphs) + "\n     even " +
+                  line_texts(ev.c.glyphs));
+    }
     // Expanding: where Japanese meets Latin before the gaps between kana (3.8.4 b, c), and Latin word spaces first (a).
     expect(88, "かきAくけこ", "か@0 き@16 A@36 く@56 け@72 | こ@0", "3.8.4: Japanese–Latin gaps before kana ones");
     expect(120, "かきA Bくけこ", "か@0 き@16 A@34 B@70 く@88 け@104 | こ@0", "3.8.4: word spaces first");

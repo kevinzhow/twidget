@@ -1409,7 +1409,11 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
         if(over > 0_px && ruby_end_overlap(item.get(), end_extra - hang + trailing) < 0_px)
         {
             // JLReq 3.8.2: squeezed, the line may still take it (追込み) before it goes on (追出し).
-            return adjusts(item.get()) && over <= squeeze_room(item.get()) + 0.01_px;
+            // (A tolerance for rounding, only where there is something to squeeze: a line with none breaks as before.)
+            if(!adjusts(item.get()))
+                return false;
+            const pixel_t room = squeeze_room(item.get());
+            return room > 0_px && over <= room + 0.01_px;
         }
     }
 
