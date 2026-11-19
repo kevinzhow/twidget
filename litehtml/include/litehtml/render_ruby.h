@@ -95,6 +95,13 @@ namespace litehtml
         {
             return split() ? span_baseline() : render_item_inline_context::get_last_baseline();
         }
+        // Split, its pairs are items of the lines around it and move with them; it stays put, as they are drawn
+        // from it (a line's start item moving it too moved every pair of the word again, on all its lines).
+        void y_shift(pixel_t delta) override
+        {
+            if(!split())
+                render_item_inline_context::y_shift(delta);
+        }
         pixel_t span_baseline() const
         {
             return src_el()->css().get_font_metrics().height - src_el()->css().get_font_metrics().base_line();
