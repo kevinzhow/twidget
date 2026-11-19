@@ -1,5 +1,6 @@
 #include "iterators.h"
 #include "render_item.h"
+#include "render_ruby.h"
 
 litehtml::elements_iterator::elements_iterator(bool return_parents, iterator_selector* go_inside,
                                                iterator_selector* select) :
@@ -50,6 +51,10 @@ void litehtml::elements_iterator::process(
 
 bool litehtml::go_inside_inline::select(const std::shared_ptr<render_item>& el)
 {
+    // A word of ruby pairs that breaks between them (render_item_ruby_word::split) is an inline although its <ruby> is
+    // an inline-block.
+    if(auto word = dynamic_cast<const render_item_ruby_word*>(el.get()))
+        return word->split();
     return el->src_el()->css().get_display() == display_inline && el->src_el()->css().get_float() == float_none;
 }
 

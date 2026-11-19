@@ -138,6 +138,30 @@ namespace
             auto text = std::dynamic_pointer_cast<litehtml::el_text>(el);
             return text ? (first ? first_char(text->display_text()) : last_char(text->display_text())) : 0;
         }
+        // A base unit of a word of ruby pairs (an anonymous box of its <ruby>): its base's text, from its render items.
+        if(auto pair = std::dynamic_pointer_cast<litehtml::render_item_ruby_pair>(el->get_render_item());
+           pair && pair->in_word() && !pair->children().empty())
+        {
+            std::function<char32_t(const std::shared_ptr<litehtml::render_item>&)> walk =
+                [&](const std::shared_ptr<litehtml::render_item>& ri) -> char32_t {
+                if(auto text = std::dynamic_pointer_cast<litehtml::el_text>(ri->src_el()); text && !text->is_white_space())
+                    return first ? first_char(text->display_text()) : last_char(text->display_text());
+                const auto& kids = ri->children();
+                if(first)
+                {
+                    for(auto it = kids.begin(); it != kids.end(); ++it)
+                        if(char32_t c = walk(*it))
+                            return c;
+                } else
+                {
+                    for(auto it = kids.rbegin(); it != kids.rend(); ++it)
+                        if(char32_t c = walk(*it))
+                            return c;
+                }
+                return 0;
+            };
+            return walk(pair->children().back());
+        }
         if(el->tag() != litehtml::_ruby_ && !(el->parent() && el->parent()->tag() == litehtml::_ruby_))
             return 0;
         const auto& kids = el->children();
@@ -306,7 +330,9 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
             // (no_break_opportunity; a ruby counts by its base text, on either side: <ruby>仕切<rt>しき</rt></ruby>って
             // keeps 切 with っ): their width is kept free after it, so that they go to the next line together. Not past
             // the line's width: what does not fit an empty line overflows it anyway.
-            auto is_ruby = [](const std::shared_ptr<render_item>& item) { return item->src_el()->tag() == _ruby_; };
+            auto is_ruby = [](const std::shared_ptr<render_item>& item) {
+                return item->src_el()->tag() == _ruby_ || std::dynamic_pointer_cast<render_item_ruby_pair>(item);
+            };
             auto is_piece = [](const std::shared_ptr<render_item>& item) {
                 return item->src_el()->is_text() && !item->src_el()->is_break();
             };
@@ -515,9 +541,12 @@ void litehtml::render_item_inline_context::make_room_for_ruby()
         for(const auto& item : line->items())
         {
             const auto& el = item->get_el();
-            if(el->src_el()->tag() != _ruby_ || item->get_type() != line_box_item::type_text_part)
+            if(item->get_type() != line_box_item::type_text_part)
                 continue;
-            if(auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(el))
+            auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(el);
+            if(!pair && el->src_el()->tag() != _ruby_)
+                continue;
+            if(pair)
             {
                 // A ruby of one pair is that pair.
                 if(pair->annotation_overflow > 0_px)

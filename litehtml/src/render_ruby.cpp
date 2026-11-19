@@ -78,20 +78,36 @@ std::shared_ptr<litehtml::render_item> litehtml::render_item_ruby::init()
         return ret;
     }
     m_children = pairs;
+    // A word (熟語ルビ) of several pairs may break between them (JLReq 3.3.7; render_item_ruby_word decides at layout,
+    // by the document's ruby_breaking).
+    const bool word = pairs.size() > 1;
     for(auto& pair : m_children)
     {
         for(auto& el : pair->children())
             el = el->init();
         pair->src_el()->add_render(pair);
+        if(auto p = std::dynamic_pointer_cast<render_item_ruby_pair>(pair))
+            p->word_member = word;
     }
     // The pairs are inline-blocks: the ruby is an inline formatting context of them.
-    auto ret = std::make_shared<render_item_inline_context>(src_el());
+    std::shared_ptr<render_item_inline_context> ret = word ? std::make_shared<render_item_ruby_word>(src_el())
+                                                           : std::make_shared<render_item_inline_context>(src_el());
     ret->parent(parent());
     ret->children() = m_children;
     for(const auto& el : ret->children())
         el->parent(ret);
     ret->src_el()->add_render(ret);
     return ret;
+}
+
+bool litehtml::render_item_ruby_word::split() const
+{
+    return src_el()->get_document()->get_ruby_breaking() == ruby_breaking::per_base;
+}
+
+bool litehtml::render_item_ruby_pair::in_word() const
+{
+    return word_member && src_el()->get_document()->get_ruby_breaking() == ruby_breaking::per_base;
 }
 
 void litehtml::render_item_ruby_pair::align_base(pixel_t shift)
@@ -108,7 +124,7 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
 {
     auto ret            = render_item_block_context::_render_content(x, y, second_pass, self_size, fmt_ctx);
     annotation_overflow = 0_px;
-    base_start = base_end = ruby_em = base_shift = overlap_before = 0_px;
+    base_start = base_end = ruby_em = base_shift = overlap_before = ann_start = ann_end = 0_px;
     japanese_base = false;
     if(!has_annotation || m_children.size() < 2)
         return ret;
@@ -147,6 +163,31 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
             ruby_em     = m_children.front()->css().get_font_size();
         } else
             base_start = base_end = 0_px;
+    }
+    // Where the annotation's text is in the pair (JLReq 3.3.7: what a longer reading next to it may overhang).
+    const pixel_t whole = m_children.front()->pos().x + m_children.front()->pos().width;
+    ann_start = 0_px;
+    ann_end   = whole;
+    if(auto inl = std::dynamic_pointer_cast<render_item_inline_context>(m_children.front()); inl && inl->line_boxes().size() == 1)
+    {
+        bool any = false;
+        for(const auto& item : inl->line_boxes().front()->items())
+        {
+            if(item->get_type() != line_box_item::type_text_part || item->get_el()->src_el()->is_white_space())
+                continue;
+            ann_start = any ? std::min(ann_start, item->left()) : item->left();
+            ann_end   = any ? std::max(ann_end, item->right()) : item->right();
+            any       = true;
+        }
+        if(any)
+        {
+            ann_start += m_children.front()->pos().x;
+            ann_end   += m_children.front()->pos().x;
+        } else
+        {
+            ann_start = 0_px;
+            ann_end   = whole;
+        }
     }
     // As Chromium 156 measures it: the annotation's box (its line, line-height: normal) ends where the base's em box
     // begins. The pair's own box is the base's: the annotation hangs over it, and the inline formatting context

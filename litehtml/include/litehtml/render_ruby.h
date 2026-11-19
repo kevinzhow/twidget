@@ -2,6 +2,7 @@
 #define LITEHTML_RENDER_RUBY_H
 
 #include "render_block_context.h"
+#include "render_inline_context.h"
 
 namespace litehtml
 {
@@ -41,6 +42,14 @@ namespace litehtml
         /// ruby-align), and one ruby character (the annotation's font size): an annotation longer than its base
         /// overhangs the text next to the pair by what lies outside [base_start, base_end] (line_box, JLReq 3.3.8).
         pixel_t base_start = 0_px, base_end = 0_px, ruby_em = 0_px;
+        /// Where its annotation's text starts and ends in the pair: a reading shorter than its base leaves the rest of
+        /// the pair's width free above the base, which a longer reading of the same word may overhang (JLReq 3.3.7).
+        pixel_t ann_start = 0_px, ann_end = 0_px;
+        /// One of the pairs of a word (熟語ルビ, a <ruby> of several pairs: render_item_ruby_word).
+        bool word_member = false;
+        /// Whether it is a base unit of a word in the line, a line item of its own before which the line may break
+        /// (a word member, and the document's ruby_breaking is per_base).
+        bool in_word() const;
         /// Whether its base's text is Japanese (cjk::script_of its first character): JLReq's overhang and line-edge
         /// rules apply to it; a ruby over Latin text stays as laid out.
         bool japanese_base = false;
@@ -59,7 +68,26 @@ namespace litehtml
         {
             auto ret            = std::make_shared<render_item_ruby_pair>(src_el());
             ret->has_annotation = has_annotation;
+            ret->word_member    = word_member;
             return ret;
+        }
+    };
+
+    /// A <ruby> of several pairs (熟語ルビ): with ruby_breaking::per_base an inline, like a span, whose pairs are
+    /// inline-blocks of the line around it (iterators.cpp go_inside_inline goes into it), so that the line may break
+    /// between them; with whole, an atomic inline-block, the inline formatting context of its pairs.
+    class render_item_ruby_word : public render_item_inline_context
+    {
+      public:
+        explicit render_item_ruby_word(std::shared_ptr<element> src_el) :
+            render_item_inline_context(std::move(src_el))
+        {
+        }
+        /// Whether its pairs are items of the line around it (ruby_breaking::per_base).
+        bool split() const;
+        std::shared_ptr<render_item> clone() override
+        {
+            return std::make_shared<render_item_ruby_word>(src_el());
         }
     };
 } // namespace litehtml
