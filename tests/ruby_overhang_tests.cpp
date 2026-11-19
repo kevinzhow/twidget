@@ -204,19 +204,19 @@ void run(bool vertical) {
     expect(400, "の" + r("旬", "しゅん") + "あ", "の@0 ^しゅん@12 旬@16 あ@32", "a following あ");
     // Rules 3 to 6 (JLReq Fig. 135, 136): the half em after 」、。 before the ruby and before 「 after it; ……, ・; 」、。
     // after it and 「 before it, onto the mark itself.
-    expect(400, "あ」" + shun + "に", "あ@0 」@16 ^しゅん@28 旬@32 に@44", "rule 3: into the half em after 」",
-           "あ」@0 ^しゅん@28 旬@32 に@44");
-    expect(400, "あ、" + shun + "に", "あ@0 、@16 ^しゅん@28 旬@32 に@44", "rule 3: into the half em after 、",
-           "あ、@0 ^しゅん@28 旬@32 に@44");
-    expect(400, "あ。" + shun + "に", "あ@0 。@16 ^しゅん@28 旬@32 に@44", "rule 3: into the half em after 。",
-           "あ。@0 ^しゅん@28 旬@32 に@44");
-    expect(400, "の" + shun + "「あ", "の@0 ^しゅん@12 旬@16 「@28 あ@44", "rule 3: into the half em before 「",
-           "の@0 ^しゅん@12 旬@16 「あ@28");
-    expect(400, "の" + shun + "、あ", "の@0 ^しゅん@12 旬@16 、@28 あ@44", "rule 6: onto 、 after it");
-    expect(400, "あ……" + shun + "……い", "あ@0 …@16 …@32 ^しゅん@44 旬@48 …@60 …@76 い@92", "rule 4: onto ……",
-           "あ@0 ……@16 ^しゅん@44 旬@48 ……@60 い@92");
-    expect(400, "あ・" + shun + "・い", "あ@0 ・@16 ^しゅん@28 旬@32 ・@44 い@60", "rule 5: onto middle dots",
-           "あ・@0 ^しゅん@28 旬@32 ・@44 い@60");
+    expect(400, "あ」" + shun + "に", "あ@0 」@16 ^しゅん@28 旬@32 に@48", "rule 3: into the half em after 」",
+           "あ」@0 ^しゅん@28 旬@32 に@48");
+    expect(400, "あ、" + shun + "に", "あ@0 、@16 ^しゅん@28 旬@32 に@48", "rule 3: into the half em after 、",
+           "あ、@0 ^しゅん@28 旬@32 に@48");
+    expect(400, "あ。" + shun + "に", "あ@0 。@16 ^しゅん@28 旬@32 に@48", "rule 3: into the half em after 。",
+           "あ。@0 ^しゅん@28 旬@32 に@48");
+    expect(400, "の" + shun + "「あ", "の@0 ^しゅん@12 旬@16 「@32 あ@48", "rule 3: into the half em before 「",
+           "の@0 ^しゅん@12 旬@16 「あ@32");
+    expect(400, "の" + shun + "、あ", "の@0 ^しゅん@12 旬@16 、@32 あ@48", "rule 6: onto 、 after it");
+    expect(400, "あ……" + shun + "……い", "あ@0 …@16 …@32 ^しゅん@44 旬@48 …@64 …@80 い@96", "rule 4: onto ……",
+           "あ@0 ……@16 ^しゅん@44 旬@48 ……@64 い@96");
+    expect(400, "あ・" + shun + "・い", "あ@0 ・@16 ^しゅん@28 旬@32 ・@48 い@64", "rule 5: onto middle dots",
+           "あ・@0 ^しゅん@28 旬@32 ・@48 い@64");
     // No further than one ruby character, the half em of rule 3, nor the mark itself (rule 6): the rest spaces the base.
     const std::string shunshun = r("旬", "しゅんしゅん");
     expect(400, "あ」" + shunshun + "「い", "あ@0 」@16 ^しゅんしゅん@24 旬@40 「@64 い@80", "rule 3: no further than the half em",

@@ -111,8 +111,8 @@ namespace litehtml::cjk
     gap_kind justify_gap_kind(char32_t before, char32_t after);
 
     // Whether a ruby longer than its base may overhang c next to the base (JLReq 3.3.8 rule 2): hiragana (cl-15),
-    // katakana (cl-16), the prolonged sound mark (cl-10) and small kana (cl-11); not iteration marks, the middle dot,
-    // kanji (rule 1), punctuation (rules 3 to 6 are not done) nor anything else.
+    // katakana (cl-16), the prolonged sound mark (cl-10) and small kana (cl-11); not iteration marks, kanji (rule 1)
+    // nor anything else. Punctuation (rules 3 to 6) is line_box::overhang_room's, by what compression left of it.
     bool ruby_may_overhang(char32_t c);
 
     // Bytes [from, to) of a text.

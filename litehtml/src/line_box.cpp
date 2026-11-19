@@ -111,11 +111,27 @@ namespace
         return part;
     }
 
-    // What line adjustment may squeeze from a text (el_text::squeezable) at `first` and `last`.
+    // What line adjustment may squeeze from a text (el_text::squeezable) at `first` and `last`, less what a ruby next to
+    // it overhangs (JLReq 3.3.8 rule 3, note).
     std::vector<litehtml::char_squeeze> squeeze_of(const litehtml::render_text& part, uint8_t first, uint8_t last)
     {
-        auto text = std::dynamic_pointer_cast<litehtml::el_text>(part.src_el());
-        return text ? text->squeezable(text->display_text(), part.trims, first, last) : std::vector<litehtml::char_squeeze>();
+        using namespace litehtml;
+        auto text = std::dynamic_pointer_cast<el_text>(part.src_el());
+        if(!text)
+            return {};
+        const std::string& shown = text->display_text();
+        auto               out   = text->squeezable(shown, part.trims, first, last);
+        size_t             back  = shown.size() - 1;
+        while(back > 0 && (static_cast<unsigned char>(shown[back]) & 0xC0) == 0x80)
+            back--;
+        for(auto& q : out)
+        {
+            if(q.at == 0)
+                q.start = std::max(0_px, q.start - part.ruby_over_start);
+            if(q.at == back)
+                q.end = std::max(0_px, q.end - part.ruby_over_end);
+        }
+        return out;
     }
 
     // CSS Text 3 §4.1.3, as Chromium: an ideographic space ending a line hangs (。　 at a paragraph's turn, which the
@@ -367,6 +383,17 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
         }
         if(r.single)
             r.single->overlap_before = overlap;
+        // What it overhangs of the text before it, or (a text after a ruby) of its own start: not to be squeezed too.
+        if(overlap > 0_px)
+        {
+            ruby_sides other;
+            if(ruby_of(item.get(), other))
+            {
+                if(auto text = squeezable_text(last_content_item()))
+                    text->ruby_over_end = overlap;
+            } else if(auto text = squeezable_text(item.get()))
+                text->ruby_over_start = overlap;
+        }
         m_width -= overlap;
         item->place_to(m_left + m_width, m_top);
         m_width  += item->width();
@@ -513,12 +540,13 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
                        !((*b)->get_el()->src_el()->is_white_space() && (*b)->width() <= 0_px))
                         prev = b->get();
                 }
-                ruby_sides    other;
-                const bool    onto  = prev && !ruby_of(prev, other) && cjk::ruby_may_overhang(edge_of(prev, true));
-                const pixel_t want  = onto ? std::min(pair->base_start + pair->base_shift, pair->ruby_em) : 0_px;
+                const pixel_t room  = overhang_room(prev, true, pair->ruby_em);
+                const pixel_t want  = room >= 0_px ? std::min(pair->base_start + pair->base_shift, room) : 0_px;
                 const pixel_t extra = std::max(0_px, want - pair->overlap_before);
                 if(extra > 0_px)
                 {
+                    if(auto text = squeezable_text(prev))
+                        text->ruby_over_end += extra;
                     pair->overlap_before += extra;
                     m_width              -= extra;
                     for(auto after = m_items.rbegin();; ++after)
@@ -1387,8 +1415,13 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next) co
     // The texts placed are all in the middle of the line now (the first one's first character at its start), and
     // `next` ends it: the half em compression takes from its last closing bracket or 、。 there, and what squeezable
     // gives of the rest.
-    pixel_t room  = 0_px;
-    bool    first = true;
+    // A ruby `next` is, or `next` after a ruby, overhangs the mark next to it by ruby_overlap: not to squeeze too.
+    ruby_sides    r;
+    const pixel_t overhang      = ruby_overlap(next);
+    const bool    next_is_ruby  = ruby_of(next, r);
+    const auto    last_text     = squeezable_text(last_content_item());
+    pixel_t       room          = 0_px;
+    bool          first         = true;
     for(const auto& item : m_items)
     {
         auto part = squeezable_text(item.get());
@@ -1397,7 +1430,10 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next) co
             first = first && item->get_type() == line_box_item::type_inline_start;
             continue;
         }
-        for(const auto& q : squeeze_of(*part, first ? cjk::line_start : cjk::line_middle, cjk::line_middle))
+        auto qs = squeeze_of(*part, first ? cjk::line_start : cjk::line_middle, cjk::line_middle);
+        if(next_is_ruby && part == last_text && !qs.empty())
+            qs.back().end = std::max(0_px, qs.back().end - overhang);
+        for(const auto& q : qs)
             room += q.start + q.end;
         first = false;
     }
@@ -1406,7 +1442,10 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next) co
         auto       text  = std::dynamic_pointer_cast<el_text>(part->src_el());
         const auto ended = text->compression(text->display_text(), part->before, part->after, cjk::line_middle, cjk::line_end);
         room += trim_shift(ended, SIZE_MAX) - trim_shift(part->trims, SIZE_MAX);
-        for(const auto& q : squeeze_of(*part, cjk::line_middle, cjk::line_end))
+        auto qs = squeeze_of(*part, cjk::line_middle, cjk::line_end);
+        if(!qs.empty() && qs.front().at == 0)
+            qs.front().start = std::max(0_px, qs.front().start - overhang);
+        for(const auto& q : qs)
             room += q.start + q.end;
     }
     return room;
@@ -1537,14 +1576,50 @@ litehtml::pixel_t litehtml::line_box::ruby_overlap(const line_box_item* item) co
     {
         // Laid out again before it is placed: its base where it was laid out.
         const pixel_t before = r.single ? r.single->base_start : r.before;
-        ruby_sides    other;
-        if(ruby_of(prev, other) || !cjk::ruby_may_overhang(edge_of(prev, true)))
-            return 0_px;
-        return std::max(0_px, std::min(before, r.em));
+        return std::max(0_px, std::min(before, overhang_room(prev, true, r.em)));
     }
-    if(ruby_of(prev, r) && cjk::ruby_may_overhang(edge_of(item, false)))
-        return std::max(0_px, std::min(r.after, r.em));
+    if(ruby_of(prev, r))
+        return std::max(0_px, std::min(r.after, overhang_room(item, false, r.em)));
     return 0_px;
+}
+
+litehtml::pixel_t litehtml::line_box::overhang_room(const line_box_item* item, bool before_ruby, pixel_t ruby_em) const
+{
+    ruby_sides other;
+    if(!item || ruby_of(item, other))
+        return -1_px;
+    const char32_t c = edge_of(item, before_ruby);
+    if(cjk::ruby_may_overhang(c))
+        return ruby_em;
+    if(item->get_el()->src_el()->get_document()->get_ruby_overhang() != ruby_overhang::punctuation)
+        return -1_px;
+    const cjk::classes is = cjk::classify(c);
+    if(!(is & (cjk::opening | cjk::closing | cjk::full_stop_comma | cjk::middle_dot | cjk::inseparable)))
+        return -1_px;
+    auto part = squeezable_text(item);
+    auto text = part ? std::dynamic_pointer_cast<el_text>(part->src_el()) : nullptr;
+    if(!text)
+        return -1_px;
+    // The mark's advance and what compression trims of it.
+    const std::string& shown = text->display_text();
+    size_t             at    = 0, n = 0;
+    if(before_ruby)
+        for(at = shown.size() - 1; at > 0 && (static_cast<unsigned char>(shown[at]) & 0xC0) == 0x80; at--)
+            ;
+    decode_at(shown, at, n);
+    const pixel_t advance = text->char_advance(shown, at, at + n);
+    pixel_t       start = 0_px, end = 0_px;
+    for(const auto& t : part->trims)
+        if(t.at == at)
+            start = t.start, end = t.end;
+    if(is & cjk::middle_dot)  // rule 5: its quarter on that side and half a ruby character
+        return std::min(ruby_em, std::max(0_px, advance / 4_px - (before_ruby ? end : start)) + ruby_em / 2_px);
+    if(is & cjk::inseparable)  // rule 4
+        return std::min(ruby_em, advance);
+    const bool space_side = before_ruby ? !(is & cjk::opening) : bool(is & cjk::opening);
+    if(space_side)  // rule 3: the half em after 」、。 before the ruby, before 「 after it
+        return std::min(ruby_em, std::max(0_px, advance / 2_px - (before_ruby ? end : start)));
+    return std::min(ruby_em, advance / 2_px);  // rule 6: onto 「 before it, 」、。 after it, not past the mark
 }
 
 litehtml::pixel_t litehtml::line_box::ruby_end_overlap(const line_box_item* item, pixel_t extra) const
@@ -1558,12 +1633,11 @@ litehtml::pixel_t litehtml::line_box::ruby_end_overlap(const line_box_item* item
     const pixel_t width = item->width();
     if(m_left + m_width - ruby_overlap(item) + width + extra <= m_right)
         return -1_px;
-    const line_box_item* prev = last_content_item();
-    ruby_sides           other;
-    if(!prev || ruby_of(prev, other) || !cjk::ruby_may_overhang(edge_of(prev, true)))
+    const pixel_t room = overhang_room(last_content_item(), true, r.em);
+    if(room < 0_px)
         return -1_px;
     const pixel_t excess = r.single->base_start + (r.single->pos().width - r.single->base_end);
-    const pixel_t overlap = std::max(0_px, std::min(excess, r.em));
+    const pixel_t overlap = std::max(0_px, std::min(excess, room));
     return m_left + m_width - overlap + width + extra <= m_right ? overlap : -1_px;
 }
 

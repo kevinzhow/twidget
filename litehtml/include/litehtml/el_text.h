@@ -125,6 +125,9 @@ namespace litehtml
         /// character, with its share of its advance (an em, upright in vertical text).
         std::vector<char_trim> compression(const std::string& shown, char32_t before, char32_t after, uint8_t first,
                                            uint8_t last) const;
+        /// The advance of `shown`'s character at bytes [from, to) for compression, line adjustment and ruby overhang:
+        /// an em upright in vertical text, else as measured.
+        pixel_t char_advance(const std::string& shown, size_t from, size_t to) const;
         /// Line adjustment of `shown` compressed by `trims` (cjk::squeezable), its first and last characters at `first`
         /// and `last`: each character that may give up more, as compression measures it.
         std::vector<char_squeeze> squeezable(const std::string& shown, const std::vector<char_trim>& trims, uint8_t first,
@@ -151,11 +154,6 @@ namespace litehtml
 
       protected:
         void get_content_size(size& sz, pixel_t max_width) override;
-
-      private:
-        /// The advance of `shown`'s character at bytes [from, to) for compression and line adjustment: an em upright in
-        /// vertical text, else as measured.
-        pixel_t char_advance(const std::string& shown, size_t from, size_t to) const;
     };
 } // namespace litehtml
 
