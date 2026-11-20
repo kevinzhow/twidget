@@ -48,7 +48,7 @@ std::vector<std::pair<char32_t, size_t>> code_points(const std::string& s) {  //
 
 struct Drawn {
     std::string text;
-    float x, y, width;
+    float x, y, width, box_width;
     bool ruby;
     int decoration = 0;
 };
@@ -113,9 +113,10 @@ struct Stub : document_container {
             drawn.back().decoration == fi.decoration) {
             drawn.back().text += text;
             drawn.back().width += width;
+            drawn.back().box_width += float(pos.width) > 0 ? float(pos.width) : width;
             return;
         }
-        drawn.push_back({text, float(pos.x), float(pos.y), width, ruby, fi.decoration});
+        drawn.push_back({text, float(pos.x), float(pos.y), width, float(pos.width) > 0 ? float(pos.width) : width, ruby, fi.decoration});
     }
     pixel_t pt_to_px(float pt) const override { return pt * 96 / 72; }
     pixel_t get_default_font_size() const override { return 16; }
@@ -439,7 +440,7 @@ void run(bool vertical) {
                 } else {
                     if (d.decoration != 0) {
                         base_decorated = true;
-                        if (!vertical) segs.push_back({d.x, d.x + d.width});
+                        if (!vertical) segs.push_back({d.x, d.x + d.box_width});
                     }
                 }
             }
@@ -472,6 +473,53 @@ void run(bool vertical) {
                    "underline continuous across kanji-bounded <ruby>旬</ruby>");
         check_deco("<span style=\"text-decoration:line-through\">前<ruby>漢字<rt>かんじ</rt></ruby>後</span>", 64.0f,
                    "line-through continuous across <ruby>");
+        // Wave 4 Fix 3 (3.3.10): horizontal and vertical underline continuous across 和欧間 (ABC) and dividing punctuation (？！),
+        // without over-drawing past line end.
+        // In Stub (16px/char, 4px 和欧間 each side): 前(16)+4 + A(16)B(16)C(16)+4 + 後(16) = 88px.
+        check_deco("<span style=\"text-decoration:underline\">前ABC後</span>", 88.0f,
+                   "underline continuous across 和欧間 (ABC)");
+        // 本(16)当(16)？(16+16)次(16)へ(16)！(16+16)終(16) = 144px.
+        check_deco("<span style=\"text-decoration:underline\">本当？次へ！終</span>", 144.0f,
+                   "underline continuous across dividing punctuation (？！)");
+        // Ending with ？ at paragraph/line end: must NOT over-draw past end (本16+当16+？16 = 48px).
+        {
+            Stub c;
+            if (vertical) c.h = 400;
+            auto doc = document::createFromString(
+                std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                    "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0\">"
+                    "<span style=\"text-decoration:underline\">本当？</span></p></body></html>",
+                &c, master_css);
+            doc->render(400);
+            doc->draw(0, 0, 0, nullptr);
+            float max_end = 0;
+            for (const auto& d : c.drawn)
+                if (!d.ruby && !vertical && d.decoration != 0) max_end = std::max(max_end, d.x + d.box_width);
+            for (const auto& f : c.fills)
+                if (f.width > 0 && f.height > 0 && f.height <= 4.0f) max_end = std::max(max_end, f.x + f.width);
+            check(std::abs(max_end - 48.0f) < 0.5f,
+                  mode + "3.3.10: underline after line-end ？ does not over-draw (end=" + num(max_end) + ")");
+        }
+    }
+    // Wave 4 Micro-fix 5a (3.3.8 Rule 2 Note): adjacent rubies sharing a single kana leave >= 1 ruby-em (8px) separation.
+    {
+        // の is 16px wide (2 ruby-em). Ruby 1 overhangs の by 8px (1 ruby-em), so Ruby 2 overhangs 0px -> 8px gap.
+        const std::string shi = r("志", "こころざし");
+        Stub c;
+        if (vertical) c.h = 400;
+        auto doc = document::createFromString(
+            std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0\">あの" + shi + "の" + shi +
+                "を</p></body></html>",
+            &c, master_css);
+        doc->render(400);
+        doc->draw(0, 0, 0, nullptr);
+        std::vector<std::pair<float, float>> rts;
+        for (const auto& d : c.drawn)
+            if (d.ruby) rts.push_back({d.x, d.x + d.width});
+        check(rts.size() == 2 && rts[1].first - rts[0].second >= 7.9f,
+              mode + "3.3.8 Rule 2 Note: shared kana leaves >= 1 ruby-em gap between adjacent rubies (gap=" +
+                  (rts.size() == 2 ? num(rts[1].first - rts[0].second) : "n/a") + ")");
     }
     {
         const std::string got = lay_out(vertical, 400, "あ" + r("東京都庁", "かな") + "い", ruby_overhang::punctuation,
@@ -560,6 +608,68 @@ void run(bool vertical) {
             }
             check(rt_y >= l1_y + 15.5f && l2_y >= rt_y + 7.5f,
                   mode + "3.3.4: tight line-height pushes line 2 past line 1 under-ruby (l1=" + num(l1_y) + " rt=" + num(rt_y) + " l2=" + num(l2_y) + ")");
+        }
+        // Wave 4 Fix 1 (3.3.4 / Fix 3): cross-paragraph ruby clearance across separate sibling <p style="margin:0">
+        // blocks at lh=1.0 (16px), lh=1.2 (19.2px), and control lh=1.75 (28px, NO pitch inflation), for both
+        // ruby-position: over/right and under/left (plus nested <div><p>).
+        for (const auto& [lh_str, lh_px, expect_shift] : std::vector<std::tuple<std::string, float, bool>>{
+                 {"16px", 16.0f, true},
+                 {"19.2px", 19.2f, true},
+                 {"28px", 28.0f, false},
+             }) {
+            // Over/right ruby on <p> #2 clearing <p> #1 body
+            {
+                const Stub c = render_pos("",
+                    "<p>あいう</p><p>か<ruby>東<rt>とう</rt>京<rt>きょう</rt></ruby>き</p><p>さしす</p>",
+                    lh_str.c_str());
+                float p1_y = -1, p2_y = -1, p3_y = -1, rt_y = 1e9f;
+                for (const auto& d : c.drawn) {
+                    if (d.ruby) rt_y = std::min(rt_y, d.y);
+                    else if (d.text.find("あ") != std::string::npos && p1_y < 0) p1_y = d.y;
+                    else if (d.text.find("か") != std::string::npos && p2_y < 0) p2_y = d.y;
+                    else if (d.text.find("さ") != std::string::npos && p3_y < 0) p3_y = d.y;
+                }
+                const bool clears = rt_y >= p1_y + 15.9f;
+                const bool pitch_ok = expect_shift
+                    ? (p2_y - p1_y > lh_px + 0.5f && std::abs((p3_y - p2_y) - lh_px) < 0.5f)
+                    : (std::abs((p2_y - p1_y) - lh_px) < 0.5f && std::abs((p3_y - p2_y) - lh_px) < 0.5f);
+                check(clears && pitch_ok,
+                      mode + "3.3.4 cross-p over (lh=" + lh_str + "): p1=" + num(p1_y) + " rt=" + num(rt_y) +
+                          " p2=" + num(p2_y) + " p3=" + num(p3_y));
+            }
+            // Under/left ruby on <p> #1 clearing <p> #2 body
+            {
+                const Stub c = render_pos("ruby{ruby-position:under}",
+                    "<p>か<ruby>漢<rt>かん</rt></ruby>き</p><p>さしす</p>",
+                    lh_str.c_str());
+                float p1_y = -1, p2_y = -1, rt_y = -1;
+                for (const auto& d : c.drawn) {
+                    if (d.ruby) rt_y = std::max(rt_y, d.y);
+                    else if (d.text.find("か") != std::string::npos && p1_y < 0) p1_y = d.y;
+                    else if (d.text.find("さ") != std::string::npos && p2_y < 0) p2_y = d.y;
+                }
+                const bool clears = rt_y >= p1_y + 15.5f && p2_y >= rt_y + 7.9f;
+                const bool pitch_ok = expect_shift
+                    ? (p2_y - p1_y > lh_px + 0.5f)
+                    : (std::abs((p2_y - p1_y) - lh_px) < 0.5f);
+                check(clears && pitch_ok,
+                      mode + "3.3.4 cross-p under (lh=" + lh_str + "): p1=" + num(p1_y) + " rt=" + num(rt_y) +
+                          " p2=" + num(p2_y));
+            }
+        }
+        // Nested <div><p> wrapper clearance at tight lh=16px
+        {
+            const Stub c = render_pos("",
+                "<div><p>あいう</p></div><div><p>か<ruby>漢<rt>かん</rt></ruby>き</p></div>",
+                "16px");
+            float p1_y = -1, p2_y = -1, rt_y = 1e9f;
+            for (const auto& d : c.drawn) {
+                if (d.ruby) rt_y = std::min(rt_y, d.y);
+                else if (d.text.find("あ") != std::string::npos && p1_y < 0) p1_y = d.y;
+                else if (d.text.find("か") != std::string::npos && p2_y < 0) p2_y = d.y;
+            }
+            check(rt_y >= p1_y + 15.9f && p2_y >= p1_y + 23.9f,
+                  mode + "3.3.4 nested <div><p> over (lh=16px): p1=" + num(p1_y) + " rt=" + num(rt_y) + " p2=" + num(p2_y));
         }
     }
 }

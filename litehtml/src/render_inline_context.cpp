@@ -796,15 +796,12 @@ void litehtml::render_item_inline_context::space_around(pixel_t width, pixel_t m
     }
 }
 
-void litehtml::render_item_inline_context::make_room_for_ruby()
+namespace
 {
-    // As Chromium 156: a line whose over-ruby reaches into the line above, or whose predecessor's under-ruby reaches
-    // into this line (JLReq 3.3.4), moves down until their em boxes clear each other.
-    if(m_line_boxes.size() < 2)
-        return;
-    const auto& fm    = css().get_font_metrics();
-    pixel_t     shift = 0_px;
-    auto ruby_bounds = [](const line_box& lb, bool& has_over, pixel_t& over_top, bool& has_under, pixel_t& under_bot) {
+    void line_ruby_bounds(const litehtml::line_box& lb, bool& has_over, litehtml::pixel_t& over_top, bool& has_under,
+                          litehtml::pixel_t& under_bot)
+    {
+        using namespace litehtml;
         has_over = has_under = false;
         over_top = under_bot = 0_px;
         for(const auto& item : lb.items())
@@ -816,13 +813,18 @@ void litehtml::render_item_inline_context::make_room_for_ruby()
             if(!pair && el->src_el()->tag() != _ruby_)
                 continue;
             auto note = [&](const render_item_ruby_pair& p, pixel_t py, pixel_t ph) {
-                if(p.annotation_overflow > 0_px)
+                if(!p.has_annotation)
+                    return;
+                const bool visible = p.ann_end > p.ann_start ||
+                                     (p.annotation_under ? p.annotation_under_overflow > 0_px : p.annotation_overflow > 0_px);
+                if(!visible)
+                    return;
+                if(!p.annotation_under)
                 {
                     const pixel_t top = py - p.annotation_overflow;
                     over_top          = has_over ? std::min(over_top, top) : top;
                     has_over          = true;
-                }
-                if(p.annotation_under_overflow > 0_px)
+                } else
                 {
                     const pixel_t bot = py + ph + p.annotation_under_overflow;
                     under_bot         = has_under ? std::max(under_bot, bot) : bot;
@@ -838,7 +840,41 @@ void litehtml::render_item_inline_context::make_room_for_ruby()
                 if(auto cp = std::dynamic_pointer_cast<render_item_ruby_pair>(child))
                     note(*cp, el->pos().y + cp->pos().y, cp->pos().height);
         }
-    };
+    }
+} // namespace
+
+litehtml::render_item_inline_context::ruby_line_edge litehtml::render_item_inline_context::first_ruby_edge() const
+{
+    if(m_line_boxes.empty())
+        return {};
+    const auto& lb = *m_line_boxes.front();
+    const auto& fm = css().get_font_metrics();
+    bool        has_over = false, has_under = false;
+    pixel_t     over_top = 0_px, under_bot = 0_px;
+    line_ruby_bounds(lb, has_over, over_top, has_under, under_bot);
+    return {true, has_over, lb.bottom() - lb.baseline() - fm.em_top(), over_top};
+}
+
+litehtml::render_item_inline_context::ruby_line_edge litehtml::render_item_inline_context::last_ruby_edge() const
+{
+    if(m_line_boxes.empty())
+        return {};
+    const auto& lb = *m_line_boxes.back();
+    const auto& fm = css().get_font_metrics();
+    bool        has_over = false, has_under = false;
+    pixel_t     over_top = 0_px, under_bot = 0_px;
+    line_ruby_bounds(lb, has_over, over_top, has_under, under_bot);
+    return {true, has_under, lb.bottom() - lb.baseline() + fm.em_bottom(), under_bot};
+}
+
+void litehtml::render_item_inline_context::make_room_for_ruby()
+{
+    // As Chromium 156: a line whose over-ruby reaches into the line above, or whose predecessor's under-ruby reaches
+    // into this line (JLReq 3.3.4), moves down until their em boxes clear each other.
+    if(m_line_boxes.size() < 2)
+        return;
+    const auto& fm    = css().get_font_metrics();
+    pixel_t     shift = 0_px;
     for(size_t i = 1; i < m_line_boxes.size(); i++)
     {
         auto& line = m_line_boxes[i];
@@ -847,8 +883,8 @@ void litehtml::render_item_inline_context::make_room_for_ruby()
         const auto& prev = m_line_boxes[i - 1];
         bool        prev_over = false, prev_under = false, cur_over = false, cur_under = false;
         pixel_t     prev_ot = 0_px, prev_ub = 0_px, cur_ot = 0_px, cur_ub = 0_px;
-        ruby_bounds(*prev, prev_over, prev_ot, prev_under, prev_ub);
-        ruby_bounds(*line, cur_over, cur_ot, cur_under, cur_ub);
+        line_ruby_bounds(*prev, prev_over, prev_ot, prev_under, prev_ub);
+        line_ruby_bounds(*line, cur_over, cur_ot, cur_under, cur_ub);
         if(!cur_over && !prev_under)
             continue;
         const pixel_t prev_em_bottom = prev->bottom() - prev->baseline() + fm.em_bottom();

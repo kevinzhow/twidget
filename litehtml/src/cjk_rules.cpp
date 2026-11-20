@@ -75,6 +75,8 @@ namespace litehtml::cjk
 
         bool ascii_digit(char32_t c) { return c >= '0' && c <= '9'; }
 
+        bool ascii_letter(char32_t c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+
         // stone's tokens are Intl.Segmenter("ja") words (parser.ts splitWords): around a number, UAX #29's word
         // boundaries. A number joins the letters and digits next to it (WB9-WB10: ALetter, Numeric; ExtendNumLet _),
         // of the scripts a Japanese book mixes in: Latin, Greek, Cyrillic, Roman numerals, full-width letters and digits.
@@ -153,6 +155,33 @@ namespace litehtml::cjk
         {
             return c > ' ' && !is_space(c) && script_of(c) == script::latin;
         }
+
+        // JLReq 3.2.3 ①: single Latin letter is upright unless adjacent to Western text.
+        bool joins_latin(const std::string& text, size_t i, bool forward)
+        {
+            auto step = [&](size_t& pos) -> char32_t {
+                if(forward)
+                {
+                    if(pos >= text.size())
+                        return 0;
+                    size_t   n = 0;
+                    char32_t c = decode(text, pos, n);
+                    pos += n;
+                    return c;
+                }
+                if(pos == 0)
+                    return 0;
+                size_t   at = 0;
+                char32_t c  = decode_before(text, pos, at);
+                pos         = at;
+                return c;
+            };
+            size_t   pos = i;
+            char32_t c   = step(pos);
+            while(is_space(c) && c != 0x3000)
+                c = step(pos);
+            return c != 0 && (word_char(c) || latin_next_to(c) || c == 0x2018 || c == 0x2019);
+        }
     } // namespace
 
     classes classify(char32_t c)
@@ -230,6 +259,12 @@ namespace litehtml::cjk
                 n = end - i;
                 continue;
             }
+            if(ascii_letter(c))
+            {
+                if(!joins_latin(text, i, false) && !joins_latin(text, i + n, true))
+                    out.push_back({i, i + n});
+                continue;
+            }
             for(const char* token : tate_chu_yoko_tokens)
             {
                 if(!token)
@@ -265,10 +300,11 @@ namespace litehtml::cjk
 
     namespace
     {
-        // JLReq 3.1.11 ②: cl-01, cl-02, cl-03 (゠ 〜), cl-04 (！？ and the like), cl-05, cl-06, cl-07 and U+3000; the
-        // Japanese ones only (script_of), so that Latin text (its brackets, ! ? ‐ –) justifies as it did.
+        // JLReq 3.1.11 ②: Japanese cl-01..07, U+3000, and cl-03 hyphens (U+2010, U+2013); exclude other Latin so Latin justifies normally.
         bool avoids_widening(char32_t c)
         {
+            if(c == 0x2010 || c == 0x2013)
+                return true;
             if(script_of(c) != script::japanese)
                 return false;
             if(classify(c) & (opening | closing | middle_dot | full_stop_comma))

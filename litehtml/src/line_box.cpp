@@ -214,6 +214,13 @@ namespace
         return false;
     }
 
+    bool is_transparent_inline_marker(const litehtml::line_box_item& item)
+    {
+        using namespace litehtml;
+        return is_one_of(item.get_type(), line_box_item::type_inline_start, line_box_item::type_inline_continue) ||
+               (item.get_type() == line_box_item::type_inline_end && item.width() == 0_px);
+    }
+
     bool is_non_space_content(const litehtml::line_box_item* item)
     {
         using namespace litehtml;
@@ -452,7 +459,7 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
         if(part && !part->is_fragment && first_text_part(m_items.end()))
         {
             const bool first = std::all_of(m_items.begin(), m_items.end(), [](const std::unique_ptr<line_box_item>& i) {
-                return i->get_type() == line_box_item::type_inline_start;
+                return is_transparent_inline_marker(*i);
             });
             part->compress(first ? start_position() : cjk::line_start, cjk::line_middle);
             if(first && m_paragraph_start && m_bracket_space != 0_px && starts_with_opening(part))
@@ -1717,7 +1724,7 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next, bo
         auto part = squeezable_text(item.get());
         if(!part)
         {
-            first = first && item->get_type() == line_box_item::type_inline_start;
+            first = first && is_transparent_inline_marker(*item);
             continue;
         }
         auto qs = squeeze_of(*part, first ? cjk::line_start : cjk::line_middle, cjk::line_middle);
@@ -1847,7 +1854,7 @@ litehtml::pixel_t litehtml::line_box::squeeze(pixel_t over, bool wraps)
         auto part = squeezable_text(item.get());
         if(!part)
         {
-            first = first && item->get_type() == line_box_item::type_inline_start;
+            first = first && is_transparent_inline_marker(*item);
             continue;
         }
         for(const auto& q : squeeze_of(*part, first ? start_position() : cjk::line_middle,
@@ -2104,38 +2111,44 @@ litehtml::pixel_t litehtml::line_box::overhang_room(const line_box_item* item, b
     ruby_sides other;
     if(!item || ruby_of(item, other))
         return -1_px;
-    const char32_t c = edge_of(item, before_ruby);
+    const char32_t c    = edge_of(item, before_ruby);
+    pixel_t        room = -1_px;
     if(cjk::ruby_may_overhang(c))
-        return ruby_em;
-    if(item->get_el()->src_el()->get_document()->get_ruby_overhang() != ruby_overhang::punctuation)
-        return -1_px;
-    const cjk::classes is = cjk::classify(c);
-    if(!(is & (cjk::opening | cjk::closing | cjk::full_stop_comma | cjk::middle_dot | cjk::inseparable)))
-        return -1_px;
-    auto part = squeezable_text(item);
-    auto text = part ? std::dynamic_pointer_cast<el_text>(part->src_el()) : nullptr;
-    if(!text)
-        return -1_px;
-    // The mark's advance and what compression trims of it.
-    const std::string& shown = text->display_text();
-    size_t             at    = 0, n = 0;
-    if(before_ruby)
-        for(at = shown.size() - 1; at > 0 && (static_cast<unsigned char>(shown[at]) & 0xC0) == 0x80; at--)
-            ;
-    decode_at(shown, at, n);
-    const pixel_t advance = text->char_advance(shown, at, at + n);
-    pixel_t       start = 0_px, end = 0_px;
-    for(const auto& t : part->trims)
-        if(t.at == at)
-            start = t.start, end = t.end;
-    if(is & cjk::middle_dot)  // rule 5: its quarter on that side and half a ruby character
-        return std::min(ruby_em, std::max(0_px, advance / 4_px - (before_ruby ? end : start)) + ruby_em / 2_px);
-    if(is & cjk::inseparable)  // rule 4
-        return std::min(ruby_em, advance);
-    const bool space_side = before_ruby ? !(is & cjk::opening) : bool(is & cjk::opening);
-    if(space_side)  // rule 3: the half em after 」、。 before the ruby, before 「 after it
-        return std::min(ruby_em, std::max(0_px, advance / 2_px - (before_ruby ? end : start)));
-    return std::min(ruby_em, advance / 2_px);  // rule 6: onto 「 before it, 」、。 after it, not past the mark
+    {
+        room = ruby_em;
+    } else if(item->get_el()->src_el()->get_document()->get_ruby_overhang() == ruby_overhang::punctuation)
+    {
+        const cjk::classes is = cjk::classify(c);
+        auto part = squeezable_text(item);
+        auto text = part ? std::dynamic_pointer_cast<el_text>(part->src_el()) : nullptr;
+        if(text && (is & (cjk::opening | cjk::closing | cjk::full_stop_comma | cjk::middle_dot | cjk::inseparable)))
+        {
+            const std::string& shown = text->display_text();
+            size_t             at    = 0, n = 0;
+            if(before_ruby)
+                for(at = shown.size() - 1; at > 0 && (static_cast<unsigned char>(shown[at]) & 0xC0) == 0x80; at--)
+                    ;
+            decode_at(shown, at, n);
+            const pixel_t advance = text->char_advance(shown, at, at + n);
+            pixel_t       start = 0_px, end = 0_px;
+            for(const auto& t : part->trims)
+                if(t.at == at)
+                    start = t.start, end = t.end;
+            if(is & cjk::middle_dot)
+                room = std::min(ruby_em, std::max(0_px, advance / 4_px - (before_ruby ? end : start)) + ruby_em / 2_px);
+            else if(is & cjk::inseparable)
+                room = std::min(ruby_em, advance);
+            else if(before_ruby ? !(is & cjk::opening) : bool(is & cjk::opening))
+                room = std::min(ruby_em, std::max(0_px, advance / 2_px - (before_ruby ? end : start)));
+            else
+                room = std::min(ruby_em, advance / 2_px);
+        }
+    }
+    // JLReq 3.3.8 Rule 2 Note: leave at least one ruby-em between adjacent rubies sharing a base character.
+    if(before_ruby && room > 0_px)
+        if(auto part = squeezable_text(item); part && part->ruby_over_start > 0_px)
+            room = std::min(room, std::max(0_px, item->width() - part->ruby_over_start - ruby_em));
+    return room;
 }
 
 litehtml::pixel_t litehtml::line_box::ruby_end_overlap(const line_box_item* item, pixel_t extra) const

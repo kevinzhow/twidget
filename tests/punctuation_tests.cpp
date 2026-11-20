@@ -351,6 +351,21 @@ void run(bool vertical, bool half_forms) {
                         ? "　@0 あ@16 い@32 う@48 | 「@16 か@24 き@40 」@56 く@72 | 「@16 さ@24 し@40 」@56 す@72"
                         : "　@0 あ@16 い@32 う@48 | 「@8 か@16 き@32 」@48 く@64 | 「@8 さ@16 し@32 」@48 す@64",
                     sname + "<br/> followed by <span> does not justify line before <br/>", scheme);
+        // Wave 4 Fix 2 (3.1.5 ①/③): inline <span> wrapping across <br/> keeps paragraph-start bracket indent,
+        // while wrapped lines inside the same <span> still stay 天ツキ.
+        expect_body(200, "<p style=\"margin:0\"><span>　本文。<br/>「会話」</span></p>",
+                    scheme == paragraph_brackets::full_em
+                        ? "　@0 本@16 文@32 。@48 | 「@16 会@24 話@40 」@56"
+                        : "　@0 本@16 文@32 。@48 | 「@8 会@16 話@32 」@48",
+                    sname + "<span> wrapping across <br/> preserves paragraph-start bracket indent", scheme);
+        expect_body(200, "<p style=\"margin:0\"><span>　本文。<br/></span>「会話」</p>",
+                    scheme == paragraph_brackets::full_em
+                        ? "　@0 本@16 文@32 。@48 | 「@16 会@24 話@40 」@56"
+                        : "　@0 本@16 文@32 。@48 | 「@8 会@16 話@32 」@48",
+                    sname + "<span> closing right after <br/> preserves paragraph-start bracket indent", scheme);
+        expect_body(64, "<p style=\"margin:0\"><span>　あいう「かき」</span></p>",
+                    "　@0 あ@16 い@32 う@48 | 「*@0 か@8 き@24 」@40",
+                    sname + "wrapped line inside <span> stays 天ツキ", scheme);
     }
     expect(160, "あいう。<br/><span>か</span>", "あ@0 い@16 う@32 。@48 | か@0",
            "3.1.9: 。 before <br/><span> stays full width and line is not justified");
@@ -446,34 +461,47 @@ void run(bool vertical, bool half_forms) {
                   line_texts(ev.c.glyphs));
     }
     // Expanding: where Japanese meets Latin (on its quarter em, 3.2.6 ④) before the gaps between kana (3.8.4 b, c), and
-    // Latin word spaces first (a).
-    expect(96, "かきAくけこ", "か@0 き@16 A@40 く@64 け@80 | こ@0", "3.8.4: Japanese–Latin gaps before kana ones");
+    // Latin word spaces first (a). In vertical-rl, single isolated Latin letters stand upright as 1em Japanese-like
+    // units (JLReq 3.2.3 ① / 3.2.4, no quarter em), so vertical tests use multi-letter Western words (AB).
+    if (!vertical) {
+        expect(96, "かきAくけこ", "か@0 き@16 A@40 く@64 け@80 | こ@0", "3.8.4: Japanese–Latin gaps before kana ones");
+    } else {
+        expect(112, "かきABくけこ", "か@0 き@16 A@40 B@56 く@80 け@96 | こ@0", "3.8.4: Japanese–Latin gaps before kana ones");
+    }
     expect(128, "かきA Bくけこ", "か@0 き@16 A@38 B@74 く@96 け@112 | こ@0", "3.8.4: word spaces first");
 
     // JLReq 3.2.6 ④ (document::set_latin_spacing, quarter by default): a quarter em between kana or kanji and Latin
     // letters or digits, none at a line's end nor next to brackets and punctuation; line adjustment squeezes it to an
-    // eighth em, last (3.8.3), and widens it after word spaces (3.8.4 b). A tate-chu-yoko number is set as a Japanese
-    // character: none next to it.
-    expect(400, "かきAくけ", "か@0 き@16 A@36 く@56 け@72", "3.2.6 ④: a quarter em each side of a Latin letter");
+    // eighth em, last (3.8.3), and widens it after word spaces (3.8.4 b). A tate-chu-yoko number or single vertical
+    // Latin letter (3.2.3 ①) is set as a Japanese character: none next to it.
+    if (!vertical) {
+        expect(400, "かきAくけ", "か@0 き@16 A@36 く@56 け@72", "3.2.6 ④: a quarter em each side of a Latin letter");
+        expect(52, "かきAく", "か@0 き@16 A@36 | く@0", "3.2.6 ④: none at a line's end");
+        expect(84, "かきAくけ", "か@0 き@16 A@34 く@52 け@68", "3.8.3: squeezed to an eighth em to fit");
+    } else {
+        expect(400, "かきAくけ", "か@0 き@16 A@32 く@48 け@64", "3.2.3 ① / 3.2.4: isolated vertical Latin letter sets solid (no quarter em)");
+        expect(400, "かきABくけ", "か@0 き@16 A@36 B@52 く@72 け@88", "3.2.6 ④: a quarter em each side of a Western word");
+        expect(68, "かきABく", "か@0 き@16 A@36 B@52 | く@0", "3.2.6 ④: none at a line's end");
+        expect(100, "かきABくけ", "か@0 き@16 A@34 B@50 く@68 け@84", "3.8.3: squeezed to an eighth em to fit");
+    }
     {
         Laid none;
         lay_out(none, vertical, half_forms, 400, "かきAくけ", "justify", line_adjustment::jlreq, latin_spacing::none);
         check(drawn(none.c.glyphs, half_forms) == "か@0 き@16 A@32 く@48 け@64",
               mode + "latin_spacing::none: as before: " + drawn(none.c.glyphs, half_forms));
     }
-    expect(52, "かきAく", "か@0 き@16 A@36 | く@0", "3.2.6 ④: none at a line's end");
-    expect(84, "かきAくけ", "か@0 き@16 A@34 く@52 け@68", "3.8.3: squeezed to an eighth em to fit");
     expect(400, "か「A」き", "か@0 「@24 A@32 」@48 き@64", "3.2.6 ④: none next to brackets");
     if (!vertical) expect(400, "第12回", "第@0 1@20 2@36 回@56", "3.2.6 ④: a number's quarter ems");
-    // A table measures its columns with the quarter em: the cell 注A is not squeezed back into a column measured
-    // without it (jlreq-in-japanese's footnote tables, 注1）; a letter here, as a lone digit is tate-chu-yoko in
-    // vertical text).
+    // A table measures its columns with the quarter em: the cell 注A (注AB in vertical, where lone A is upright 3.2.3 ①)
+    // is not squeezed back into a column measured without it.
     {
         Laid l;
+        const std::string cell = vertical ? "注AB" : "注A";
+        const std::string want = vertical ? "注@0 A@20 B@36 あ@52" : "注@0 A@20 あ@36";
         lay_out_body(l, vertical, half_forms, 400,
-                     "<table style=\"border-spacing:0\"><tr><td style=\"padding:0;white-space:nowrap\">注A</td>"
-                     "<td style=\"padding:0\">あ</td></tr></table>");
-        check(drawn(l.c.glyphs, half_forms) == "注@0 A@20 あ@36",
+                     "<table style=\"border-spacing:0\"><tr><td style=\"padding:0;white-space:nowrap\">" + cell +
+                         "</td><td style=\"padding:0\">あ</td></tr></table>");
+        check(drawn(l.c.glyphs, half_forms) == want,
               mode + "3.2.6 ④: a table's column measured with the quarter em: " + drawn(l.c.glyphs, half_forms));
     }
 
@@ -537,6 +565,31 @@ void run(bool vertical, bool half_forms) {
     expect(400, "あ\u2010い", "あ@0 \u2010@11 い@22", "3.1.6 (hyphens): ‐ (U+2010) trimmed to 0.375em (6px centered in 16px)");
     expect2(400, "あ\u30A0い", "あ@0 \u30A0*@16 い@24", "あ@0 \u30A0@12 い@24",
             "3.1.6 (hyphens): ゠ (U+30A0) trimmed to 0.50em (8px centered in 16px)");
+    // Wave 4 Micro-fix 5c (3.1.11 ②): ‐ (U+2010) and – (U+2013) avoid justification widening.
+    // あ(16)+い(16)+‐(6)+う(16)+え(16) = 70px in 74px line -> +4px across あ|い and う|え (+2px each), 0px next to ‐.
+    expect(74, "あい\u2010うえおか", "あ@0 い@18 \u2010@29 う@40 え@58 | お@0 か@16",
+           "3.1.11 ②: no justification widening next to U+2010 ‐");
+    // あ(16)+い(16)+–(16)+う(16)+え(16) = 80px in 84px line -> +4px across あ|い and う|え (+2px each), 0px next to –.
+    expect(84, "あい\u2013うえおか", "あ@0 い@18 \u2013@34 う@50 え@68 | お@0 か@16",
+           "3.1.11 ②: no justification widening next to U+2013 –");
+    // Wave 4 Micro-fix 5b (3.3.9 注): 〻 (U+303B, cl-09 iteration mark) receives emphasis dots like 々 and ー.
+    {
+        Laid l;
+        l.c.half_forms = half_forms;
+        if (vertical) l.c.h = 400;
+        l.doc = document::createFromString(
+            std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0\">"
+                "<span style=\"text-emphasis-style:filled dot\">人々、一\u303B、カー。</span></p></body></html>",
+            &l.c);
+        l.doc->render(400);
+        l.doc->draw(0, 0, 0, nullptr);
+        int dots = 0;
+        for (const auto& g : l.c.glyphs)
+            if (g.c == "\xE2\x80\xA2") dots++;
+        check(dots == 6, mode + "3.3.9 (注): 人々・一〻・カー all receive emphasis dots, punctuation skipped (dots=" +
+                             std::to_string(dots) + ")");
+    }
     // JLReq 3.1.6 ① (document::set_dividing_space, full_em by default): a full-width space after ？！ ending a sentence
     // when the book has none; 0.5em before full-width opening bracket (total 1.0em visual gap with 「's lead half-em);
     // full-width before Latin/digits and normal sentence-starting kana (no single-kana particle blacklist); none before

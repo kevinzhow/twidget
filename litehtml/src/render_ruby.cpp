@@ -339,7 +339,7 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
         rt->y_shift(base_em_bottom - rt->top());
         m_pos.height              = base->bottom();
         annotation_overflow       = 0_px;
-        annotation_under_overflow = std::max(0_px, (rt->top() + rt->get_first_baseline() + rt_fm.em_bottom()) - m_pos.height);
+        annotation_under_overflow = (rt->top() + rt->get_first_baseline() + rt_fm.em_bottom()) - m_pos.height;
     } else
     {
         const pixel_t base_em_top = base->top() + base->get_first_baseline() - base_fm.em_top();

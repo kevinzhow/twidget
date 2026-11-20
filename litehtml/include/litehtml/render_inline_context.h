@@ -85,6 +85,16 @@ namespace litehtml
         void    apply_vertical_align() override;
 
       public:
+        /// Vertical ruby/em-box bounds of a line box (first or last) in this inline context's content coordinates.
+        struct ruby_line_edge
+        {
+            bool    has_line  = false;
+            bool    has_ruby  = false;
+            pixel_t em_edge   = 0_px;
+            pixel_t ruby_edge = 0_px;
+        };
+        ruby_line_edge first_ruby_edge() const;
+        ruby_line_edge last_ruby_edge() const;
         /// The line boxes, in the content box's coordinates (a reader's page breaker cuts between them).
         const std::vector<std::unique_ptr<litehtml::line_box>>& line_boxes() const { return m_line_boxes; }
         /// ruby-align: space-around for a box of one line (render_item_ruby_pair): its items spread over `width`,
