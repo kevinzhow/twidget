@@ -383,46 +383,92 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
                 return i->get_type() == line_box_item::type_inline_start;
             });
             part->compress(first ? start_position() : cjk::line_start, cjk::line_middle);
-            if(first && m_paragraph_start && m_bracket_space > 0_px && starts_with_opening(part))
+            if(first && m_paragraph_start && m_bracket_space != 0_px && starts_with_opening(part))
             {
-                m_width         += m_bracket_space;
-                m_bracket_space  = 0_px;
+                if(m_bracket_space > 0_px)
+                    m_width += m_bracket_space;
+                else
+                {
+                    m_left += m_bracket_space;
+                    for(auto& prev : m_items)
+                        prev->pos().x += m_bracket_space;
+                }
+                m_bracket_space = 0_px;
             }
         }
     }
     if(add)
     {
-        // Ruby overhang (JLReq 3.3.8): a ruby at the line's head starts its base with its annotation (line-edge a);
-        // one after a kana, or a kana after a ruby, overlaps it.
+        // Ruby overhang (JLReq 3.3.5, 3.3.7, 3.3.8): a ruby at the line's head starts its base with its annotation
+        // (line-edge a); mid-line, it overhangs adjacent kana/punctuation/word bases and shifts asymmetrically when
+        // only one side can be overhung.
         ruby_sides r;
         if(ruby_of(item.get(), r) && r.single)
         {
             r.single->align_base(0_px);
+            r.single->align_annotation(0_px);
             r.single->overlap_before = 0_px;
+            r.single->ann_used_start = 0_px;
             if(!last_content_item())
                 r.single->align_base(-r.single->base_start);
+        } else if(auto* wp = word_pair(item.get()))
+        {
+            wp->align_annotation(0_px);
+            wp->ann_used_start = 0_px;
         }
-        pixel_t       overlap = ruby_overlap(item.get());
+        const line_box_item* prev = last_content_item();
+        ruby_plan            plan = plan_ruby(item.get());
         // It fits only ending the line (line-edge b): its base ends with its annotation now.
         if(const pixel_t end = r.single ? ruby_end_overlap(item.get(), 0_px) : -1_px; end >= 0_px)
         {
             r.single->align_base(r.single->pos().width - r.single->base_end);
-            overlap = end;
+            plan         = {};
+            plan.overlap = end;
         }
+        if(prev && plan.prev_shift != 0_px)
+            if(auto* pp = dynamic_cast<render_item_ruby_pair*>(prev->get_el().get()))
+                pp->align_base(pp->base_shift + plan.prev_shift);
+        if(prev && plan.prev_move_left > 0_px)
+        {
+            for(auto it = m_items.rbegin(); it != m_items.rend(); ++it)
+            {
+                (*it)->pos().x -= plan.prev_move_left;
+                if(it->get() == prev)
+                    break;
+            }
+            m_width -= plan.prev_move_left;
+            if(auto* pp = dynamic_cast<render_item_ruby_pair*>(prev->get_el().get()))
+                pp->overlap_before += plan.prev_move_left;
+            if(auto text = squeezable_text(plan.prev_before))
+                text->ruby_over_end += plan.prev_move_left;
+            else if(plan.prev_ann_shift != 0_px && plan.prev_before)
+                if(auto* pb = word_pair(plan.prev_before))
+                    pb->align_annotation(pb->ann_shift + plan.prev_ann_shift);
+        } else if(prev && plan.prev_ann_shift != 0_px)
+        {
+            if(auto* pa = word_pair(prev))
+                pa->align_annotation(pa->ann_shift + plan.prev_ann_shift);
+        }
+        if(plan.item_ann_shift != 0_px)
+            if(auto* pb = word_pair(item.get()))
+                pb->align_annotation(pb->ann_shift + plan.item_ann_shift);
+        if(plan.item_ann_used > 0_px)
+            if(auto* pb = word_pair(item.get()))
+                pb->ann_used_start = plan.item_ann_used;
         if(r.single)
-            r.single->overlap_before = overlap;
+            r.single->overlap_before = plan.overlap;
         // What it overhangs of the text before it, or (a text after a ruby) of its own start: not to be squeezed too.
-        if(overlap > 0_px)
+        if(plan.overlap > 0_px)
         {
             ruby_sides other;
             if(ruby_of(item.get(), other))
             {
-                if(auto text = squeezable_text(last_content_item()))
-                    text->ruby_over_end = overlap;
+                if(auto text = squeezable_text(prev))
+                    text->ruby_over_end = plan.overlap;
             } else if(auto text = squeezable_text(item.get()))
-                text->ruby_over_start = overlap;
+                text->ruby_over_start = plan.overlap;
         }
-        m_width -= overlap;
+        m_width -= plan.overlap;
         item->place_to(m_left + m_width, m_top);
         m_width  += item->width();
         m_height  = std::max(m_height, item->get_el()->height());
@@ -468,7 +514,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
     {
         if(!is_empty())
         {
-            finished_with_break = m_items.back()->get_el()->src_el()->is_break();
+            const auto last_text = get_last_text_part();
+            finished_with_break  = last_text && last_text->src_el()->is_break();
         }
         while(!m_items.empty())
         {
@@ -1468,12 +1515,14 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next) co
     // `next` ends it: the half em compression takes from its last closing bracket or 、。 there, and what squeezable
     // gives of the rest.
     // A ruby `next` is, or `next` after a ruby, overhangs the mark next to it by ruby_overlap: not to squeeze too.
-    ruby_sides    r;
-    const pixel_t overhang      = ruby_overlap(next);
-    const bool    next_is_ruby  = ruby_of(next, r);
-    const auto    last_text     = squeezable_text(last_content_item());
-    pixel_t       room          = 0_px;
-    bool          first         = true;
+    ruby_sides      r;
+    const ruby_plan plan             = plan_ruby(next);
+    const pixel_t   overhang         = plan.overlap;
+    const bool      next_is_ruby     = ruby_of(next, r);
+    const auto      last_text        = squeezable_text(last_content_item());
+    const auto      prev_before_text = plan.prev_move_left > 0_px ? squeezable_text(plan.prev_before) : nullptr;
+    pixel_t         room             = 0_px;
+    bool            first            = true;
     for(const auto& item : m_items)
     {
         auto part = squeezable_text(item.get());
@@ -1485,6 +1534,8 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next) co
         auto qs = squeeze_of(*part, first ? cjk::line_start : cjk::line_middle, cjk::line_middle);
         if(next_is_ruby && part == last_text && !qs.empty())
             qs.back().end = std::max(0_px, qs.back().end - overhang);
+        if(prev_before_text && part == prev_before_text && !qs.empty())
+            qs.back().end = std::max(0_px, qs.back().end - plan.prev_move_left);
         for(const auto& q : qs)
             room += q.start + q.end;
         first = false;
@@ -1617,39 +1668,186 @@ const litehtml::line_box_item* litehtml::line_box::last_content_item() const
     return nullptr;
 }
 
-litehtml::pixel_t litehtml::line_box::ruby_overlap(const line_box_item* item) const
+const litehtml::line_box_item* litehtml::line_box::prev_content_item(const line_box_item* target) const
 {
-    // JLReq 3.3.8: a ruby longer than its base overhangs a kana next to it (rule 2) by up to one ruby character, never
-    // a kanji (rule 1) nor another ruby (rule 2, note), and no more than its annotation sticks out on that side; the
-    // rest of that side stays space before or after the base.
+    bool seen = false;
+    for(auto it = m_items.rbegin(); it != m_items.rend(); ++it)
+    {
+        if(!seen)
+        {
+            if(it->get() == target)
+                seen = true;
+            continue;
+        }
+        const auto type = (*it)->get_type();
+        if(type == line_box_item::type_inline_start || type == line_box_item::type_inline_end ||
+           type == line_box_item::type_inline_continue)
+            continue;
+        if((*it)->get_el()->src_el()->is_white_space() && (*it)->width() <= 0_px)
+            continue;
+        return it->get();
+    }
+    return nullptr;
+}
+
+litehtml::line_box::ruby_plan litehtml::line_box::plan_ruby(const line_box_item* item) const
+{
+    // JLReq 3.3.5 / 3.3.7 / 3.3.8: a ruby longer than its base overhangs adjacent kana/punctuation/word bases up to
+    // the allowed room, never kanji (rule 1) nor another ruby (rule 2 note); when only one side can be overhung, its
+    // base shifts asymmetrically within the pair so no unwanted gap remains on the blocked side.
+    ruby_plan plan;
+    if(!item || item->get_type() != line_box_item::type_text_part || item->get_el()->src_el()->is_break() ||
+       (item->get_el()->src_el()->is_white_space() && item->width() <= 0_px))
+        return plan;
     const line_box_item* prev = last_content_item();
     if(!prev)
-        return 0_px;
-    ruby_sides r;
-    // JLReq 3.3.7 (Appendix F): within a word, a reading longer than its base overhangs the base next to it where that
-    // base's own reading leaves room, by up to one ruby character; two long readings stay apart.
+        return plan;
+    const line_box_item* prev_before = prev_content_item(prev);
+
+    auto word_free_before = [](render_item_ruby_pair* p) -> pixel_t {
+        if(!p->japanese_base)
+            return 0_px;
+        if(p->ann_end <= p->ann_start)
+            return p->pos().width;
+        return std::max(0_px, p->pos().width - (p->ann_end - p->ann_start));
+    };
+    auto word_free_after = [](render_item_ruby_pair* p) -> pixel_t {
+        if(!p->japanese_base)
+            return 0_px;
+        if(p->ann_end <= p->ann_start)
+            return std::max(0_px, p->pos().width - p->ann_used_start);
+        return std::max(0_px, p->pos().width - (p->ann_end - p->ann_start) - p->ann_used_start);
+    };
+
+    // JLReq 3.3.7 (Appendix F): within a jukugo ruby word, a reading longer than its base overhangs the adjacent base
+    // of the same word where its annotation leaves room (shifting that base's shorter annotation within its own box if
+    // needed); an empty/missing <rt> leaves the full base width free. Two long readings stay apart, and a blocked first
+    // pair may shift onto overhangable text before the word.
     if(same_word(prev, item))
     {
         auto *a = word_pair(prev), *b = word_pair(item);
-        if(!a->has_annotation || !b->has_annotation || !a->japanese_base || !b->japanese_base)
-            return 0_px;
-        const pixel_t b_excess = b->base_start, a_free = a->pos().width - a->ann_end;
-        const pixel_t a_excess = a->pos().width - a->base_end - a->base_shift, b_free = b->ann_start;
-        if(b_excess > 0_px && a_free > 0_px)
-            return std::min({b_excess, a_free, b->ruby_em});
-        if(a_excess > 0_px && b_free > 0_px)
-            return std::min({a_excess, b_free, a->ruby_em});
-        return 0_px;
+        if(!a->japanese_base || !b->japanese_base)
+            return plan;
+        const pixel_t a_cur_before = a->base_start + a->base_shift;
+        pixel_t       a_cur_after  = a->pos().width - a->base_end - a->base_shift;
+        const pixel_t a_gap_before = a_cur_before - a->overlap_before;
+        const pixel_t b_excess     = b->base_start;
+        if(a->has_annotation && (a_cur_after > 0_px || a_gap_before > 0_px))
+        {
+            const pixel_t b_room = b_excess > 0_px ? 0_px : word_free_before(b);
+            if(a_gap_before > 0_px && b_room > a_cur_after)
+            {
+                const pixel_t delta = std::min(a_gap_before, b_room - a_cur_after);
+                plan.prev_shift     = -delta;
+                a_cur_after        += delta;
+            }
+            const pixel_t overlap = std::min(a_cur_after, b_room);
+            if(a_cur_after > overlap && prev_before)
+            {
+                const pixel_t room_before = same_word(prev_before, prev)
+                                                ? word_free_after(word_pair(prev_before))
+                                                : std::max(0_px, overhang_room(prev_before, true, a->ruby_em));
+                const pixel_t spare       = room_before - a->overlap_before;
+                if(spare > 0_px)
+                {
+                    const pixel_t delta = std::min(a_cur_after - overlap, spare);
+                    plan.prev_shift    += delta;
+                    plan.prev_move_left = delta;
+                    plan.prev_before    = prev_before;
+                    if(same_word(prev_before, prev))
+                    {
+                        auto*         pb       = word_pair(prev_before);
+                        const pixel_t new_over = a->overlap_before + delta;
+                        const pixel_t pb_trail = pb->pos().width - (pb->ann_end + pb->ann_shift);
+                        if(pb->ann_end > pb->ann_start && new_over > pb_trail)
+                            plan.prev_ann_shift = -(new_over - pb_trail);
+                    }
+                }
+            }
+            if(overlap > 0_px)
+            {
+                plan.overlap       = overlap;
+                plan.item_ann_used = overlap;
+                if(b->ann_end > b->ann_start && overlap > b->ann_start)
+                    plan.item_ann_shift = overlap - b->ann_start;
+            }
+            return plan;
+        }
+        if(b->has_annotation && b_excess > 0_px)
+        {
+            const pixel_t a_room = word_free_after(a);
+            if(a_room > 0_px)
+            {
+                const pixel_t overlap = std::min(b_excess, a_room);
+                plan.overlap          = overlap;
+                const pixel_t a_trail = a->pos().width - (a->ann_end + a->ann_shift);
+                if(a->ann_end > a->ann_start && overlap > a_trail)
+                    plan.prev_ann_shift = -(overlap - a_trail);
+            }
+            return plan;
+        }
+        return plan;
     }
+
+    ruby_sides rp;
+    if(ruby_of(prev, rp) && rp.single)
+    {
+        auto*         R          = rp.single;
+        const pixel_t cur_before = R->base_start + R->base_shift;
+        pixel_t       cur_after  = R->pos().width - R->base_end - R->base_shift;
+        const pixel_t room_after = std::max(0_px, overhang_room(item, false, R->ruby_em));
+        const pixel_t gap_before = cur_before - R->overlap_before;
+        if(gap_before > 0_px && room_after > cur_after)
+        {
+            const pixel_t delta = std::min(gap_before, room_after - cur_after);
+            plan.prev_shift     = -delta;
+            cur_after          += delta;
+        }
+        const pixel_t gap_after = cur_after - room_after;
+        if(gap_after > 0_px && prev_before)
+        {
+            const pixel_t room_before = same_word(prev_before, prev)
+                                            ? word_free_after(word_pair(prev_before))
+                                            : std::max(0_px, overhang_room(prev_before, true, R->ruby_em));
+            const pixel_t spare       = room_before - R->overlap_before;
+            if(spare > 0_px)
+            {
+                const pixel_t delta = std::min(gap_after, spare);
+                plan.prev_shift    += delta;
+                plan.prev_move_left = delta;
+                plan.prev_before    = prev_before;
+                if(same_word(prev_before, prev))
+                {
+                    auto*         pb       = word_pair(prev_before);
+                    const pixel_t new_over = R->overlap_before + delta;
+                    const pixel_t pb_trail = pb->pos().width - (pb->ann_end + pb->ann_shift);
+                    if(pb->ann_end > pb->ann_start && new_over > pb_trail)
+                        plan.prev_ann_shift = -(new_over - pb_trail);
+                }
+                cur_after -= delta;
+            }
+        }
+        plan.overlap = std::min(cur_after, room_after);
+        return plan;
+    }
+
+    ruby_sides r;
     if(ruby_of(item, r))
     {
         // Laid out again before it is placed: its base where it was laid out.
         const pixel_t before = r.single ? r.single->base_start : r.before;
-        return std::max(0_px, std::min(before, overhang_room(prev, true, r.em)));
+        plan.overlap         = std::max(0_px, std::min(before, overhang_room(prev, true, r.em)));
+        return plan;
     }
-    if(ruby_of(prev, r))
-        return std::max(0_px, std::min(r.after, overhang_room(item, false, r.em)));
-    return 0_px;
+    if(ruby_of(prev, rp))
+        plan.overlap = std::max(0_px, std::min(rp.after, overhang_room(item, false, rp.em)));
+    return plan;
+}
+
+litehtml::pixel_t litehtml::line_box::ruby_overlap(const line_box_item* item) const
+{
+    const ruby_plan p = plan_ruby(item);
+    return p.overlap + p.prev_move_left;
 }
 
 litehtml::pixel_t litehtml::line_box::overhang_room(const line_box_item* item, bool before_ruby, pixel_t ruby_em) const

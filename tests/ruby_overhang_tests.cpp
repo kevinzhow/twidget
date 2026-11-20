@@ -217,14 +217,23 @@ void run(bool vertical) {
     // JLReq's figure (3.3.8): しゅん over 旬 is half an em longer than 旬, a quarter em on each side.
     expect(400, "の" + shun + "に", "の@0 ^しゅん@12 旬@16 に@32", "rule 2: の旬に, the ruby overhangs both kana, 旬 set solid");
     expect(400, "後" + shun + "又", "後@0 ^しゅん@16 旬@20 又@40", "rule 1: 後旬又, no overhang onto kanji, 旬 spaced (as before)");
-    expect(400, "の" + shun + "又", "の@0 ^しゅん@12 旬@16 又@36", "の旬又: onto の only, space before 又");
-    expect(400, "後" + shun + "に", "後@0 ^しゅん@16 旬@20 に@36", "後旬に: onto に only, space after 後");
+    expect(400, "の" + shun + "又", "の@0 ^しゅん@8 旬@16 又@32", "の旬又: asymmetric shift onto の, 旬 set solid with 又");
+    expect(400, "後" + shun + "に", "後@0 ^しゅん@16 旬@16 に@32", "後旬に: asymmetric shift onto に, 旬 set solid with 後");
+    expect(400, "の<span>" + shun + "</span>に", "の@0 ^しゅん@12 旬@16 に@32", "の<span>旬</span>に: </span> marker does not trigger premature shift");
+    expect(400, "後<span>" + shun + "</span>に", "後@0 ^しゅん@16 旬@16 に@32", "後<span>旬</span>に: asymmetric shift across </span>");
+    expect(400, "の<span>" + shun + "</span>又", "の@0 ^しゅん@8 旬@16 又@32", "の<span>旬</span>又: asymmetric shift across </span>");
+    expect(64, "の" + shun + "又あ", "の@0 ^しゅん@8 旬@16 又@32 あ@48", "の旬又あ: line holds what asymmetric overhang makes room for");
+    expect(64, "後" + shun + "にあ", "後@0 ^しゅん@16 旬@16 に@32 あ@48", "後旬にあ: line holds what asymmetric overhang makes room for");
+    expect(400, "後" + r("旬", "しゅんか") + "に", "後@0 ^しゅんか@16 旬@24 に@40",
+           "後旬に (4 kana): overhang onto に capped at one ruby character");
     expect(400, "ァ" + shun + "ー", "ァ@0 ^しゅん@12 旬@16 ー@32", "rule 2: small kana and ー are overhung too");
     expect(400, "の" + r("旬", "しゅんか") + "に", "の@0 ^しゅんか@8 旬@16 に@32", "rule 2: up to one ruby character a side");
     expect(400, "の" + r("旬", "しゅんしゅん") + "に", "の@0 ^しゅんしゅん@8 旬@24 に@48",
            "rule 2: no more than one ruby character a side, the rest spaces the base");
-    expect(400, "あ" + shun + shun + "い", "あ@0 ^しゅん@12 旬@16 ^しゅん@36 旬@40 い@56",
-           "rule 2 note: a ruby does not overhang the ruby next to it");
+    expect(400, "あ" + shun + shun + "い", "あ@0 ^しゅん@8 旬@16 ^しゅん@32 旬@32 い@48",
+           "rule 2 note: adjacent rubies do not overhang each other, shift onto outer kana");
+    expect(400, "後" + shun + shun + "又", "後@0 ^しゅん@16 旬@20 ^しゅん@40 旬@44 又@64",
+           "rule 2 note: adjacent rubies between kanji keep space, no collision");
     expect(400, "あ「" + shun + "」", "あ@0 「@16 ^しゅん@28 旬@32 」@48", "rule 6: onto 「 before and 」 after, 旬 set solid");
     {
         const std::string got = lay_out(vertical, 400, "あ「" + shun + "」", ruby_overhang::kana);
@@ -251,9 +260,23 @@ void run(bool vertical) {
     expect(400, "あ」" + shunshun + "「い", "あ@0 」@16 ^しゅんしゅん@24 旬@40 「@64 い@80", "rule 3: no further than the half em",
            "あ」@0 ^しゅんしゅん@24 旬@40 「い@64");
     expect(400, "あ「" + shunshun + "」", "あ@0 「@16 ^しゅんしゅん@24 旬@40 」@64", "rule 6: no further than the mark itself");
+    // Single-side rules 3 to 6 (kanji on one side, punctuation/bracket on the other): shift asymmetrically, 0 gap.
+    expect(400, "後" + shun + "、あ", "後@0 ^しゅん@16 旬@16 、@32 あ@48", "rule 6 single-side: 後旬、あ, 旬 set solid");
+    expect(400, "あ「" + shun + "又", "あ@0 「@16 ^しゅん@24 旬@32 又@48", "rule 6 single-side: あ「旬又, 旬 set solid");
+    expect(400, "あ」" + shun + "又", "あ@0 」@16 ^しゅん@24 旬@32 又@48", "rule 3 single-side: あ」旬又, 旬 set solid",
+           "あ」@0 ^しゅん@24 旬@32 又@48");
+    expect(400, "後" + shun + "「あ", "後@0 ^しゅん@16 旬@16 「@32 あ@48", "rule 3 single-side: 後旬「あ, 旬 set solid",
+           "後@0 ^しゅん@16 旬@16 「あ@32");
+    expect(400, "後" + shun + "……あ", "後@0 ^しゅん@16 旬@16 …@32 …@48 あ@64", "rule 4 single-side: 後旬……あ",
+           "後@0 ^しゅん@16 旬@16 ……@32 あ@64");
+    expect(400, "あ・" + shun + "又", "あ@0 ・@16 ^しゅん@24 旬@32 又@48", "rule 5 single-side: あ・旬又",
+           "あ・@0 ^しゅん@24 旬@32 又@48");
+    expect(124, "あ」" + shun + "又いうえお", "あ@0 」@16 ^しゅん@24 旬@32 又@48 い@64 う@80 え@96 | お@0",
+           "rule 3 single-side: asymmetric overhang uses all of 」's half em, none left to squeeze",
+           "あ」@0 ^しゅん@24 旬@32 又@48 い@64 う@80 え@96 | お@0");
     // Group and jukugo ruby: by the base's outer gaps, the first pair's before and the last pair's after.
     expect(400, "あ「" + r("東京", "とうきょうと") + "」", "あ@0 「@16 ^とうきょうと@28 東@32 京@56 」@72", "rules 3 to 6: a group ruby");
-    expect(400, "あ「<ruby>旬<rt>しゅん</rt>旬<rt>しゅん</rt></ruby>」", "あ@0 「@16 ^しゅん@28 旬@32 ^しゅん@52 旬@56 」@72",
+    expect(400, "あ「<ruby>旬<rt>しゅん</rt>旬<rt>しゅん</rt></ruby>」", "あ@0 「@16 ^しゅん@24 旬@32 ^しゅん@48 旬@48 」@64",
            "rules 3 to 6: a ruby of two pairs (jukugo)");
     // Line edges: at a line's head the excess goes after the base, into 「's half em; at a wrapped line's end the
     // whole excess before it, into 、's.
@@ -269,7 +292,7 @@ void run(bool vertical) {
     expect(400, "の" + r("漢字", "かんじい") + "に", "の@0 ^かんじい@16 漢@16 字@32 に@48", "a ruby no longer than its base: as before");
     expect(400, "あ" + r("東京", "とうきょうと") + "い", "あ@0 ^とうきょうと@12 東@16 京@40 い@56",
            "a group ruby longer than its base overhangs by its base's outer gaps");
-    expect(400, "の<ruby>旬<rt>しゅん</rt>旬<rt>しゅん</rt></ruby>に", "の@0 ^しゅん@12 旬@16 ^しゅん@36 旬@40 に@56",
+    expect(400, "の<ruby>旬<rt>しゅん</rt>旬<rt>しゅん</rt></ruby>に", "の@0 ^しゅん@8 旬@16 ^しゅん@32 旬@32 に@48",
            "a ruby of two pairs overhangs by its first pair before and its last pair after");
     // 熟語ルビ (one <ruby> of several pairs, document::set_ruby_breaking, per_base by default): a line may break between
     // its base units, never inside one (JLReq 3.1.10 ⑦, 3.3.7); a pair whose reading is longer than its base overhangs
@@ -290,6 +313,16 @@ void run(bool vertical) {
            "3.3.7: きゅう overhangs 瓜, whose り leaves room, by its excess");
     expect(400, "の<ruby>瓜<rt>り</rt>胡<rt>きゅう</rt></ruby>に", "の@0 ^り@20 瓜@16 ^きゅう@28 胡@32 に@48",
            "3.3.7: and the other way round");
+    expect(400, "の<ruby>東<rt>とう</rt>京<rt>きょう</rt></ruby>に", "の@0 ^とう@16 東@16 ^きょう@32 京@32 に@48",
+           "3.3.7: の東京に, きょう shifts onto trailing に, no gap between 東 and 京");
+    expect(400, "後<ruby>胡<rt>きゅう</rt>瓜<rt>り</rt></ruby>に", "後@0 ^きゅう@16 胡@16 ^り@40 瓜@32 に@48",
+           "3.3.7: 後胡瓜に, きゅう shifts onto 瓜 (り moves right), no gap after 後");
+    expect(400, "の<ruby>瓜<rt>り</rt>胡<rt>きゅう</rt></ruby>又", "の@0 ^り@16 瓜@16 ^きゅう@24 胡@32 又@48",
+           "3.3.7: の瓜胡又, きゅう shifts onto 瓜 (り moves left), no gap before 又");
+    expect(400, "の<ruby>承<rt>うけたまわ</rt>る<rt></rt></ruby>に", "の@0 ^うけたまわ@8 承@16 る@32 に@48",
+           "3.3.7: の承るに with empty <rt></rt>, うけたまわ overhangs の and る with no gap");
+    expect(400, "の<ruby>承<rt>うけたまわ</rt>る</ruby>に", "の@0 ^うけたまわ@8 承@16 る@32 に@48",
+           "3.3.7: の承るに with no <rt> on る, うけたまわ overhangs の and る with no gap");
     expect(64, "あいう<ruby>胡<rt>きゅう</rt>瓜<rt>り</rt></ruby>え", "あ@0 い@16 う@32 ^きゅう@40 胡@48 ^り@4 | 瓜@0 え@16",
            "3.3.8 e–h: a word broken across lines, 胡 ending the line as a mono ruby does (line-edge b)");
     {

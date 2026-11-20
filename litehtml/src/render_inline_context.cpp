@@ -917,27 +917,28 @@ bool litehtml::render_item_inline_context::paragraphs_indented()
         return m_paragraphs_indented != 0;
     constexpr char32_t ideographic_space = 0x3000;
     const element::ptr el                = src_el();
-    bool               yes               = false;
-    // Its own lines after a <br> (a chapter of lines, as calibre makes them).
+    bool               yes               = el->css().get_text_indent().val() > 0;
+    // Its own lines, including line 1 before <br> and lines after <br> (a chapter of lines, as calibre makes them).
+    if(!yes)
     {
-        int  budget = 4000;
-        bool after  = false;
+        int  budget        = 4000;
+        bool at_line_start = true;
         std::function<bool(const element::ptr&)> walk = [&](const element::ptr& e) {
             if(--budget < 0)
                 return false;
             if(e->is_break())
             {
-                after = true;
+                at_line_start = true;
                 return false;
             }
             if(e->is_text())
             {
-                int  one = 1;
-                const char32_t c = leading_char(e, one);
+                int            one = 1;
+                const char32_t c   = leading_char(e, one);
                 if(!c)
                     return false;
-                const bool indented = after && c == ideographic_space;
-                after               = false;
+                const bool indented = at_line_start && c == ideographic_space;
+                at_line_start       = false;
                 return indented;
             }
             if(e->tag() == _rt_ || e->tag() == _rp_)
@@ -949,29 +950,45 @@ bool litehtml::render_item_inline_context::paragraphs_indented()
         };
         yes = walk(el);
     }
-    // Its nearest sibling paragraphs.
-    if(!yes && el->parent())
+    // Any same-tag paragraph in the document (cached once per tag per render; handles long dialogue runs and <div><p>
+    // wrappers without scanning per element).
+    if(!yes)
     {
-        const auto& kids = el->parent()->children();
-        const auto  self = std::find(kids.begin(), kids.end(), el);
-        auto        indented = [&](const element::ptr& s) {
-            if(s->is_text() || s->tag() != el->tag())
-                return false;
-            if(s->css().get_text_indent().val() > 0)
-                return true;
-            int budget = 200;
-            return leading_char(s, budget) == ideographic_space;
-        };
-        if(self != kids.end())
+        auto doc = el->get_document();
+        auto& cache = doc->paragraphs_indented_cache();
+        const string_id tag = el->tag();
+        if(auto it = cache.find(tag); it != cache.end())
         {
-            int n = 0;
-            for(auto it = self; it != kids.begin() && n < 8 && !yes;)
-                if(!(*--it)->is_text() && ++n)
-                    yes = indented(*it);
-            n = 0;
-            for(auto it = std::next(self); it != kids.end() && n < 8 && !yes; ++it)
-                if(!(*it)->is_text() && ++n)
-                    yes = indented(*it);
+            yes = it->second;
+        } else
+        {
+            element::ptr root = doc->root();
+            if(root)
+                for(const auto& c : root->children())
+                    if(c->tag() == _body_)
+                    {
+                        root = c;
+                        break;
+                    }
+            std::function<bool(const element::ptr&)> scan = [&](const element::ptr& node) {
+                if(!node || node->is_text() || node->css().get_display() == display_none || node->tag() == _head_ ||
+                   node->tag() == _script_ || node->tag() == _style_ || node->tag() == _rt_ || node->tag() == _rp_)
+                    return false;
+                if(node->tag() == tag)
+                {
+                    if(node->css().get_text_indent().val() > 0)
+                        return true;
+                    int budget = 200;
+                    if(leading_char(node, budget) == ideographic_space)
+                        return true;
+                }
+                for(const auto& child : node->children())
+                    if(scan(child))
+                        return true;
+                return false;
+            };
+            yes = scan(root);
+            cache[tag] = yes;
         }
     }
     m_paragraphs_indented = yes ? 1 : 0;
@@ -1024,18 +1041,22 @@ litehtml::pixel_t litehtml::render_item_inline_context::new_box(const std::uniqu
                                                          new_pos.left + new_pos.width, css().line_height(),
                                                          css().get_font_metrics(), css().get_text_align(),
                                                          css().get_direction() == direction_rtl));
-    // JLReq 3.1.5: an opening bracket that starts a paragraph. With an indent of its own of an em or more, the
-    // bracket's first half goes (as at any line's start). With less, in a book that indents its paragraphs, the bracket
-    // keeps it: in ① (the default) after the half em less the indent, so a full em is before its ink (全角アキ); in ③
-    // with nothing more (二分アキ, document::set_paragraph_brackets). Not for a centred or end-aligned line, nor a
-    // negative (hanging) indent.
+    // JLReq 3.1.5: an opening bracket that starts a paragraph. In ① (full_em, the default), with an indent of an em or
+    // more its first half goes (ink at the indent); with less, in a book that indents its paragraphs, it keeps its full
+    // width after em/2 - text_indent so a full em precedes its ink (全角アキ). In ③ (half_em, 二分アキ), with an indent
+    // up to 1em (including CSS p { text-indent: 1em }) in an indented paragraph/book, it keeps its full width starting
+    // flush (shifting back by -text_indent) so its ink sits at 0.5em and the next character aligns with 1em normal
+    // paragraphs. Not for centred/end-aligned lines, hanging indents, or deep (>1em) indents.
     if(paragraph && is_one_of(css().get_text_align(), text_align_left, text_align_justify, text_align_start))
     {
-        const pixel_t em = css().get_font_size();
-        if(text_indent >= 0_px && text_indent < em && first_line_margin == 0_px && paragraphs_indented())
+        const pixel_t em      = css().get_font_size();
+        const bool    full_em = src_el()->get_document()->get_paragraph_brackets() == paragraph_brackets::full_em;
+        if(text_indent >= 0_px && first_line_margin == 0_px)
         {
-            const bool full_em = src_el()->get_document()->get_paragraph_brackets() == paragraph_brackets::full_em;
-            m_line_boxes.back()->set_paragraph_start(full_em ? std::max(0_px, em / 2_px - text_indent) : 0_px);
+            if(full_em && text_indent < em && paragraphs_indented())
+                m_line_boxes.back()->set_paragraph_start(em / 2_px - text_indent);
+            else if(!full_em && text_indent <= em + 0.01_px && (text_indent > 0_px || paragraphs_indented()))
+                m_line_boxes.back()->set_paragraph_start(-text_indent);
         }
     }
 

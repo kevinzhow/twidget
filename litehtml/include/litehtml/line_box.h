@@ -277,8 +277,22 @@ namespace litehtml
         static bool starts_with_opening(const std::shared_ptr<render_text>& part);
         /// The last item placed that shows something (not an inline element's start or end, nor a collapsed space).
         const line_box_item* last_content_item() const;
-        /// How far `item`, placed next, overlaps the item before it: a ruby longer than its base overhangs a kana
-        /// next to it (JLReq 3.3.8 rule 2), by up to one ruby character.
+        /// The content item immediately before `target` on this line, or nullptr if `target` is the first content item.
+        const line_box_item* prev_content_item(const line_box_item* target) const;
+        struct ruby_plan
+        {
+            pixel_t              overlap        = 0_px;
+            pixel_t              prev_shift     = 0_px;
+            pixel_t              prev_move_left = 0_px;
+            pixel_t              prev_ann_shift = 0_px;
+            pixel_t              item_ann_shift = 0_px;
+            pixel_t              item_ann_used  = 0_px;
+            const line_box_item* prev_before    = nullptr;
+        };
+        /// Plans ruby overhang and asymmetric base/annotation shifts when placing `item` after the line's last content
+        /// item (JLReq 3.3.5, 3.3.7, 3.3.8). Side-effect free so can_hold, squeeze_room, and add_item stay in sync.
+        ruby_plan            plan_ruby(const line_box_item* item) const;
+        /// Total width saved when placing `item` after the last content item (overlap plus any leftward shift of prev).
         pixel_t ruby_overlap(const line_box_item* item) const;
         /// How far a ruby (its ruby character `ruby_em`) may overhang `item` next to its base, `item` before it or after
         /// it (JLReq 3.3.8): a kana up to one ruby character (rule 2); with ruby_overhang::punctuation also the half em
