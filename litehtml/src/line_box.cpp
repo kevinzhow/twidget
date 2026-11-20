@@ -408,12 +408,14 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
             r.single->align_base(0_px);
             r.single->align_annotation(0_px);
             r.single->overlap_before = 0_px;
+            r.single->overlap_after  = 0_px;
             r.single->ann_used_start = 0_px;
             if(!last_content_item())
                 r.single->align_base(-r.single->base_start);
         } else if(auto* wp = word_pair(item.get()))
         {
             wp->align_annotation(0_px);
+            wp->overlap_after  = 0_px;
             wp->ann_used_start = 0_px;
         }
         const line_box_item* prev = last_content_item();
@@ -424,6 +426,13 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
             r.single->align_base(r.single->pos().width - r.single->base_end);
             plan         = {};
             plan.overlap = end;
+            if(prev && same_word(prev, item.get()) && end > 0_px)
+            {
+                auto*         pb       = word_pair(prev);
+                const pixel_t pb_trail = pb->pos().width - (pb->ann_end + pb->ann_shift);
+                if(pb->ann_end > pb->ann_start && end > pb_trail)
+                    plan.prev_ann_shift = -(end - pb_trail);
+            }
         }
         if(prev && plan.prev_shift != 0_px)
             if(auto* pp = dynamic_cast<render_item_ruby_pair*>(prev->get_el().get()))
@@ -441,9 +450,13 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
                 pp->overlap_before += plan.prev_move_left;
             if(auto text = squeezable_text(plan.prev_before))
                 text->ruby_over_end += plan.prev_move_left;
-            else if(plan.prev_ann_shift != 0_px && plan.prev_before)
+            else if(plan.prev_before)
                 if(auto* pb = word_pair(plan.prev_before))
-                    pb->align_annotation(pb->ann_shift + plan.prev_ann_shift);
+                {
+                    pb->overlap_after += plan.prev_move_left;
+                    if(plan.prev_ann_shift != 0_px)
+                        pb->align_annotation(pb->ann_shift + plan.prev_ann_shift);
+                }
         } else if(prev && plan.prev_ann_shift != 0_px)
         {
             if(auto* pa = word_pair(prev))
@@ -457,6 +470,9 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
                 pb->ann_used_start = plan.item_ann_used;
         if(r.single)
             r.single->overlap_before = plan.overlap;
+        if(prev && plan.overlap > 0_px)
+            if(auto* pp = dynamic_cast<render_item_ruby_pair*>(prev->get_el().get()))
+                pp->overlap_after = plan.overlap;
         // What it overhangs of the text before it, or (a text after a ruby) of its own start: not to be squeezed too.
         if(plan.overlap > 0_px)
         {
@@ -480,12 +496,15 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
 }
 
 litehtml::pixel_t litehtml::line_box::calc_va_baseline(const va_context& current, vertical_align va,
-                                                       const font_metrics& new_font, pixel_t top, pixel_t bottom)
+                                                       const font_metrics& new_font, pixel_t top, pixel_t bottom,
+                                                       bool vertical)
 {
     switch(va)
     {
     case va_super:
-        return current.baseline - current.fm.super_shift;
+        return current.baseline -
+               (vertical ? std::max(current.fm.super_shift, current.fm.font_size * pixel_t(0.5f))
+                         : current.fm.super_shift);
     case va_sub:
         return current.baseline + current.fm.sub_shift;
     case va_middle:
@@ -615,7 +634,17 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
                        !((*b)->get_el()->src_el()->is_white_space() && (*b)->width() <= 0_px))
                         prev = b->get();
                 }
-                const pixel_t room  = overhang_room(prev, true, pair->ruby_em);
+                const bool    in_word_prev = prev && same_word(prev, it->get());
+                pixel_t       room         = -1_px;
+                if(in_word_prev)
+                {
+                    auto* pb = word_pair(prev);
+                    if(pb->japanese_base)
+                        room = pb->ann_end <= pb->ann_start
+                                   ? std::max(0_px, pb->pos().width - pb->ann_used_start)
+                                   : std::max(0_px, pb->pos().width - (pb->ann_end - pb->ann_start) - pb->ann_used_start);
+                } else
+                    room = overhang_room(prev, true, pair->ruby_em);
                 const pixel_t want  = room >= 0_px ? std::min(pair->base_start + pair->base_shift, room) : 0_px;
                 const pixel_t extra = std::max(0_px, want - pair->overlap_before);
                 if(extra > 0_px)
@@ -623,7 +652,15 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
                     if(auto text = squeezable_text(prev))
                         text->ruby_over_end += extra;
                     pair->overlap_before += extra;
-                    m_width              -= extra;
+                    if(in_word_prev)
+                    {
+                        auto*         pb       = word_pair(prev);
+                        const pixel_t pb_trail = pb->pos().width - (pb->ann_end + pb->ann_shift);
+                        if(pb->ann_end > pb->ann_start && pair->overlap_before > pb_trail)
+                            pb->align_annotation(pb->ann_shift - (pair->overlap_before - pb_trail));
+                        pb->overlap_after = pair->overlap_before;
+                    }
+                    m_width -= extra;
                     for(auto after = m_items.rbegin();; ++after)
                     {
                         (*after)->pos().x -= extra;
@@ -771,7 +808,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         enum { nothing, text, box } before = nothing;  // what came last: a text, an inline box, or neither yet
         char32_t last = 0;                             // the last text's last character
         char32_t last_kind = 0;                        // the same, 0 when a tate-chu-yoko token ends it
-        const line_box_item* last_box = nullptr;      // the last inline box
+        const line_box_item* last_box  = nullptr;      // the last inline box
+        const line_box_item* prev_item = nullptr;      // the last placed text/box item
         int      slot = -1;                            // the item the gap after it goes before
         size_t i = 0;
         for(auto it = m_items.begin(); it != m_items.end(); ++it, ++i)
@@ -803,13 +841,19 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             auto        in_tcy = [&](size_t at) {
                 return std::any_of(tcy.begin(), tcy.end(), [&](const cjk::span& t) { return t.from <= at && at < t.to; });
             };
-            if(before != nothing && (before == box || !src || cjk::justifiable_gap(last, chars.front())))
+            // JLReq 3.1.11 ①: no justify space across an inseparable script boundary (base + <sup>/<sub>, H₂O).
+            const bool inseparable_script =
+                prev_item && script_boundary(prev_item->get_el()->src_el(), el) &&
+                no_break_opportunity(prev_item->get_el()->src_el(), el, true);
+            if(before != nothing && !inseparable_script &&
+               (before == box || !src || cjk::justifiable_gap(last, chars.front())))
                 gaps.push_back({size_t(slot), 0, false,
                                 // none between two bases of one word (JLReq 3.1.11 ②-7)
                                 !src && before == box && same_word(last_box, it->get())
                                     ? cjk::gap_kind::avoided
                                     : cjk::justify_gap_kind(before == box ? 0 : last_kind, src && !in_tcy(0) ? src->rule_char(chars.front()) : 0),
                                 em});
+            prev_item = it->get();
             if(!src)
                 last_box = it->get();
             before = src ? text : box;
@@ -1016,13 +1060,15 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             {
                 current_context.baseline = calc_va_baseline(
                     current_context, lbi->get_el()->css().get_vertical_align(), lbi->get_el()->css().get_font_metrics(),
-                    current_context.start_lbi->top(), current_context.start_lbi->bottom());
+                    current_context.start_lbi->top(), current_context.start_lbi->bottom(),
+                    lbi->get_el()->css().is_vertical_rl());
             } else
             {
                 current_context.start_lbi = nullptr;
                 current_context.baseline  = calc_va_baseline(current_context, lbi->get_el()->css().get_vertical_align(),
                                                              lbi->get_el()->css().get_font_metrics(),
-                                                             line_max_height.top, line_max_height.bottom);
+                                                             line_max_height.top, line_max_height.bottom,
+                                                             lbi->get_el()->css().is_vertical_rl());
             }
             current_context.fm          = lbi->get_el()->css().get_font_metrics();
             current_context.line_height = lbi->get_el()->css().line_height().computed_value;
@@ -1070,7 +1116,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             default:
                 bl = calc_va_baseline(current_context, lbi->get_el()->css().get_vertical_align(),
                                       lbi->get_el()->css().get_font_metrics(), line_max_height.top,
-                                      line_max_height.bottom);
+                                      line_max_height.bottom, lbi->get_el()->css().is_vertical_rl());
                 break;
             }
         }
@@ -1500,7 +1546,7 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
             // (A tolerance for rounding, only where there is something to squeeze: a line with none breaks as before.)
             if(!adjusts(item.get()))
                 return false;
-            const pixel_t room = squeeze_room(item.get());
+            const pixel_t room = squeeze_room(item.get(), trailing <= 0_px);
             return room > 0_px && over <= room + 0.01_px;
         }
     }
@@ -1509,11 +1555,11 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
 }
 
 
-litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next) const
+litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next, bool ends_line) const
 {
     // The texts placed are all in the middle of the line now (the first one's first character at its start), and
-    // `next` ends it: the half em compression takes from its last closing bracket or 、。 there, and what squeezable
-    // gives of the rest.
+    // `next` ends it when `ends_line` is true (when trailing inseparable items like <sup>1</sup> follow `next`,
+    // `next` stays mid-line and cannot claim line-end punctuation trim).
     // A ruby `next` is, or `next` after a ruby, overhangs the mark next to it by ruby_overlap: not to squeeze too.
     ruby_sides      r;
     const ruby_plan plan             = plan_ruby(next);
@@ -1542,11 +1588,14 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next) co
     }
     if(auto part = squeezable_text(next))
     {
-        auto       text  = std::dynamic_pointer_cast<el_text>(part->src_el());
-        const auto ended = text->compression(text->display_text(), part->before, part->after, cjk::line_middle, cjk::line_end,
-                                             part->after_solid);
-        room += trim_shift(ended, SIZE_MAX) - trim_shift(part->trims, SIZE_MAX);
-        auto qs = squeeze_of(*part, cjk::line_middle, cjk::line_end);
+        if(ends_line)
+        {
+            auto       text  = std::dynamic_pointer_cast<el_text>(part->src_el());
+            const auto ended = text->compression(text->display_text(), part->before, part->after, cjk::line_middle,
+                                                 cjk::line_end, part->after_solid);
+            room += trim_shift(ended, SIZE_MAX) - trim_shift(part->trims, SIZE_MAX);
+        }
+        auto qs = squeeze_of(*part, cjk::line_middle, ends_line ? cjk::line_end : cjk::line_middle);
         if(!qs.empty() && qs.front().at == 0)
             qs.front().start = std::max(0_px, qs.front().start - overhang);
         for(const auto& q : qs)
@@ -1900,7 +1949,17 @@ litehtml::pixel_t litehtml::line_box::ruby_end_overlap(const line_box_item* item
     const pixel_t width = item->width();
     if(m_left + m_width - ruby_overlap(item) + width + extra <= m_right)
         return -1_px;
-    const pixel_t room = overhang_room(last_content_item(), true, r.em);
+    const line_box_item* prev = last_content_item();
+    pixel_t              room = -1_px;
+    if(prev && same_word(prev, item))
+    {
+        auto* pb = word_pair(prev);
+        if(pb->japanese_base)
+            room = pb->ann_end <= pb->ann_start
+                       ? std::max(0_px, pb->pos().width - pb->ann_used_start)
+                       : std::max(0_px, pb->pos().width - (pb->ann_end - pb->ann_start) - pb->ann_used_start);
+    } else
+        room = overhang_room(prev, true, r.em);
     if(room < 0_px)
         return -1_px;
     const pixel_t excess = r.single->base_start + (r.single->pos().width - r.single->base_end);

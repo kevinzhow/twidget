@@ -251,13 +251,28 @@ bool litehtml::no_break_opportunity(const element::ptr& before, const element::p
         return true;
     if(before->is_space() || after->is_space())
         return false;
-    // 添え字 (JLReq 3.1.10 ⑨): none between a base and its script, a box of vertical-align super or sub that starts
-    // with `after` and does not hold `before` (数², H₂O, a note mark after 。; a second script after the first).
+    const char32_t last = edge_char(before, false), first = edge_char(after, true);
+    // 添え字 (JLReq 3.1.10 ⑨): none between a base and its script (数², H₂O, a note mark after 。), nor between a
+    // script and a continuing Western/alphanumeric token character (H₂O, C₆H₁₂O₆, x²y) while still allowing breaks
+    // before following Japanese prose (。¹ | えお).
     if(const auto doc = after->get_document(); doc && doc->get_script_breaking() == script_breaking::keep)
+    {
         for(auto p = after->parent(); p && p != common; p = p->parent())
             if(is_one_of(p->css().get_vertical_align(), va_super, va_sub))
                 return true;
-    const char32_t last = edge_char(before, false), first = edge_char(after, true);
+        for(auto p = common; p; p = p->parent())
+            if(is_one_of(p->css().get_vertical_align(), va_super, va_sub))
+                return true;
+        auto token_cont = [](char32_t c) {
+            return (c >= '0' && c <= '9') || ((c | 0x20) >= 'a' && (c | 0x20) <= 'z') ||
+                   (c >= 0xC0 && c <= 0x24F && c != 0xD7 && c != 0xF7) ||
+                   (c >= 0x370 && c <= 0x52F && c != 0x37E && c != 0x387);
+        };
+        if(token_cont(first))
+            for(auto p = before->parent(); p && p != common; p = p->parent())
+                if(is_one_of(p->css().get_vertical_align(), va_super, va_sub))
+                    return true;
+    }
     if(common && common->css().get_word_break() == word_break_keep_all && letter(last) && letter(first))
         return true;
     return kinsoku && cjk::no_break_between(last, first);
@@ -343,10 +358,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
                         if(auto next = std::dynamic_pointer_cast<el_text>(events[kids[n]].first->src_el());
                            next && next->parent() && next->parent()->css().is_vertical_rl())
                         {
-                            const std::string& shown = next->display_text();
-                            const auto         tcy   = next->parent()->css().combines_upright()
-                                                           ? std::vector<cjk::span>{{0, shown.size()}}
-                                                           : cjk::tate_chu_yoko(shown, 0, shown.size());
+                            const auto& tcy = next->tate_chu_yoko();
                             text->after_solid = !tcy.empty() && tcy.front().from == 0;
                         }
                         // 添え字 (JLReq 3.7.1): a script is set solid with its base and with what follows it.
@@ -545,31 +557,58 @@ void litehtml::render_item_inline_context::space_around(pixel_t width, pixel_t m
 {
     if(m_line_boxes.size() != 1)
         return;
-    std::vector<line_box_item*> items;
-    pixel_t                     left = 0_px, right = 0_px, used = 0_px;
+    struct unit_item
+    {
+        line_box_item*               item;
+        std::shared_ptr<render_text> text;
+        size_t                       internal_gaps = 0;
+    };
+    std::vector<unit_item> items;
+    pixel_t                left = 0_px, right = 0_px, used = 0_px;
+    size_t                 total_internal = 0;
     for(const auto& item : m_line_boxes.front()->items())
     {
         if(item->get_type() != line_box_item::type_text_part || item->get_el()->src_el()->is_white_space())
             continue;
+        auto   rt   = std::dynamic_pointer_cast<render_text>(item->get_el());
+        size_t gaps = 0;
+        if(rt && !rt->is_fragment)
+            if(auto et = std::dynamic_pointer_cast<el_text>(rt->src_el()))
+            {
+                gaps = cjk::justifiable_gaps(et->display_text()).size();
+                if(rt->justify_gap != 0_px && gaps > 0)
+                {
+                    rt->pos().width -= rt->justify_gap * pixel_t(float(gaps));
+                    rt->justify_gap  = 0_px;
+                }
+            }
         left  = items.empty() ? item->left() : std::min(left, item->left());
         right = items.empty() ? item->right() : std::max(right, item->right());
         used += item->width();
-        items.push_back(item.get());
+        total_internal += gaps;
+        items.push_back({item.get(), rt, gaps});
     }
-    if(items.size() < 2 || width - (right - left) < 0.5_px)
+    const size_t units = items.size() + total_internal;
+    if(units < 2 || width - (right - left) < 0.5_px)
         return;
-    // 1:2:1; with an end longer than max_end, max_end at each end and the rest between (JLReq 3.3.6 (注)).
-    pixel_t gap = (width - used) / pixel_t(float(items.size()));
+    // 1:2:1 per character (not per line-break unit, so small kana in e.g. ちょう spread evenly); with an end longer
+    // than max_end, max_end at each end and the rest evenly between characters (JLReq 3.3.6 (注)).
+    pixel_t gap = (width - used) / pixel_t(float(units));
     pixel_t x   = gap / 2_px;
     if(x > max_end)
     {
         x   = max_end;
-        gap = (width - used - max_end * 2_px) / pixel_t(float(items.size() - 1));
+        gap = (width - used - max_end * 2_px) / pixel_t(float(units - 1));
     }
-    for(auto* item : items)
+    for(auto& u : items)
     {
-        item->get_el()->pos().x += x - item->left();
-        x += item->width() + gap;
+        if(u.text && u.internal_gaps > 0)
+        {
+            u.text->justify_gap  = gap;
+            u.text->pos().width += gap * pixel_t(float(u.internal_gaps));
+        }
+        u.item->get_el()->pos().x += x - u.item->left();
+        x += u.item->width() + gap;
     }
 }
 

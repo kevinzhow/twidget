@@ -13,6 +13,13 @@
         "not_starting"
       ],
       "reason": "A percent sign stays with the number before it (UAX #14 PO): litehtml's break between two elements kept it there before the rule set replaced that check (\",.;:!?%)]}\"), and stone's set has no %."
+    },
+    {
+      "chars": "～",
+      "classes": [
+        "not_starting"
+      ],
+      "reason": "U+FF5E FULLWIDTH TILDE (Shift-JIS mapping of U+301C wave dash, common in Japanese EPUBs): same line-start kinsoku (cl-03) as U+301C 〜."
     }
   ],
   "tate_chu_yoko": [

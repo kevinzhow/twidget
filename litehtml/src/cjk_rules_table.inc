@@ -127,5 +127,6 @@
 {0xFF3D, not_starting | closing}, // U+FF3D ］
 {0xFF5B, not_ending | opening}, // U+FF5B ｛
 {0xFF5D, not_starting | closing}, // U+FF5D ｝
+{0xFF5E, not_starting}, // U+FF5E ～ (overlay)
 {0xFF5F, not_ending | opening}, // U+FF5F ｟
 {0xFF60, not_starting | closing}, // U+FF60 ｠

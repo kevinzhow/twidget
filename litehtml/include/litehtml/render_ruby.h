@@ -59,13 +59,14 @@ namespace litehtml
         pixel_t ann_shift = 0_px;
         /// How much of its leading annotation space is already taken by the previous pair of the same word.
         pixel_t ann_used_start = 0_px;
-        /// How much of the text before it the pair overlaps (line_box::add_item).
-        pixel_t overlap_before = 0_px;
+        /// How much of the text before it and after it the pair overlaps (line_box::add_item).
+        pixel_t overlap_before = 0_px, overlap_after = 0_px;
         /// Moves its base `shift` along the line from where it was laid out: at a line's head the base starts with the
         /// annotation, at a line's end it ends with it (JLReq 3.3.8 line-edge a, b), or mid-line for asymmetric overhang.
         void align_base(pixel_t shift);
         /// Moves its annotation `shift` along the line inside the pair so an adjacent word pair's long reading fits.
         void align_annotation(pixel_t shift);
+        void draw_children(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip, draw_flag flag, int zindex) override;
         explicit render_item_ruby_pair(std::shared_ptr<element> src_el) :
             render_item_block_context(std::move(src_el))
         {

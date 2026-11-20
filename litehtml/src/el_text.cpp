@@ -209,6 +209,22 @@ namespace
         }
     }
 
+    // Whether an element is inside a subscript or superscript (添え字, JLReq 3.7.1): automatic tate-chu-yoko is
+    // suppressed there so Latin letters and script digits (O₂, H₂O, C₆H₁₂O₆, m²) rotate 90° CW uniformly unless
+    // text-combine-upright explicitly requests upright digits/all.
+    bool in_script(const litehtml::element::ptr& parent)
+    {
+        using namespace litehtml;
+        for(element::ptr p = parent; p; p = p->parent())
+        {
+            if(is_one_of(p->css().get_vertical_align(), va_super, va_sub))
+                return true;
+            if(p->css().get_display() != display_inline)
+                break;
+        }
+        return false;
+    }
+
     // Whether a character of vertical text is drawn upright: text-orientation upright, or mixed and upright by UAX #50
     // (a Tr character only when its font has a vertical form).
     bool drawn_upright(litehtml::document_container* container, litehtml::text_orientation orientation, char32_t cp,
@@ -328,7 +344,9 @@ namespace
                    trim_shift(trims, end);
         };
         // A sideways run is drawn a piece between two gaps (or around a trimmed mark: full width, moved back by the
-        // half it gives up) at a time.
+        // half it gives up) at a time. A trimmed sideways hyphen (U+2010) is aligned to the upright em-box centre so
+        // it sits symmetrically between adjacent upright CJK glyphs on the column centreline.
+        const pixel_t em_shift = (baseline - fm.em_top() + em / 2_px) - cy;
         auto flush = [&](size_t end) {
             for(size_t from = run; from < end;)
             {
@@ -337,7 +355,15 @@ namespace
                 position      at   = pos;
                 at.x              += advance(from);
                 if(const char_trim* t = trim_at(trims, from))
+                {
                     at.x -= t->start;
+                    size_t n_cp = 0;
+                    if(cjk::hyphen_target_em(code_point_at(text, from, n_cp)) > 0.0f)
+                    {
+                        at.x += em_shift;
+                        at.y -= em_shift;
+                    }
+                }
                 at.width           = container->text_width(text.substr(from, to - from).c_str(), font);
                 container->draw_text(hdc, text.substr(from, to - from).c_str(), font, color, at);
                 from = to;
@@ -420,7 +446,7 @@ namespace
             line_color = color;
         const int  where      = css.get_text_underline_position();
         const bool under_left = (where & text_underline_position_left) && !(where & text_underline_position_right);
-        const pixel_t right   = cy - em / 2_px - thickness - thickness;  // a line's width from the em box
+        const pixel_t right   = cy - em / 2_px - thickness - thickness * pixel_t(0.20f);
         const pixel_t left    = cy + em / 2_px + thickness;
         auto line = [&](pixel_t y) {
             background_layer layer;
@@ -435,6 +461,47 @@ namespace
             line(cy - thickness / 2_px);
     }
 } // namespace
+
+litehtml::pixel_t litehtml::snap_text_top_px(pixel_t top, const font_metrics& fm)
+{
+    return snap_text_top(top, fm);
+}
+
+void litehtml::draw_text_decoration_lines(document* doc, uint_ptr hdc, const std::string& text,
+                                          const css_properties& css, web_color color, const position& pos,
+                                          bool vertical)
+{
+    if(vertical)
+    {
+        draw_vertical_lines(doc, hdc, text, css, color, pos);
+        return;
+    }
+    const int lines = css.get_text_decoration_line();
+    if(lines == text_decoration_line_none || pos.width <= 0_px)
+        return;
+    auto*               container = doc->container();
+    const font_metrics& fm        = css.get_font_metrics();
+    const pixel_t       em        = fm.font_size;
+    const pixel_t       baseline  = pos.y + pos.height - fm.descent;
+    const auto&         given     = css.get_text_decoration_thickness();
+    pixel_t             thickness = std::max(1_px, em / 14_px);
+    if(!given.is_predefined())
+        thickness = std::max(1_px, given.calc_percent(em));
+    web_color line_color = css.get_text_decoration_color();
+    if(line_color == web_color::current_color)
+        line_color = color;
+    auto line = [&](pixel_t y) {
+        background_layer layer;
+        layer.border_box = layer.clip_box = layer.origin_box = position(pos.x, y, pos.width, thickness);
+        container->draw_solid_fill(hdc, layer, line_color);
+    };
+    if(lines & text_decoration_line_underline)
+        line(baseline + std::max(1_px, fm.descent * pixel_t(0.35f)));
+    if(lines & text_decoration_line_line_through)
+        line(baseline - fm.ascent * pixel_t(0.3f) - thickness / 2_px);
+    if(lines & text_decoration_line_overline)
+        line(pos.y);
+}
 
 namespace
 {
@@ -588,11 +655,14 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
     {
         if(el_parent->css().combines_upright())
             tcy.push_back({0, shown.size()});
-        else if(m_run && !m_use_transformed && m_run_end <= m_run->text.size())
-            for(const auto& t : cjk::tate_chu_yoko(m_run->text, m_run_begin, m_run_end))
-                tcy.push_back({t.from - m_run_begin, t.to - m_run_begin});
-        else
-            tcy = cjk::tate_chu_yoko(shown, 0, shown.size());
+        else if(el_parent->css().get_text_combine() == text_combine_digits || !in_script(el_parent))
+        {
+            if(m_run && !m_use_transformed && m_run_end <= m_run->text.size())
+                for(const auto& t : cjk::tate_chu_yoko(m_run->text, m_run_begin, m_run_end))
+                    tcy.push_back({t.from - m_run_begin, t.to - m_run_begin});
+            else
+                tcy = cjk::tate_chu_yoko(shown, 0, shown.size());
+        }
     }
     if(tcy != m_tate_chu_yoko)
     {
@@ -924,14 +994,26 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
                                                     [&](const cjk::span& s) { return s.from <= chars[k + 1].first && chars[k + 1].first < s.to; })
                                       : after_solid;
         const bool space = latin && !next_upright && cjk::latin_space_after(self, next, at);
-        // JLReq 3.1.6 ①: a full-width space after ？！ ending a sentence, where the book has none.
-        const bool full = dividing && cjk::dividing_space_after(self, next, at);
-        if(t.start == 0 && t.end == 0 && !space && !full)
+        // JLReq 3.1.6 ①: dividing space after ？！ ending a sentence (1.0em, or 0.5em before full-width opening bracket).
+        const float div_em = dividing ? cjk::dividing_space_em(self, next, at) : 0.0f;
+        // JLReq 3.1.6 (hyphens): trim full-width ‐ (0.25em) and ゠ (0.50em) when the font draws them full-width.
+        const float hyp_em = (t.start == 0 && t.end == 0) ? cjk::hyphen_target_em(self) : 0.0f;
+        if(t.start == 0 && t.end == 0 && !space && div_em <= 0.0f && hyp_em <= 0.0f)
             continue;
         const size_t  from    = chars[k].first;
         const size_t  to      = k + 1 < chars.size() ? chars[k + 1].first : shown.size();
         const pixel_t advance = char_advance(shown, from, to);
-        out.push_back({from, advance * pixel_t(t.start), advance * pixel_t(t.end) - (space ? em / 4_px : 0_px) - (full ? em : 0_px)});
+        pixel_t       start   = advance * pixel_t(t.start);
+        pixel_t       end     = advance * pixel_t(t.end) - (space ? em / 4_px : 0_px) - (div_em > 0.0f ? em * pixel_t(div_em) : 0_px);
+        if(hyp_em > 0.0f && advance >= em * pixel_t(0.9f))
+        {
+            const pixel_t trim_each = (advance - em * pixel_t(hyp_em)) / 2_px;
+            start += trim_each;
+            end   += trim_each;
+        }
+        if(start == 0_px && end == 0_px)
+            continue;
+        out.push_back({from, start, end});
     }
     return out;
 }

@@ -127,13 +127,79 @@ void litehtml::render_item_ruby_pair::align_annotation(pixel_t shift)
     ann_shift                    = shift;
 }
 
+void litehtml::render_item_ruby_pair::draw_children(uint_ptr hdc, pixel_t x, pixel_t y, const position* clip,
+                                                    draw_flag flag, int zindex)
+{
+    render_item_block_context::draw_children(hdc, x, y, clip, flag, zindex);
+    if(flag != draw_inlines || m_children.empty())
+        return;
+    // Bridge text-decoration lines across any uncovered gaps inside the pair's non-overhung span (e.g. spaced group
+    // ruby bases or kanji-bounded mono ruby) so ancestor underline/overline/line-through is continuous across <ruby>.
+    const auto&           base = m_children.back();
+    const css_properties& css  = base->src_el()->css();
+    if(css.get_text_decoration_line() == text_decoration_line_none)
+        return;
+    auto inl = std::dynamic_pointer_cast<render_item_inline_context>(base);
+    if(!inl || inl->line_boxes().size() != 1)
+        return;
+    const pixel_t span_start = overlap_before;
+    const pixel_t span_end   = m_pos.width - overlap_after;
+    if(span_end <= span_start + 0.01_px)
+        return;
+    std::vector<std::pair<pixel_t, pixel_t>> covered;
+    std::string                              sample_text;
+    pixel_t                                  text_y = 0_px, text_h = 0_px;
+    bool                                     has_text = false;
+    for(const auto& item : inl->line_boxes().front()->items())
+    {
+        if(item->get_type() != line_box_item::type_text_part || item->get_el()->src_el()->is_white_space())
+            continue;
+        if(!has_text)
+        {
+            text_y = item->pos().y;
+            text_h = item->pos().height;
+            if(auto et = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el()))
+                sample_text = et->display_text();
+            has_text = true;
+        }
+        covered.push_back({base->pos().x + item->left(), base->pos().x + item->right()});
+    }
+    if(!has_text)
+        return;
+    std::sort(covered.begin(), covered.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    document*     doc      = src_el()->doc_ptr();
+    const bool    vertical = doc->vertical() && css.is_vertical_rl();
+    const pixel_t origin_x = x + m_pos.x;
+    const pixel_t snapped_y = snap_text_top_px(y + m_pos.y + base->pos().y + text_y, css.get_font_metrics());
+    auto bridge = [&](pixel_t a, pixel_t b) {
+        if(b <= a + 0.01_px)
+            return;
+        const position seg(origin_x + a, snapped_y, b - a, text_h);
+        if(clip && !seg.does_intersect(clip))
+            return;
+        draw_text_decoration_lines(doc, hdc, sample_text, css, css.get_color(), seg, vertical);
+    };
+    pixel_t cur = span_start;
+    for(const auto& [a, b] : covered)
+    {
+        if(a > cur)
+            bridge(cur, std::min(a, span_end));
+        cur = std::max(cur, b);
+        if(cur >= span_end)
+            break;
+    }
+    if(cur < span_end)
+        bridge(cur, span_end);
+}
+
 litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_t x, pixel_t y, bool second_pass,
                                                                        const containing_block_context& self_size,
                                                                        formatting_context* fmt_ctx)
 {
     auto ret            = render_item_block_context::_render_content(x, y, second_pass, self_size, fmt_ctx);
     annotation_overflow = 0_px;
-    base_start = base_end = ruby_em = base_shift = ann_shift = ann_used_start = overlap_before = ann_start = ann_end = 0_px;
+    base_start = base_end = ruby_em = base_shift = ann_shift = ann_used_start = overlap_before = overlap_after = ann_start = ann_end = 0_px;
     japanese_base = false;
     if(m_children.empty())
         return ret;
