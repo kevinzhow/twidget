@@ -541,7 +541,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     return m_rendered_width;
 }
 
-void litehtml::render_item_inline_context::space_around(pixel_t width)
+void litehtml::render_item_inline_context::space_around(pixel_t width, pixel_t max_end)
 {
     if(m_line_boxes.size() != 1)
         return;
@@ -558,8 +558,14 @@ void litehtml::render_item_inline_context::space_around(pixel_t width)
     }
     if(items.size() < 2 || width - (right - left) < 0.5_px)
         return;
-    const pixel_t gap = (width - used) / pixel_t(float(items.size()));
-    pixel_t       x   = gap / 2_px;
+    // 1:2:1; with an end longer than max_end, max_end at each end and the rest between (JLReq 3.3.6 (注)).
+    pixel_t gap = (width - used) / pixel_t(float(items.size()));
+    pixel_t x   = gap / 2_px;
+    if(x > max_end)
+    {
+        x   = max_end;
+        gap = (width - used - max_end * 2_px) / pixel_t(float(items.size() - 1));
+    }
     for(auto* item : items)
     {
         item->get_el()->pos().x += x - item->left();

@@ -5,6 +5,7 @@
 #include "render_inline_context.h"
 #include "el_text.h"
 #include "cjk_rules.h"
+#include "utf8_strings.h"
 
 std::shared_ptr<litehtml::render_item> litehtml::render_item_ruby::init()
 {
@@ -128,10 +129,24 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
     japanese_base = false;
     if(!has_annotation || m_children.size() < 2)
         return ret;
-    // ruby-align: space-around, Chromium's default: the narrower of the two spreads over the pair.
+    // ruby-align: space-around, Chromium's default: the narrower of the two spreads over the pair. A Japanese annotation
+    // shorter than its base keeps at most one ruby character at each end, the rest between its characters (JLReq 3.3.6
+    // (注), Appendix F; short_ruby::jlreq).
+    const bool short_ends = src_el()->get_document()->get_short_ruby() == short_ruby::jlreq;
     for(const auto& el : m_children)
         if(auto inl = std::dynamic_pointer_cast<render_item_inline_context>(el))
-            inl->space_around(el->pos().width);
+        {
+            pixel_t max_end = pixel_t(1e9f);  // no limit
+            if(short_ends && el != m_children.back())
+            {
+                std::string text;
+                el->src_el()->get_text(text);
+                int at = 0;
+                if(!text.empty() && cjk::script_of(read_utf8_char(text, at)) == cjk::script::japanese)
+                    max_end = el->css().get_font_size();
+            }
+            inl->space_around(el->pos().width, max_end);
+        }
     // Where the base's text is in the pair, for the overhang (line_box).
     {
         const auto& b = m_children.back();
