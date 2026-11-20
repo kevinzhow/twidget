@@ -36,8 +36,12 @@ namespace litehtml
 
       public:
         bool has_annotation = false;
+        /// True when ruby-position places the annotation under the base (horizontal: below, vertical-rl: left).
+        bool annotation_under = false;
         /// How far the annotation's em box reaches above the pair's box (its base's).
         pixel_t annotation_overflow = 0_px;
+        /// How far an under-positioned annotation's em box reaches below the pair's box (its base's).
+        pixel_t annotation_under_overflow = 0_px;
         /// Where its base's text starts and ends in the pair (from the pair's start, as laid out: centred, or spread by
         /// ruby-align), and one ruby character (the annotation's font size): an annotation longer than its base
         /// overhangs the text next to the pair by what lies outside [base_start, base_end] (line_box, JLReq 3.3.8).

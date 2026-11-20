@@ -50,6 +50,8 @@ namespace litehtml
       private:
         element_position      m_el_position    = element_position_static;
         text_align            m_text_align     = text_align_start;
+        text_align_last       m_text_align_last = text_align_last_auto;
+        ruby_position         m_ruby_position  = ruby_position_over;
         direction             m_direction      = direction_ltr;
         overflow              m_overflow       = overflow_visible;
         overflow              m_overflow_x     = overflow_visible;
@@ -196,6 +198,10 @@ namespace litehtml
 
         text_align get_text_align() const;
         void       set_text_align(text_align mTextAlign);
+        text_align_last get_text_align_last() const { return m_text_align_last; }
+        void            set_text_align_last(text_align_last v) { m_text_align_last = v; }
+        ruby_position   get_ruby_position() const { return m_ruby_position; }
+        void            set_ruby_position(ruby_position v) { m_ruby_position = v; }
 
         overflow get_overflow() const;
         overflow get_overflow_x() const { return m_overflow_x; }

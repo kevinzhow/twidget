@@ -578,6 +578,82 @@ void run(bool vertical, bool half_forms) {
         check(selected(l, vertical, 2) == "32+8", mode + "selecting 「 after 。: " + selected(l, vertical, 2));
         check(selected(l, vertical, 3, 16) == "40+16", mode + "selecting 主 after it: " + selected(l, vertical, 3, 16));
     }
+
+    // JLReq 3.2.6 ② / 3.8.3 Step 1: Western word spaces (U+0020) compress FIRST on mixed Japanese-Western lines,
+    // BEFORE compressing mid-line commas/brackets/middle-dots/和欧間; pure Latin lines do NOT compress word spaces.
+    {
+        // "あ、A B Cい" in Stub (16px/char, 16px space, 4px 和欧間 each side):
+        // natural width = あ(16) + 、(16) + A(16) + sp(16) + B(16) + sp(16) + C(16+4=20) + い(16) = 132px.
+        // At length=128px (4px over), the 2 word spaces absorb 2px each (4px total) FIRST, so 、 keeps its full 16px!
+        expect(128, "あ、A B Cい", "あ@0 、@16 A@32 B@62 C@92 い@112",
+               "3.2.6 ② / 3.8.3 Step 1: Western word spaces compress first, leaving mid-line 、 uncompressed");
+        // Pure Latin line: word spaces are NOT compressed under JLReq line adjustment (matches line_adjustment::even).
+        Laid jl, ev;
+        lay_out(jl, vertical, half_forms, 92, "ab cd ef", "justify", line_adjustment::jlreq);
+        lay_out(ev, vertical, half_forms, 92, "ab cd ef", "justify", line_adjustment::even);
+        check(line_texts(jl.c.glyphs) == line_texts(ev.c.glyphs) && drawn(jl.c.glyphs, half_forms) == drawn(ev.c.glyphs, half_forms),
+              mode + "3.2.6 ②: pure Latin line does not compress word spaces: " + line_texts(jl.c.glyphs));
+    }
+
+    // Card 6 fix (JLReq 3.8.2): when a line ALREADY fills the measure at exact natural width (0 shortfall), do NOT
+    // eagerly crush mid-line commas to pull in another normal character!
+    {
+        // 16 chars in 16em (256px) with two mid-line commas: must break at 16 chars with both commas full-width!
+        Laid l;
+        lay_out(l, vertical, half_forms, 256, "あいうえ、かきくけこさしす、せそたちつてと");
+        check(line_texts(l.c.glyphs) == "あいうえ、かきくけこさしす、せそ|たちつてと",
+              mode + "3.8.2 (Card 6): exact 16em line does not crush mid-line 、 to pull 17th char: " + line_texts(l.c.glyphs));
+    }
+
+    // JLReq 3.5.4 (段末行字数过少): short last-line control on multi-line justified Japanese paragraphs.
+    {
+        // Strategy A (追込み pull-in): 12em (192px) line; natural break puts 12 chars on line 1 (with 3 squeezable commas)
+        // and dangling "る。" (1.5em with line-end trim) on line 2 -> pulls "る。" onto line 1!
+        Laid l;
+        lay_out(l, vertical, half_forms, 192, "あい、うえ、おか、きくける。");
+        check(line_texts(l.c.glyphs) == "あい、うえ、おか、きくける。",
+              mode + "3.5.4 pull-in: absorbs dangling 2-char tail る。 onto penultimate line: " + line_texts(l.c.glyphs));
+    }
+    {
+        // Strategy B (追出し push-down): 12em (192px) line with NO squeezable punctuation, 13 chars -> bare 1-char
+        // widow "す" on line 2 -> pushes 1 char down so line 2 has 2 chars ("しす") and line 1 expands <= 0.25em/gap!
+        Laid l;
+        lay_out(l, vertical, half_forms, 192, "あいうえおかきくけこさしす");
+        check(line_texts(l.c.glyphs) == "あいうえおかきくけこさ|しす",
+              mode + "3.5.4 push-down: avoids bare 1-char widow す by pushing し down: " + line_texts(l.c.glyphs));
+    }
+    {
+        // Guards: <br>, left-aligned paragraph, and pure English paragraph are NOT altered by 3.5.4!
+        Laid l_br, l_left, l_en;
+        lay_out(l_br, vertical, half_forms, 192, "あいうえおかきくけこさし<br/>す", "justify");
+        check(line_texts(l_br.c.glyphs) == "あいうえおかきくけこさし|す",
+              mode + "3.5.4 guard: explicit <br/> before 1-char line untouched: " + line_texts(l_br.c.glyphs));
+        lay_out(l_left, vertical, half_forms, 192, "あいうえおかきくけこさしす", "left");
+        check(line_texts(l_left.c.glyphs) == "あいうえおかきくけこさし|す",
+              mode + "3.5.4 guard: left-aligned paragraph untouched: " + line_texts(l_left.c.glyphs));
+        lay_out(l_en, vertical, half_forms, 192, "abcdefghijk x", "justify");
+        check(line_texts(l_en.c.glyphs) == "abcdefghijk|x",
+              mode + "3.5.4 guard: pure English paragraph untouched: " + line_texts(l_en.c.glyphs));
+        // Kinsoku-safe push-down: moving っ alone would violate not_starting, so さっ moves together.
+        Laid l_kin;
+        lay_out(l_kin, vertical, half_forms, 192, "あいうえおかきくけこさっす", "justify");
+        check(line_texts(l_kin.c.glyphs) == "あいうえおかきくけこ|さっす",
+              mode + "3.5.4 push-down kinsoku: keeps さっ together when pushing down: " + line_texts(l_kin.c.glyphs));
+        // Opt-out via set_widow_adjustment(widow_adjustment::none).
+        Laid l_off;
+        l_off.c.half_forms = half_forms;
+        if (vertical) l_off.c.h = 192;
+        l_off.doc = document::createFromString(
+            std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                "><body style=\"margin:0;font-size:16px;line-height:20px\"><p style=\"margin:0;text-align:justify\">"
+                "あいうえおかきくけこさしす</p></body></html>",
+            &l_off.c);
+        l_off.doc->set_widow_adjustment(widow_adjustment::none);
+        l_off.doc->render(pixel_t(vertical ? 400 : 192));
+        l_off.doc->draw(0, 0, 0, nullptr);
+        check(line_texts(l_off.c.glyphs) == "あいうえおかきくけこさし|す",
+              mode + "3.5.4 opt-out: widow_adjustment::none leaves 1-char last line untouched: " + line_texts(l_off.c.glyphs));
+    }
 }
 
 } // namespace

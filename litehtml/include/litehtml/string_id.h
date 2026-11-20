@@ -82,7 +82,7 @@ namespace litehtml
         _text_decoration_thickness_, _text_emphasis_, _text_emphasis_style_, _text_emphasis_color_,
         _text_emphasis_position_,
 
-        _white_space_, _overflow_wrap_, _word_wrap_, _word_break_, _text_align_, _direction_, _vertical_align_, _color_, _width_, _height_, _min_width_, _min_height_,
+        _white_space_, _overflow_wrap_, _word_wrap_, _word_break_, _text_align_, _text_align_last_, _direction_, _vertical_align_, _color_, _width_, _height_, _min_width_, _min_height_,
         _max_width_, _max_height_, _position_, _overflow_, _overflow_x_, _overflow_y_, _display_, _visibility_, _appearance_, _resize_, _box_sizing_,
         _z_index_, _float_, _clear_, _text_indent_, _top_, _right_, _bottom_, _left_, _cursor_, _content_, _user_select_, __webkit_user_select_,
         _border_collapse_, _text_transform_,
@@ -111,7 +111,7 @@ namespace litehtml
         __webkit_text_emphasis_, __webkit_text_emphasis_style_, __webkit_text_emphasis_color_,
         __webkit_text_emphasis_position_, __epub_text_emphasis_style_, __epub_text_emphasis_color_,
         __epub_text_emphasis_position_, _text_underline_position_, __webkit_text_underline_position_,
-        __epub_text_underline_position_,
+        __epub_text_underline_position_, _ruby_position_, __webkit_ruby_position_, __epub_ruby_position_,
 
         // some CSS dimensions
         _deg_, _grad_, _rad_, _turn_,

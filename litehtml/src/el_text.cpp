@@ -739,7 +739,8 @@ const std::vector<size_t>& litehtml::el_text::hyphenation_points()
     const css_properties& css   = el_parent->css();
     document_container*   cont  = get_document()->container();
     const bool            on    = css.get_hyphens() == hyphens_auto ||
-                                  (css.get_hyphens() == hyphens_initial && css.get_text_align() == text_align_justify &&
+                                  (css.get_hyphens() == hyphens_initial &&
+                                   is_one_of(css.get_text_align(), text_align_justify, text_align_justify_all) &&
                                    cont->hyphenate_justified());
     const std::string&    shown = display_text();
     if(!on || shown.find("\xC2\xAD") != std::string::npos)

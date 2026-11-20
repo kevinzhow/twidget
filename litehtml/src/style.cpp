@@ -42,6 +42,8 @@ namespace litehtml
         {_box_sizing_,             box_sizing_strings                  },
 
         {_text_align_,             text_align_strings                  },
+        {_text_align_last_,        text_align_last_strings             },
+        {_ruby_position_,          ruby_position_strings               },
         {_direction_,              direction_strings                   },
         {_vertical_align_,         vertical_align_strings              },
         {_text_transform_,         text_transform_strings              },
@@ -521,6 +523,8 @@ namespace litehtml
             name = _text_emphasis_position_;
         if(name == __webkit_text_underline_position_ || name == __epub_text_underline_position_)
             name = _text_underline_position_;
+        if(name == __webkit_ruby_position_ || name == __epub_ruby_position_)
+            name = _ruby_position_;
         // text-combine-upright: digits 2 is digits (CSS Writing Modes 4): two digits in one em, as the automatic rule
         // sets them (cjk::tate_chu_yoko). digits 3 and digits 4 are not supported.
         if(name == _text_combine_upright_ && value.size() == 2 && value[0].ident() == "digits" && value[1].type == NUMBER &&
@@ -575,6 +579,7 @@ namespace litehtml
         case _overflow_y_:
 
         case _text_align_:
+        case _text_align_last_:
         case _direction_:
         case _vertical_align_:
         case _text_transform_:
@@ -924,6 +929,21 @@ namespace litehtml
 
         case _text_underline_position_:
             parse_text_underline_position(value, important);
+            break;
+
+        case _ruby_position_:
+            {
+                // CSS Ruby Layout 1 §4.2 + legacy/EPUB/WebKit: over | under | right | left | alternate [over|under] | before | after.
+                std::string kw = ident;
+                if(kw.empty() && value.size() == 2 && value[0].ident() == "alternate")
+                    kw = value[1].ident();
+                if(kw == "before" || kw == "alternate")
+                    kw = "over";
+                else if(kw == "after")
+                    kw = "under";
+                if(auto index = m_valid_values.at(_ruby_position_).value_index(kw); index.has_value())
+                    add_parsed_property(_ruby_position_, property_value(*index, important));
+            }
             break;
 
             //  =============================  FLEX  =============================

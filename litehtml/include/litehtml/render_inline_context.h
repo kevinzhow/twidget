@@ -13,6 +13,7 @@ namespace litehtml
     class render_item_inline_context : public render_item_block
     {
         pixel_t m_trailing = 0_px;
+        bool    m_force_break_next = false;
         std::vector<std::shared_ptr<render_text>> m_fragmented_texts;
 
       protected:

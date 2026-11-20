@@ -63,6 +63,10 @@ void litehtml::css_properties::compute(const html_tag* el, const document::ptr& 
     m_overflow   = m_overflow_y != overflow_visible ? m_overflow_y : m_overflow_x;
     m_text_align =
         static_cast<text_align>(el->get_property<int>(_text_align_, true, text_align_start, offset(m_text_align)));
+    m_text_align_last = static_cast<text_align_last>(
+        el->get_property<int>(_text_align_last_, true, text_align_last_auto, offset(m_text_align_last)));
+    m_ruby_position = static_cast<ruby_position>(
+        el->get_property<int>(_ruby_position_, true, ruby_position_over, offset(m_ruby_position)));
     m_direction = static_cast<direction>(el->get_property<int>(_direction_, true, direction_ltr, offset(m_direction)));
     m_writing_mode = static_cast<writing_mode>(
         el->get_property<int>(_writing_mode_, true, writing_mode_horizontal_tb, offset(m_writing_mode)));
@@ -1187,6 +1191,8 @@ std::vector<std::tuple<std::string, std::string>> litehtml::css_properties::dump
     ret.emplace_back("display", css_values(style_display_strings).value_by_index(m_display));
     ret.emplace_back("el_position", css_values(element_position_strings).value_by_index(m_el_position));
     ret.emplace_back("text_align", css_values(text_align_strings).value_by_index(m_text_align));
+    ret.emplace_back("text_align_last", css_values(text_align_last_strings).value_by_index(m_text_align_last));
+    ret.emplace_back("ruby_position", css_values(ruby_position_strings).value_by_index(m_ruby_position));
     ret.emplace_back("font_size", m_font_size.to_string());
     ret.emplace_back("overflow", css_values(overflow_strings).value_by_index(m_overflow));
     ret.emplace_back("white_space", css_values(white_space_strings).value_by_index(m_white_space));
