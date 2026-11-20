@@ -87,8 +87,8 @@ namespace litehtml
         /// The line boxes, in the content box's coordinates (a reader's page breaker cuts between them).
         const std::vector<std::unique_ptr<litehtml::line_box>>& line_boxes() const { return m_line_boxes; }
         /// ruby-align: space-around for a box of one line (render_item_ruby_pair): its items spread over `width`,
-        /// half a gap at each end.
-        void space_around(pixel_t width);
+        /// half a gap at each end, but no more than `max_end` (the rest between them).
+        void space_around(pixel_t width, pixel_t max_end);
         explicit render_item_inline_context(std::shared_ptr<element> src_el) :
             render_item_block(std::move(src_el))
         {

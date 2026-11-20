@@ -421,5 +421,16 @@ rp {
 }
 
 )##";
+
+    /// A user-agent addition for Japanese text (JLReq 3.7.1), after master_css: <sup> and <sub> (添え字) about 60% of
+    /// their base, not `smaller` (83%), and they do not push their line away from the next: the line's pitch stays the
+    /// paragraph's (3.2.2). A book's own rules for them win, as over master_css. Not part of master_css, which keeps
+    /// the browsers' sizes.
+    const char* const jlreq_scripts_css = R"##(
+sub, sup {
+	font-size: 60%;
+	line-height: 0;
+}
+)##";
 }
 #endif // LITEHTML_MASTER_CSS_H

@@ -202,6 +202,27 @@ namespace
     }
 } // namespace
 
+bool litehtml::script_boundary(const element::ptr& before, const element::ptr& after)
+{
+    const auto doc = before->get_document();
+    if(!doc || doc->get_script_breaking() != script_breaking::keep)
+        return false;
+    std::vector<const element*> theirs;
+    for(auto p = after->parent(); p; p = p->parent())
+        theirs.push_back(p.get());
+    element::ptr common;
+    for(auto p = before->parent(); p && !common; p = p->parent())
+        if(std::find(theirs.begin(), theirs.end(), p.get()) != theirs.end())
+            common = p;
+    auto in_script = [&](const element::ptr& el) {
+        for(auto p = el->parent(); p && p != common; p = p->parent())
+            if(is_one_of(p->css().get_vertical_align(), va_super, va_sub))
+                return true;
+        return false;
+    };
+    return in_script(before) || in_script(after);
+}
+
 bool litehtml::same_text(const element::ptr& before, const element::ptr& after)
 {
     const auto parent = before->parent();
@@ -230,6 +251,12 @@ bool litehtml::no_break_opportunity(const element::ptr& before, const element::p
         return true;
     if(before->is_space() || after->is_space())
         return false;
+    // 添え字 (JLReq 3.1.10 ⑨): none between a base and its script, a box of vertical-align super or sub that starts
+    // with `after` and does not hold `before` (数², H₂O, a note mark after 。; a second script after the first).
+    if(const auto doc = after->get_document(); doc && doc->get_script_breaking() == script_breaking::keep)
+        for(auto p = after->parent(); p && p != common; p = p->parent())
+            if(is_one_of(p->css().get_vertical_align(), va_super, va_sub))
+                return true;
     const char32_t last = edge_char(before, false), first = edge_char(after, true);
     if(common && common->css().get_word_break() == word_break_keep_all && letter(last) && letter(first))
         return true;
@@ -322,6 +349,9 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
                                                            : cjk::tate_chu_yoko(shown, 0, shown.size());
                             text->after_solid = !tcy.empty() && tcy.front().from == 0;
                         }
+                        // 添え字 (JLReq 3.7.1): a script is set solid with its base and with what follows it.
+                        text->after_solid = text->after_solid ||
+                                            script_boundary(events[kids[k]].first->src_el(), events[kids[n]].first->src_el());
                         break;
                     }
             }
@@ -511,7 +541,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
     return m_rendered_width;
 }
 
-void litehtml::render_item_inline_context::space_around(pixel_t width)
+void litehtml::render_item_inline_context::space_around(pixel_t width, pixel_t max_end)
 {
     if(m_line_boxes.size() != 1)
         return;
@@ -528,8 +558,14 @@ void litehtml::render_item_inline_context::space_around(pixel_t width)
     }
     if(items.size() < 2 || width - (right - left) < 0.5_px)
         return;
-    const pixel_t gap = (width - used) / pixel_t(float(items.size()));
-    pixel_t       x   = gap / 2_px;
+    // 1:2:1; with an end longer than max_end, max_end at each end and the rest between (JLReq 3.3.6 (注)).
+    pixel_t gap = (width - used) / pixel_t(float(items.size()));
+    pixel_t x   = gap / 2_px;
+    if(x > max_end)
+    {
+        x   = max_end;
+        gap = (width - used - max_end * 2_px) / pixel_t(float(items.size() - 1));
+    }
     for(auto* item : items)
     {
         item->get_el()->pos().x += x - item->left();

@@ -519,6 +519,7 @@ void litehtml::el_text::set_text(const std::string& text)
     m_run.reset();
     m_tate_chu_yoko.clear();
     m_strong_direction = 2;
+    m_comma_period     = 2;
     m_transformed_text.clear();
     m_use_transformed = false;
     m_draw_spaces     = true;
@@ -534,6 +535,7 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
 {
     mark_layout_dirty();
     m_hyphenation.reset();
+    m_comma_period = 2;
     element::ptr el_parent = parent();
     // Every text child of an element has the same style: the parent's text_css(), one object for all of them.
     if(el_parent)
@@ -857,6 +859,41 @@ litehtml::pixel_t litehtml::trim_shift(const std::vector<char_trim>& trims, size
     return shift;
 }
 
+char32_t litehtml::el_text::rule_char(char32_t c) const
+{
+    if((c != 0xFF0C && c != 0xFF0E) || get_document()->get_comma_period() != comma_period::jlreq)
+        return c;
+    // Whether it is horizontal Japanese text, found once after compute_styles.
+    if(m_comma_period == 2)
+    {
+        const element::ptr el_parent = parent();
+        bool               on        = el_parent && !el_parent->css().is_vertical_rl();
+        if(on)
+        {
+            // The language: the nearest lang or xml:lang, else the container's.
+            std::string language, culture;
+            bool        found = false;
+            for(element::ptr el = el_parent; el && !found; el = el->parent())
+            {
+                const char* lang = el->get_attr("lang");
+                if(!lang)
+                    lang = el->get_attr("xml:lang");
+                if(lang)
+                {
+                    language = lang;
+                    found    = true;
+                }
+            }
+            if(!found)
+                get_document()->container()->get_language(language, culture);
+            on = language.size() >= 2 && (language[0] | 0x20) == 'j' && (language[1] | 0x20) == 'a' &&
+                 (language.size() == 2 || language[2] == '-' || language[2] == '_');
+        }
+        m_comma_period = on ? 1 : 0;
+    }
+    return m_comma_period ? (c == 0xFF0C ? char32_t(0x3001) : char32_t(0x3002)) : c;
+}
+
 std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::string& shown, char32_t before, char32_t after,
                                                                 uint8_t first, uint8_t last, bool after_solid) const
 {
@@ -872,22 +909,23 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
     const pixel_t em    = el_parent->css().get_font_metrics().font_size;
     for(size_t k = 0; k < chars.size(); k++)
     {
-        const char32_t prev = k ? chars[k - 1].second : before;
-        const char32_t next = k + 1 < chars.size() ? chars[k + 1].second : after;
+        const char32_t prev = rule_char(k ? chars[k - 1].second : before);
+        const char32_t next = rule_char(k + 1 < chars.size() ? chars[k + 1].second : after);
+        const char32_t self = rule_char(chars[k].second);
         const uint8_t  at   = (k == 0 ? first : 0) | (k + 1 == chars.size() ? last : 0);
         // A tate-chu-yoko token's characters are set together in their em.
         if(std::any_of(m_tate_chu_yoko.begin(), m_tate_chu_yoko.end(),
                        [&](const cjk::span& t) { return t.from <= chars[k].first && chars[k].first < t.to; }))
             continue;
-        const cjk::trim t   = cjk::compression(prev, chars[k].second, next, at);
+        const cjk::trim t   = cjk::compression(prev, self, next, at);
         // JLReq 3.2.6 ④: a quarter em after it where Japanese meets Latin, not before a tate-chu-yoko token.
         const bool next_upright = k + 1 < chars.size()
                                       ? std::any_of(m_tate_chu_yoko.begin(), m_tate_chu_yoko.end(),
                                                     [&](const cjk::span& s) { return s.from <= chars[k + 1].first && chars[k + 1].first < s.to; })
                                       : after_solid;
-        const bool space = latin && !next_upright && cjk::latin_space_after(chars[k].second, next, at);
+        const bool space = latin && !next_upright && cjk::latin_space_after(self, next, at);
         // JLReq 3.1.6 ①: a full-width space after ？！ ending a sentence, where the book has none.
-        const bool full = dividing && cjk::dividing_space_after(chars[k].second, next, at);
+        const bool full = dividing && cjk::dividing_space_after(self, next, at);
         if(t.start == 0 && t.end == 0 && !space && !full)
             continue;
         const size_t  from    = chars[k].first;
@@ -915,7 +953,7 @@ std::vector<litehtml::char_squeeze> litehtml::el_text::squeezable(const std::str
     const pixel_t em = parent()->css().get_font_metrics().font_size;
     for(size_t i = 0, n = 0; i < shown.size(); i += n)
     {
-        const char32_t c = code_point_at(shown, i, n);
+        const char32_t c = rule_char(code_point_at(shown, i, n));
         // The quarter em between Japanese and Latin after it (compression's negative end): to an eighth, last (3.8.3).
         for(const auto& t : trims)
             if(t.at == i && t.end < 0_px && !(i + n == shown.size() && (last & cjk::line_end)) &&

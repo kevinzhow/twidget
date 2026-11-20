@@ -59,6 +59,7 @@ namespace litehtml
         int         m_measured_transform = -1;
         std::shared_ptr<text_breaker> m_breaker;
         mutable int8_t m_strong_direction = 2;  // 2: not looked at yet
+        mutable int8_t m_comma_period = 2;      // rule_char's: 2: not looked at yet
         // Where the text came from: the source text node's byte position in the parsed string, and this text's
         // UTF-16 offset in that node's (decoded) text; UINT32_MAX when it was not parsed from a string.
         uint32_t m_src_pos = UINT32_MAX;
@@ -135,6 +136,10 @@ namespace litehtml
         /// and `last`: each character that may give up more, as compression measures it.
         std::vector<char_squeeze> squeezable(const std::string& shown, const std::vector<char_trim>& trims, uint8_t first,
                                              uint8_t last) const;
+        /// The character the CJK rule set takes `c` of this text as: under comma_period::jlreq, in horizontal text whose
+        /// language is Japanese (the nearest lang or xml:lang, else the container's), ，． as 、。 (JLReq 3.1.1 ②);
+        /// otherwise `c`.
+        char32_t rule_char(char32_t c) const;
         const std::vector<cjk::span>& tate_chu_yoko() const { return m_tate_chu_yoko; }
         uint32_t source_pos() const { return m_src_pos; }
         uint32_t source_utf16() const { return m_src_utf16; }

@@ -109,6 +109,36 @@ namespace litehtml
         none,
     };
 
+    /// Full-width ，． (U+FF0C, U+FF0E) in horizontal Japanese text (JLReq 3.1.1 ②). jlreq: 読点 and 句点 (cl-07, cl-06), as
+    /// 、。 are: the half em after them is compressed, squeezed and never widened as theirs is. Not in vertical text, nor
+    /// in text whose nearest lang (or xml:lang; else the container's language) is not Japanese: a Chinese ， may be
+    /// centred in its em. none: they are only not to start a line, as before.
+    enum class comma_period : uint8_t
+    {
+        jlreq,
+        none,
+    };
+
+    /// How a group ruby shorter than its base spreads over it (JLReq 3.3.6 (注), Appendix F). jlreq: 1:2:1 (ruby-align:
+    /// space-around), but at most one ruby character at each end, the rest between the ruby characters. space_around:
+    /// 1:2:1 however long the ends get, as before (and as Chromium does).
+    enum class short_ruby : uint8_t
+    {
+        jlreq,
+        space_around,
+    };
+
+    /// Line breaks next to 添え字, a <sup> or <sub> (or any vertical-align: super or sub box) (JLReq 3.1.10 ⑨). keep: no
+    /// break between a base and its script (数², H₂O, a note mark after 。); a script may still start a line after a
+    /// space; and a script is set solid with its base and what follows (no 和欧間 quarter em next to it, 3.7.1). css: a
+    /// break is allowed where the text on either side allows one, and the quarter em goes there, as before (and as
+    /// Chromium breaks).
+    enum class script_breaking : uint8_t
+    {
+        keep,
+        css,
+    };
+
     class document : public std::enable_shared_from_this<document>
     {
       public:
@@ -221,6 +251,9 @@ namespace litehtml
         ruby_breaking                           m_ruby_breaking      = ruby_breaking::per_base;
         latin_spacing                           m_latin_spacing      = latin_spacing::quarter;
         dividing_space                          m_dividing_space     = dividing_space::full_em;
+        script_breaking                         m_script_breaking    = script_breaking::keep;
+        short_ruby                              m_short_ruby         = short_ruby::jlreq;
+        comma_period                            m_comma_period       = comma_period::jlreq;
         bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
@@ -351,6 +384,12 @@ namespace litehtml
         latin_spacing                get_latin_spacing() const { return m_latin_spacing; }
         void                         set_dividing_space(dividing_space mode) { m_dividing_space = mode; }
         dividing_space               get_dividing_space() const { return m_dividing_space; }
+        void                         set_script_breaking(script_breaking mode) { m_script_breaking = mode; }
+        script_breaking              get_script_breaking() const { return m_script_breaking; }
+        void                         set_short_ruby(short_ruby mode) { m_short_ruby = mode; }
+        short_ruby                   get_short_ruby() const { return m_short_ruby; }
+        void                         set_comma_period(comma_period mode) { m_comma_period = mode; }
+        comma_period                 get_comma_period() const { return m_comma_period; }
         bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;
