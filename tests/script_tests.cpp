@@ -51,11 +51,13 @@ struct Glyph {
     float along;  // where it starts along the line
     float top;    // its box's top across the line
     float mid;    // its box's middle across the line
+    bool upright = false;  // turned back upright (CJK / TCY) in vertical-rl
 };
 
 struct Stub : document_container {
     float w = 400, h = 400;
     std::map<uint_ptr, float> sizes;
+    std::vector<transform_matrix> groups;
     std::vector<Glyph> glyphs;
     uint_ptr create_font(const font_description& d, const document*, font_metrics* fm) override {
         if (fm) {
@@ -90,20 +92,23 @@ struct Stub : document_container {
                 if (at > start) on_word(s.substr(start, at - start).c_str());
                 on_space(" ");
                 start = end;
-            } else if (next && next != U'　' && !cjk::no_break_between(cp, next)) {
+            } else if (next && next != U'　' && !(cp < 0x80 && next < 0x80 && next != ' ') && !cjk::no_break_between(cp, next)) {
                 on_word(s.substr(start, end - start).c_str());
                 start = end;
             }
         }
         if (s.size() > start) on_word(s.substr(start).c_str());
     }
+    void begin_group(uint_ptr, const paint_group& group) override { groups.push_back(group.matrix); }
+    void end_group(uint_ptr) override { groups.pop_back(); }
     void draw_text(uint_ptr, const char* text, uint_ptr font, web_color, const position& pos) override {
         const std::string s = text;
         const float size = sizes[font];
+        const bool upright = !groups.empty() && groups.back().a == 0 && groups.back().b < 0;
         size_t k = 0;
         for (auto [cp, at] : code_points(s))
             glyphs.push_back({utf8(s, at), size, float(pos.x) + size * float(k++), float(pos.y),
-                              float(pos.y) + float(pos.height) / 2});
+                              float(pos.y) + float(pos.height) / 2, upright});
     }
     pixel_t pt_to_px(float pt) const override { return pt * 96 / 72; }
     pixel_t get_default_font_size() const override { return 16; }
@@ -340,6 +345,47 @@ void run(bool vertical) {
         const Glyph* three = find(l.c.glyphs, "3");
         check(base && two && three && two->mid < base->mid && three->mid > base->mid,
               "3.7.1: ² above the base's middle, ₃ below" + m);
+    }
+
+    // 3.7.1: in vertical-rl (text-orientation: mixed), digits inside <sub>/<sup> do NOT trigger automatic 1-2 digit
+    // tate-chu-yoko — they rotate 90° CW uniformly with their base letters (O₂, CO₂, H₂O, C₆H₁₂O₆, m²). Explicit
+    // text-combine-upright: all / digits on a script or ancestor is still honored, and normal text still gets auto-TCY.
+    if (vertical) {
+        {
+            Laid l;
+            lay_out(l, true, 400, "O<sub>2</sub>、CO<sub>2</sub>、H<sub>2</sub>O、C<sub>6</sub>H<sub>12</sub>O<sub>6</sub>、m<sup>2</sup>");
+            bool all_sideways = !l.c.glyphs.empty();
+            for (const auto& g : l.c.glyphs)
+                if (g.c != "、" && g.upright) all_sideways = false;
+            check(all_sideways, "3.7.1: vertical O₂/CO₂/H₂O/C₆H₁₂O₆/m² digits rotate 90° CW (no auto-TCY)");
+            // C₆H₁₂O₆: two-digit subscript "12" is sideways (2 * 9.6 = 19.2px), not 1em squeezed TCY (9.6px).
+            const Glyph *one = find(l.c.glyphs, "1"), *o_after = nullptr;
+            for (size_t i = 0; i < l.c.glyphs.size(); i++)
+                if (l.c.glyphs[i].c == "1" && i + 2 < l.c.glyphs.size() && l.c.glyphs[i + 2].c == "O") {
+                    o_after = &l.c.glyphs[i + 2];
+                    break;
+                }
+            check(one && o_after && std::abs((o_after->along - one->along) - 19.2f) < 0.5f,
+                  "3.7.1: vertical C₆H₁₂O₆ '12' advances 2 sideways digits, not 1em TCY");
+        }
+        {
+            // Nested inline inside <sub> still suppresses auto-TCY; normal 12日 still gets auto-TCY.
+            Laid l;
+            lay_out(l, true, 400, "H<sub><span>2</span></sub>Oと12日");
+            const Glyph *two = find(l.c.glyphs, "2"), *one = find(l.c.glyphs, "1");
+            check(two && !two->upright, "3.7.1: nested <sub><span>2</span></sub> does not auto-TCY");
+            check(one && one->upright, "3.7.1: non-script 12日 still gets auto-TCY");
+        }
+        {
+            // Explicit text-combine-upright: all and digits on script or ancestor still work.
+            Laid l;
+            lay_out(l, true, 400,
+                    "H<sub style=\"text-combine-upright:all\">2</sub>O"
+                    "<span style=\"text-combine-upright:digits\">H<sub>12</sub>O</span>");
+            const Glyph *two = find(l.c.glyphs, "2"), *one = find(l.c.glyphs, "1");
+            check(two && two->upright, "3.7.1: explicit text-combine-upright:all on <sub> is honored");
+            check(one && one->upright, "3.7.1: explicit text-combine-upright:digits on ancestor is honored");
+        }
     }
 }
 

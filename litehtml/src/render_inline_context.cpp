@@ -358,10 +358,7 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
                         if(auto next = std::dynamic_pointer_cast<el_text>(events[kids[n]].first->src_el());
                            next && next->parent() && next->parent()->css().is_vertical_rl())
                         {
-                            const std::string& shown = next->display_text();
-                            const auto         tcy   = next->parent()->css().combines_upright()
-                                                           ? std::vector<cjk::span>{{0, shown.size()}}
-                                                           : cjk::tate_chu_yoko(shown, 0, shown.size());
+                            const auto& tcy = next->tate_chu_yoko();
                             text->after_solid = !tcy.empty() && tcy.front().from == 0;
                         }
                         // 添え字 (JLReq 3.7.1): a script is set solid with its base and with what follows it.

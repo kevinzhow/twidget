@@ -209,6 +209,22 @@ namespace
         }
     }
 
+    // Whether an element is inside a subscript or superscript (添え字, JLReq 3.7.1): automatic tate-chu-yoko is
+    // suppressed there so Latin letters and script digits (O₂, H₂O, C₆H₁₂O₆, m²) rotate 90° CW uniformly unless
+    // text-combine-upright explicitly requests upright digits/all.
+    bool in_script(const litehtml::element::ptr& parent)
+    {
+        using namespace litehtml;
+        for(element::ptr p = parent; p; p = p->parent())
+        {
+            if(is_one_of(p->css().get_vertical_align(), va_super, va_sub))
+                return true;
+            if(p->css().get_display() != display_inline)
+                break;
+        }
+        return false;
+    }
+
     // Whether a character of vertical text is drawn upright: text-orientation upright, or mixed and upright by UAX #50
     // (a Tr character only when its font has a vertical form).
     bool drawn_upright(litehtml::document_container* container, litehtml::text_orientation orientation, char32_t cp,
@@ -629,11 +645,14 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
     {
         if(el_parent->css().combines_upright())
             tcy.push_back({0, shown.size()});
-        else if(m_run && !m_use_transformed && m_run_end <= m_run->text.size())
-            for(const auto& t : cjk::tate_chu_yoko(m_run->text, m_run_begin, m_run_end))
-                tcy.push_back({t.from - m_run_begin, t.to - m_run_begin});
-        else
-            tcy = cjk::tate_chu_yoko(shown, 0, shown.size());
+        else if(el_parent->css().get_text_combine() == text_combine_digits || !in_script(el_parent))
+        {
+            if(m_run && !m_use_transformed && m_run_end <= m_run->text.size())
+                for(const auto& t : cjk::tate_chu_yoko(m_run->text, m_run_begin, m_run_end))
+                    tcy.push_back({t.from - m_run_begin, t.to - m_run_begin});
+            else
+                tcy = cjk::tate_chu_yoko(shown, 0, shown.size());
+        }
     }
     if(tcy != m_tate_chu_yoko)
     {
