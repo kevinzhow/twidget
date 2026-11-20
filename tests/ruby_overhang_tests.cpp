@@ -484,6 +484,84 @@ void run(bool vertical) {
     expect(400, "の" + r("ab", "abcdefgh") + "の", "の@0 ^abcdefgh@16 a@24 b@56 の@80", "a ruby over Latin text after a kana: no overhang");
     expect(72, "あい漢" + shun + "えお", "あ@0 い@16 漢@32 ^しゅん@48 旬@56 | え@0 お@16",
            "line-edge b: at a wrapped line's end after a kanji, the space before 旬");
+
+    // JLReq 3.3.4: ruby-position (over, under, right, left) and -webkit-ruby-position (before, after).
+    // In laid-out coordinates, over/right/before puts <rt> above base (rt.y < base.y; rotates to RIGHT in vertical-rl),
+    // and under/left/after puts <rt> below base (rt.y >= base.y + 16; rotates to LEFT in vertical-rl).
+    {
+        auto render_pos = [&](const std::string& css, const std::string& body, const char* lh = "32px") {
+            Stub c;
+            if (vertical) c.h = 400;
+            auto doc = document::createFromString(
+                std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                    "><head><style>body{margin:0;font-size:16px;line-height:" + lh + "}p{margin:0}" + css +
+                    "</style></head><body>" + body + "</body></html>",
+                &c, master_css);
+            doc->render(400);
+            doc->draw(0, 0, 0, nullptr);
+            return c;
+        };
+        auto find_pair_y = [](const Stub& c, float& base_y, float& rt_y) {
+            base_y = rt_y = -999.0f;
+            for (const auto& d : c.drawn) {
+                if (d.ruby && rt_y < -900.0f) rt_y = d.y;
+                if (!d.ruby && d.text.find("漢") != std::string::npos && base_y < -900.0f) base_y = d.y;
+            }
+        };
+        for (const auto& [decl, want_under] : std::vector<std::pair<std::string, bool>>{
+                 {"ruby-position:over", false},
+                 {"ruby-position:right", false},
+                 {"-webkit-ruby-position:before", false},
+                 {"ruby-position:under", true},
+                 {"ruby-position:left", true},
+                 {"-webkit-ruby-position:after", true},
+             }) {
+            const Stub c = render_pos("ruby{" + decl + "}", "<p>前<ruby>漢字<rt>かんじ</rt></ruby>後</p>");
+            float by = 0, ry = 0;
+            find_pair_y(c, by, ry);
+            const bool ok = want_under ? (ry >= by + 15.5f) : (ry <= by - 7.5f);
+            check(ok, mode + "3.3.4: " + decl + " (base_y=" + num(by) + " rt_y=" + num(ry) + ")");
+        }
+        // Inheritance from <p> and direct override on <rt>.
+        {
+            const Stub c = render_pos("p{ruby-position:under}", "<p>前<ruby>漢字<rt>かんじ</rt></ruby>後</p>");
+            float by = 0, ry = 0;
+            find_pair_y(c, by, ry);
+            check(ry >= by + 15.5f, mode + "3.3.4: ruby-position:under inherited from <p> (base_y=" + num(by) + " rt_y=" + num(ry) + ")");
+        }
+        {
+            const Stub c = render_pos("", "<p>前<ruby>漢字<rt style=\"ruby-position:left\">かんじ</rt></ruby>後</p>");
+            float by = 0, ry = 0;
+            find_pair_y(c, by, ry);
+            check(ry >= by + 15.5f, mode + "3.3.4: ruby-position:left on <rt> directly (base_y=" + num(by) + " rt_y=" + num(ry) + ")");
+        }
+        // Overhang still works identically with ruby-position: under/left.
+        {
+            const Stub c = render_pos("ruby{ruby-position:under}", "<p>の" + shun + "に</p>");
+            const std::string got = format(c.drawn);
+            check(got == "の@0 ^しゅん@12 旬@16 に@32", mode + "3.3.4: ruby-position:under preserves overhang: " + got);
+        }
+        // Line spacing clearance when line 1 has under-ruby at tight line-height (16px): line 2 pushes down to clear <rt>.
+        {
+            Stub c;
+            if (vertical) c.h = 64;
+            auto doc = document::createFromString(
+                std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                    "><head><style>body{margin:0;font-size:16px;line-height:16px}p{margin:0}ruby{ruby-position:under}</style></head>"
+                    "<body><p>あ<ruby>漢<rt>かん</rt></ruby>いうえおかき</p></body></html>",
+                &c, master_css);
+            doc->render(pixel_t(vertical ? 400 : 64));
+            doc->draw(0, 0, 0, nullptr);
+            float l1_y = -1, l2_y = -1, rt_y = -1;
+            for (const auto& d : c.drawn) {
+                if (d.ruby && rt_y < 0) rt_y = d.y;
+                if (!d.ruby && d.text.find("あ") != std::string::npos && l1_y < 0) l1_y = d.y;
+                if (!d.ruby && d.text.find("お") != std::string::npos && l2_y < 0) l2_y = d.y;
+            }
+            check(rt_y >= l1_y + 15.5f && l2_y >= rt_y + 7.5f,
+                  mode + "3.3.4: tight line-height pushes line 2 past line 1 under-ruby (l1=" + num(l1_y) + " rt=" + num(rt_y) + " l2=" + num(l2_y) + ")");
+        }
+    }
 }
 
 } // namespace

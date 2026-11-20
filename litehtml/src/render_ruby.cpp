@@ -197,8 +197,10 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
                                                                        const containing_block_context& self_size,
                                                                        formatting_context* fmt_ctx)
 {
-    auto ret            = render_item_block_context::_render_content(x, y, second_pass, self_size, fmt_ctx);
-    annotation_overflow = 0_px;
+    auto ret                  = render_item_block_context::_render_content(x, y, second_pass, self_size, fmt_ctx);
+    annotation_under          = false;
+    annotation_overflow       = 0_px;
+    annotation_under_overflow = 0_px;
     base_start = base_end = ruby_em = base_shift = ann_shift = ann_used_start = overlap_before = overlap_after = ann_start = ann_end = 0_px;
     japanese_base = false;
     if(m_children.empty())
@@ -318,19 +320,36 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
             ann_end   = 0_px;
         }
     }
-    // As Chromium 156 measures it: the annotation's box (its line, line-height: normal) ends where the base's em box
-    // begins. The pair's own box is the base's: the annotation hangs over it, and the inline formatting context
-    // makes room for it between lines (render_item_inline_context::make_room_for_ruby).
-    const auto&   rt      = m_children.front();
-    const auto&   base    = m_children.back();
-    const auto&   rt_fm   = rt->src_el()->css().get_font_metrics();
-    const auto&   base_fm = base->src_el()->css().get_font_metrics();
-    const pixel_t base_em_top = base->top() + base->get_first_baseline() - base_fm.em_top();
-    base->y_shift(rt->bottom() - base_em_top);
-    const pixel_t top = base->top();
-    for(const auto& el : m_children)
-        el->y_shift(-top);
-    annotation_overflow = -(rt->top() + rt->get_first_baseline() - rt_fm.em_top());
-    m_pos.height        = base->bottom();
+    // As Chromium 156 measures it: for over/right ruby, the annotation's box ends where the base's em box begins;
+    // for under/left ruby (JLReq 3.3.4 / CSS ruby-position: under | left), the annotation's box starts where the
+    // base's em box ends (below in horizontal-tb, left in vertical-rl). The pair's own box stays the base's so
+    // baseline alignment is unchanged and make_room_for_ruby clears neighbouring lines on either side.
+    const auto&         rt      = m_children.front();
+    const auto&         base    = m_children.back();
+    const auto&         rt_fm   = rt->src_el()->css().get_font_metrics();
+    const auto&         base_fm = base->src_el()->css().get_font_metrics();
+    const ruby_position rpos    = rt->src_el()->css().get_ruby_position();
+    annotation_under            = rpos == ruby_position_under || rpos == ruby_position_left;
+    if(annotation_under)
+    {
+        const pixel_t top = base->top();
+        for(const auto& el : m_children)
+            el->y_shift(-top);
+        const pixel_t base_em_bottom = base->top() + base->get_first_baseline() + base_fm.em_bottom();
+        rt->y_shift(base_em_bottom - rt->top());
+        m_pos.height              = base->bottom();
+        annotation_overflow       = 0_px;
+        annotation_under_overflow = std::max(0_px, (rt->top() + rt->get_first_baseline() + rt_fm.em_bottom()) - m_pos.height);
+    } else
+    {
+        const pixel_t base_em_top = base->top() + base->get_first_baseline() - base_fm.em_top();
+        base->y_shift(rt->bottom() - base_em_top);
+        const pixel_t top = base->top();
+        for(const auto& el : m_children)
+            el->y_shift(-top);
+        annotation_overflow       = -(rt->top() + rt->get_first_baseline() - rt_fm.em_top());
+        annotation_under_overflow = 0_px;
+        m_pos.height              = base->bottom();
+    }
     return ret;
 }

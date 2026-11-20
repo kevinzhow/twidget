@@ -139,6 +139,15 @@ namespace litehtml
         css,
     };
 
+    /// Paragraph last-line widow control (JLReq 3.5.4 段末行字数过少). jlreq: on a multi-line justified Japanese
+    /// paragraph ending with a short 1–2 char tail, absorb it onto the penultimate line via JLReq compression (追込み)
+    /// when within budget, or push 1 char down (追出し) for bare 1-char widows when penultimate expansion stays <= 0.25em/gap.
+    enum class widow_adjustment : uint8_t
+    {
+        jlreq,
+        none,
+    };
+
     class document : public std::enable_shared_from_this<document>
     {
       public:
@@ -254,6 +263,7 @@ namespace litehtml
         script_breaking                         m_script_breaking    = script_breaking::keep;
         short_ruby                              m_short_ruby         = short_ruby::jlreq;
         comma_period                            m_comma_period       = comma_period::jlreq;
+        widow_adjustment                        m_widow_adjustment   = widow_adjustment::jlreq;
         bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
@@ -391,6 +401,8 @@ namespace litehtml
         short_ruby                   get_short_ruby() const { return m_short_ruby; }
         void                         set_comma_period(comma_period mode) { m_comma_period = mode; }
         comma_period                 get_comma_period() const { return m_comma_period; }
+        void                         set_widow_adjustment(widow_adjustment mode) { m_widow_adjustment = mode; }
+        widow_adjustment             get_widow_adjustment() const { return m_widow_adjustment; }
         std::unordered_map<string_id, bool>& paragraphs_indented_cache() { return m_paragraphs_indented; }
         bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;

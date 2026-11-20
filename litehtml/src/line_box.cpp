@@ -180,6 +180,78 @@ namespace
     {
         return item->get_el()->src_el()->get_document()->get_line_adjustment() == litehtml::line_adjustment::jlreq;
     }
+
+    bool item_has_japanese(const litehtml::line_box_item* item)
+    {
+        using namespace litehtml;
+        if(!item || item->get_type() != line_box_item::type_text_part)
+            return false;
+        ruby_sides r;
+        if(ruby_of(item, r))
+            return true;
+        auto part = std::dynamic_pointer_cast<render_text>(item->get_el());
+        auto src  = part ? dynamic_cast<const el_text*>(part->src_el().get()) : nullptr;
+        if(!src)
+            return false;
+        const std::string& shown = part->is_fragment ? part->fragment_text : src->display_text();
+        for(size_t i = 0, n = 0; i < shown.size(); i += n)
+        {
+            const char32_t c = decode_at(shown, i, n);
+            if(c >= 0x2E80 && cjk::script_of(c) == cjk::script::japanese)
+                return true;
+        }
+        return false;
+    }
+
+    bool line_has_japanese(const std::list<std::unique_ptr<litehtml::line_box_item>>& items,
+                           const litehtml::line_box_item*                            next)
+    {
+        if(item_has_japanese(next))
+            return true;
+        for(const auto& item : items)
+            if(item_has_japanese(item.get()))
+                return true;
+        return false;
+    }
+
+    bool is_non_space_content(const litehtml::line_box_item* item)
+    {
+        using namespace litehtml;
+        if(!item || item->get_type() != line_box_item::type_text_part)
+            return false;
+        const auto& src = item->get_el()->src_el();
+        return !src->is_white_space() && !src->is_break();
+    }
+
+    // JLReq 3.2.6 ② / 3.8.3 Step 1: a compressible ASCII Western word space (cl-26) in normal/pre-line white-space.
+    bool compressible_word_space(const litehtml::line_box_item* item, litehtml::pixel_t& em_out)
+    {
+        using namespace litehtml;
+        if(!item || item->get_type() != line_box_item::type_text_part || item->width() <= 0_px)
+            return false;
+        const auto& src = item->get_el()->src_el();
+        if(!src->is_white_space() || src->is_break())
+            return false;
+        auto text = dynamic_cast<const el_text*>(src.get());
+        if(!text || text->display_text() != " ")
+            return false;
+        const auto& css = src->parent() ? src->parent()->css() : src->css();
+        if(!is_one_of(css.get_white_space(), white_space_normal, white_space_pre_line))
+            return false;
+        em_out = css.get_font_metrics().font_size;
+        return em_out > 0_px;
+    }
+
+    // JLReq 3.2.6 ② / 3.8.3 Step 1: Western word space (normally 1/3em) compresses down to 1/4em (or 0.65x natural
+    // width when the font's built-in space is already <= 1/3em, such as Noto Serif CJK JP at 0.256em), capped at 1/8em.
+    litehtml::pixel_t word_space_room(litehtml::pixel_t w, litehtml::pixel_t em)
+    {
+        using namespace litehtml;
+        if(w <= 0_px || em <= 0_px)
+            return 0_px;
+        const pixel_t floor_w = w >= em * pixel_t(1.0f / 3.0f) ? em * pixel_t(0.25f) : w * pixel_t(0.65f);
+        return std::min(std::max(0_px, w - floor_w), em * pixel_t(0.125f));
+    }
 } // namespace
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -606,10 +678,16 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
 
     if(is_empty() || (!is_empty() && last_box && is_break_only()))
     {
-        m_height   = m_default_line_height.computed_value;
-        m_baseline = m_font_metrics.base_line();
+        m_finished_with_break = finished_with_break;
+        m_pre_finish_width    = 0_px;
+        m_overfull            = false;
+        m_height              = m_default_line_height.computed_value;
+        m_baseline            = m_font_metrics.base_line();
         return ret_items;
     }
+    m_finished_with_break = finished_with_break;
+    m_pre_finish_width    = m_width;
+    m_overfull            = false;
 
     // Ruby at a wrapped line's end (JLReq 3.3.8 line-edge b): its base ends with its annotation, which overhangs a kana
     // before it by up to one ruby character.
@@ -739,7 +817,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
                 extra += text->line_end_extra();
         const pixel_t over = m_width + extra - (m_right - m_left);
         if(over > 0.01_px)
-            squeeze(over, !last_box && !finished_with_break);
+            m_overfull = squeeze(over, !last_box && !finished_with_break) > 0.01_px;
     }
 
     pixel_t spacing_x = 0_px; // Number of pixels to distribute between elements
@@ -747,7 +825,34 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
 
     // The line is laid out left to right and mirrored afterwards when it is right to left (reorder_bidi), so
     // its alignment is mirrored here: start is the left until then.
-    text_align align = m_text_align;
+    // CSS Text 3 §7.1-7.2 / JLReq 3.5.3 ④: text-align-last overrides alignment on the last line and before <br>;
+    // text-align: justify-all justifies all lines including the last line and lines before <br>.
+    const bool is_last_line = last_box || finished_with_break;
+    text_align align        = m_text_align;
+    bool       justify_line = false;
+    if(is_last_line)
+    {
+        switch(m_text_align_last)
+        {
+        case text_align_last_start:   align = text_align_start; break;
+        case text_align_last_end:     align = text_align_end; break;
+        case text_align_last_left:    align = text_align_left; break;
+        case text_align_last_right:   align = text_align_right; break;
+        case text_align_last_center:  align = text_align_center; break;
+        case text_align_last_justify: align = text_align_justify; justify_line = true; break;
+        case text_align_last_auto:
+            if(align == text_align_justify_all)
+            {
+                align        = text_align_justify;
+                justify_line = true;
+            }
+            break;
+        }
+    } else if(align == text_align_justify || align == text_align_justify_all)
+    {
+        align        = text_align_justify;
+        justify_line = true;
+    }
     if(align == text_align_start)
         align = text_align_left;
     else if(align == text_align_end)
@@ -773,7 +878,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         }
         break;
     case text_align_justify:
-        if(m_width < (m_right - m_left) && !last_box && !finished_with_break)
+        if(m_width < (m_right - m_left) && justify_line)
         {
             shift_x   = 0_px;
             spacing_x = (m_right - m_left) - m_width;
@@ -1514,7 +1619,7 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
         }
 
         if(ws == white_space_nowrap || ws == white_space_pre ||
-           (ws == white_space_pre_wrap && item->get_el()->src_el()->is_space()))
+           (ws == white_space_pre_wrap && item->get_el()->src_el()->is_space()) || m_force_hold)
         {
             return true;
         }
@@ -1543,8 +1648,28 @@ bool litehtml::line_box::can_hold(const std::unique_ptr<line_box_item>& item, wh
         if(over > 0_px && ruby_end_overlap(item.get(), end_extra - hang + trailing) < 0_px)
         {
             // JLReq 3.8.2: squeezed, the line may still take it (追込み) before it goes on (追出し).
-            // (A tolerance for rounding, only where there is something to squeeze: a line with none breaks as before.)
+            // Only invoke oikomi when breaking before `item` would leave a real shortfall (after any line-end
+            // punctuation trim on the current last item); if the line already fills the measure at exact natural
+            // width (0 badness), do not crush mid-line punctuation to pull in another normal character.
             if(!adjusts(item.get()))
+                return false;
+            pixel_t line_end_trim = 0_px;
+            if(const line_box_item* cur_last = last_content_item())
+            {
+                if(auto last_part = squeezable_text(cur_last))
+                    if(auto last_text = std::dynamic_pointer_cast<el_text>(last_part->src_el()))
+                    {
+                        auto it = std::find_if(m_items.begin(), m_items.end(),
+                                               [&](const auto& p) { return p.get() == cur_last; });
+                        const uint8_t first_pos =
+                            (it != m_items.end() && first_text_part(it)) ? start_position() : cjk::line_middle;
+                        const auto ended = last_text->compression(last_text->display_text(), last_part->before,
+                                                                  last_part->after, first_pos, cjk::line_end,
+                                                                  last_part->after_solid);
+                        line_end_trim = std::max(0_px, trim_shift(ended, SIZE_MAX) - trim_shift(last_part->trims, SIZE_MAX));
+                    }
+            }
+            if(m_left + m_width - line_end_trim >= m_right - 0.01_px)
                 return false;
             const pixel_t room = squeeze_room(item.get(), trailing <= 0_px);
             return room > 0_px && over <= room + 0.01_px;
@@ -1568,9 +1693,27 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next, bo
     const auto      last_text        = squeezable_text(last_content_item());
     const auto      prev_before_text = plan.prev_move_left > 0_px ? squeezable_text(plan.prev_before) : nullptr;
     pixel_t         room             = 0_px;
+    const bool      jp               = line_has_japanese(m_items, next);
+    const bool      next_content     = is_non_space_content(next);
+    bool            seen_content     = false;
     bool            first            = true;
-    for(const auto& item : m_items)
+    for(auto it = m_items.begin(); it != m_items.end(); ++it)
     {
+        const auto& item = *it;
+        if(jp && seen_content)
+        {
+            pixel_t ws_em = 0_px;
+            if(compressible_word_space(item.get(), ws_em))
+            {
+                bool has_after = next_content;
+                for(auto nx = std::next(it); !has_after && nx != m_items.end(); ++nx)
+                    has_after = is_non_space_content(nx->get());
+                if(has_after)
+                    room += word_space_room(item->width(), ws_em);
+            }
+        }
+        if(is_non_space_content(item.get()))
+            seen_content = true;
         auto part = squeezable_text(item.get());
         if(!part)
         {
@@ -1604,8 +1747,64 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next, bo
     return room;
 }
 
-void litehtml::line_box::squeeze(pixel_t over, bool wraps)
+litehtml::pixel_t litehtml::line_box::squeeze(pixel_t over, bool wraps)
 {
+    // JLReq 3.2.6 ② / 3.8.3 Step 1: on mixed Japanese-Western lines, compress Western word spaces (cl-26) FIRST,
+    // evenly across all interior word spaces on the line, before compressing line-end or mid-line punctuation.
+    if(over > 0_px && line_has_japanese(m_items, nullptr))
+    {
+        struct ws_place
+        {
+            line_box_item* item;
+            pixel_t        room;
+        };
+        std::vector<ws_place> spaces;
+        pixel_t               ws_room      = 0_px;
+        bool                  seen_content = false;
+        for(auto it = m_items.begin(); it != m_items.end(); ++it)
+        {
+            pixel_t ws_em = 0_px;
+            if(seen_content && compressible_word_space(it->get(), ws_em))
+            {
+                bool has_after = false;
+                for(auto nx = std::next(it); !has_after && nx != m_items.end(); ++nx)
+                    has_after = is_non_space_content(nx->get());
+                if(has_after)
+                {
+                    const pixel_t r = word_space_room((*it)->width(), ws_em);
+                    if(r > 0_px)
+                    {
+                        spaces.push_back({it->get(), r});
+                        ws_room += r;
+                    }
+                }
+            }
+            if(is_non_space_content(it->get()))
+                seen_content = true;
+        }
+        if(ws_room > 0_px)
+        {
+            const float share = std::min(1.0f, float(over / ws_room));
+            pixel_t     shift = 0_px;
+            size_t      si    = 0;
+            for(const auto& item : m_items)
+            {
+                item->pos().x -= shift;
+                if(si < spaces.size() && spaces[si].item == item.get())
+                {
+                    const pixel_t take = spaces[si].room * pixel_t(share);
+                    item->pos().width -= take;
+                    m_width           -= take;
+                    shift             += take;
+                    over              -= take;
+                    si++;
+                }
+            }
+        }
+    }
+    if(over <= 0_px)
+        return 0_px;
+
     // The last thing the line shows; a text's last character ends it.
     std::shared_ptr<render_text> last;
     for(auto it = m_items.rbegin(); it != m_items.rend() && !last; ++it)
@@ -1632,7 +1831,7 @@ void litehtml::line_box::squeeze(pixel_t over, bool wraps)
         break;
     }
     if(over <= 0_px)
-        return;
+        return 0_px;
 
     // Then, each step evenly over its places: the quarters of a middle dot ending the line (all of them), of middle
     // dots inside it, the half ems of brackets and 、 inside it (JLReq 3.8.3).
@@ -1700,6 +1899,7 @@ void litehtml::line_box::squeeze(pixel_t over, bool wraps)
         m_width           -= less;
         shift             += less;
     }
+    return std::max(0_px, over);
 }
 
 const litehtml::line_box_item* litehtml::line_box::last_content_item() const

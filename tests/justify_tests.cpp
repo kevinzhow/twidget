@@ -236,6 +236,85 @@ int main() {
         check(got == expected("あい abc", 0), "a line ending with <br> is not justified: " + got);
     }
 
+    // JLReq 3.5.3 ④: 均等揃え (text-align-last: justify & text-align: justify-all), H & V.
+    for (bool vertical : {false, true}) {
+        const std::string mode = vertical ? "vertical: " : "horizontal: ";
+        auto lay = [&](float len, const std::string& p_style, const std::string& html, const std::string& div_style = "") {
+            Stub c;
+            if (vertical) c.h = len;
+            auto doc = document::createFromString(
+                std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                    "><body style=\"margin:0;font-size:16px;line-height:20px\"><div style=\"" + div_style +
+                    "\"><p style=\"margin:0;" + p_style + "\">" + html + "</p></div></body></html>",
+                &c);
+            doc->set_latin_spacing(latin_spacing::none);
+            doc->render(pixel_t(vertical ? 300 : len));
+            doc->draw(0, 0, 0, nullptr);
+            return c.glyphs;
+        };
+        // Single-line heading (第一章, 3 chars = 24px in 64px line -> 2 gaps of 20px each: 0, 28, 56).
+        {
+            const auto gs = lay(64, "text-align-last:justify", "第一章");
+            const std::string got = drawn_line(gs, gs.empty() ? 0 : gs.front().mid);
+            check(got == "第@0 一@28 章@56", mode + "3.5.3 ④: text-align-last:justify on single line: " + got);
+        }
+        // Single-line haiku with text-align: justify-all (古池や, 3 chars = 24px in 64px -> 0, 28, 56).
+        {
+            const auto gs = lay(64, "text-align:justify-all", "古池や");
+            const std::string got = drawn_line(gs, gs.empty() ? 0 : gs.front().mid);
+            check(got == "古@0 池@28 や@56", mode + "3.5.3 ④: text-align:justify-all on single line: " + got);
+        }
+        // Respects JLReq 3.1.11 ②: 「第一章」 keeps 「第 and 章」 solid, spreads 第|一|章 evenly.
+        {
+            const auto gs = lay(80, "text-align:justify-all", "「第一章」");
+            // 「 is halved at line start (4px width), 第(8) 一(8) 章(8) 」(8) -> total 36px, 44px free across 2 gaps (22px each).
+            // Wait: Stub measures 8px per char, so 「 halved is 4px, 第@4, 一@34, 章@64, 」@72.
+            const std::string got = drawn_line(gs, gs.empty() ? 0 : gs.front().mid);
+            check(got.find("第@4 ") != std::string::npos && got.find("一@34 ") != std::string::npos &&
+                      got.find("章@64 ") != std::string::npos,
+                  mode + "3.5.3 ④: justify-all respects 3.1.11 ② next to brackets: " + got);
+        }
+        // Multi-line paragraph with text-align-last: justify: last line fills full width too.
+        {
+            const auto gs = lay(64, "text-align:justify;text-align-last:justify", "あいうえおかきくけこ");
+            const float mid2 = gs.empty() ? 0 : gs.back().mid;
+            const std::string got2 = drawn_line(gs, mid2);
+            // 8 chars fit line 1 (64px), 2 chars on line 2 (け@0 こ@56).
+            check(got2 == "け@0 こ@56", mode + "3.5.3 ④: text-align-last:justify spreads last line of multi-line paragraph: " + got2);
+        }
+        // Line before <br> with text-align: justify-all is also justified.
+        {
+            const auto gs = lay(64, "text-align:justify-all", "古池や<br>蛙飛ぶ");
+            const float mid1 = gs.empty() ? 0 : gs.front().mid;
+            const float mid2 = gs.empty() ? 0 : gs.back().mid;
+            const std::string got1 = drawn_line(gs, mid1);
+            const std::string got2 = drawn_line(gs, mid2);
+            check(mid1 != mid2 && got1 == "古@0 池@28 や@56" && got2 == "蛙@0 飛@28 ぶ@56",
+                  mode + "3.5.3 ④: justify-all justifies before <br> and last line: " + got1 + " | " + got2);
+        }
+        // Inherited text-align-last: justify from parent <div>.
+        {
+            const auto gs = lay(64, "", "第一章", "text-align-last:justify");
+            const std::string got = drawn_line(gs, gs.empty() ? 0 : gs.front().mid);
+            check(got == "第@0 一@28 章@56", mode + "3.5.3 ④: text-align-last:justify inherits from parent: " + got);
+        }
+        // text-align-last: right / center on a justified paragraph's last line.
+        {
+            const auto gs_r = lay(64, "text-align:justify;text-align-last:right", "あいうえおかきくけこ");
+            const std::string got_r = drawn_line(gs_r, gs_r.empty() ? 0 : gs_r.back().mid);
+            check(got_r == "け@48 こ@56", mode + "3.5.3: text-align-last:right aligns last line right: " + got_r);
+            const auto gs_c = lay(64, "text-align:justify;text-align-last:center", "あいうえおかきくけこ");
+            const std::string got_c = drawn_line(gs_c, gs_c.empty() ? 0 : gs_c.back().mid);
+            check(got_c == "け@24 こ@32", mode + "3.5.3: text-align-last:center centers last line: " + got_c);
+        }
+        // Single character with text-align-last: justify stays at 0 (no NaN / crash).
+        {
+            const auto gs = lay(64, "text-align-last:justify", "あ");
+            const std::string got = drawn_line(gs, gs.empty() ? 0 : gs.front().mid);
+            check(got == "あ@0", mode + "3.5.3 ④: single character stays at start: " + got);
+        }
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

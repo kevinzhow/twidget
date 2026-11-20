@@ -402,7 +402,7 @@ namespace litehtml
     };
 
     inline constexpr auto text_align_strings =
-        split_css_values<7>("left;right;center;justify;start;end;-internal-th-center");
+        split_css_values<8>("left;right;center;justify;start;end;justify-all;-internal-th-center");
 
     enum text_align
     {
@@ -412,7 +412,33 @@ namespace litehtml
         text_align_justify,
         text_align_start,
         text_align_end,
+        text_align_justify_all,
         text_align_th_center
+    };
+
+    inline constexpr auto text_align_last_strings =
+        split_css_values<7>("auto;start;end;left;right;center;justify");
+
+    enum text_align_last
+    {
+        text_align_last_auto,
+        text_align_last_start,
+        text_align_last_end,
+        text_align_last_left,
+        text_align_last_right,
+        text_align_last_center,
+        text_align_last_justify,
+    };
+
+    inline constexpr auto ruby_position_strings =
+        split_css_values<4>("over;under;right;left");
+
+    enum ruby_position
+    {
+        ruby_position_over,
+        ruby_position_under,
+        ruby_position_right,
+        ruby_position_left,
     };
 
     // ==========================================================

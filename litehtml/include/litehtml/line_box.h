@@ -201,16 +201,21 @@ namespace litehtml
         font_metrics      m_font_metrics;
         pixel_t           m_baseline;
         text_align        m_text_align;
+        text_align_last   m_text_align_last = text_align_last_auto;
         bool              m_rtl;
         rendered_width    m_rendered_width;
         bool              m_paragraph_start = false;  // set_paragraph_start
         pixel_t           m_bracket_space   = 0;      // still to put before a paragraph's opening bracket
+        bool              m_force_hold          = false;  // JLReq 3.5.4 pull-in pass
+        bool              m_overfull            = false;  // remained overfull after squeeze()
+        bool              m_finished_with_break = false;
+        pixel_t           m_pre_finish_width    = 0_px;
 
         std::list<std::unique_ptr<line_box_item>> m_items;
 
       public:
         line_box(pixel_t top, pixel_t left, pixel_t right, const css_line_height_t& line_height, const font_metrics& fm,
-                 text_align align, bool rtl = false) :
+                 text_align align, bool rtl = false, text_align_last align_last = text_align_last_auto) :
             m_top(top),
             m_left(left),
             m_right(right),
@@ -220,6 +225,7 @@ namespace litehtml
             m_font_metrics(fm),
             m_baseline(0),
             m_text_align(align),
+            m_text_align_last(align_last),
             m_rtl(rtl)
         {
         }
@@ -269,6 +275,10 @@ namespace litehtml
             m_paragraph_start = true;
             m_bracket_space   = bracket_space;
         }
+        void    set_force_hold(bool on) { m_force_hold = on; }
+        bool    overfull() const { return m_overfull; }
+        bool    finished_with_break() const { return m_finished_with_break; }
+        pixel_t pre_finish_width() const { return m_pre_finish_width; }
         void    add_item(std::unique_ptr<line_box_item> item);
         bool    can_hold(const std::unique_ptr<line_box_item>& item, white_space ws, pixel_t trailing = 0_px) const;
         /// Where the line's first character is, for compression: line_start, and paragraph_start after
@@ -329,9 +339,10 @@ namespace litehtml
         /// Whether no text (nor inline box) comes before `at` on the line: only inline starts and ends.
         bool           first_text_part(std::list<std::unique_ptr<line_box_item>>::const_iterator at) const;
         bool           is_break_only() const;
-        /// Squeezes a line `over` too long in JLReq 3.8.3's order (a line that does not wrap first gives up the half em
-        /// after its last closing bracket or 、。, as a wrapped one did), as far as it can.
-        void           squeeze(pixel_t over, bool wraps);
+        /// Squeezes a line `over` too long in JLReq 3.8.3's order (Western word spaces first, then a non-wrapping
+        /// line's trailing closing bracket or 、。, then middle dots, mid-line brackets/commas, and 和欧間), returning
+        /// any remaining overflow.
+        pixel_t        squeeze(pixel_t over, bool wraps);
         static pixel_t calc_va_baseline(const va_context& current, vertical_align va, const font_metrics& new_font,
                                         pixel_t top, pixel_t bottom, bool vertical = false);
     };

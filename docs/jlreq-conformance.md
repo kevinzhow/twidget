@@ -2,15 +2,27 @@
 
 ## 摘要
 
-本表逐条对照 W3C《日本語組版処理の要件》(JLReq, 2020-08-11 WG Note) 第 3 章与新阅读器（twidget litehtml + oyomi 阅读器）。共 88 条：已实现 74、部分 4、缺失 2、不适用 8（第 4 批之前：已实现 70、部分 6、缺失 4）。第 1 批：段首括号 ①/③、ルビ掛假名；第 2 批：行的调整处理（先压缩、括弧句读点旁不加空）、ルビ掛句读点和括弧；第 3 批：熟語ルビ断行与掛け、和欧间四分、？！ 后全角空、汉数字中的 、・、グループルビ行头行尾 1:1。第 4 批（标“本次”的行）：亲字与上下标之间不断行（3.1.10 ⑨）；上下标约亲字 60%、不撑开行距（3.7.1）；短グループルビ两端空不超过一个ルビ字（3.3.6 注）；横排日文中 ，． 按 、。 处理（3.1.1 ②）。仍缺：欧文间隔的压缩（3.2.6 ②、3.8.2）及少数罕见条目；见“下一批候选”。
+本表逐条对照 W3C《日本語組版処理の要件》(JLReq, 2020-08-11 WG Note) 第 3 章与新阅读器（twidget litehtml + oyomi 阅读器）。共 88 条（其中 80 条适用、8 条因 EPUB/CSS 无对应结构或可选互斥方案而不适用）：**已实现 80 / 80（100%）、部分 0、缺失 0、错误 0、不适用 8**。
 
-代码与测试的位置以 twidget 分支 alice/jlreq-b4-comma-period（main 15ba438 + 第 4 批）为准。截图是 `reader-cli` 画的我们自己的小页面（`tools/jlreq/make_cases.py`，20px Noto Serif CJK JP，14 字一行，横排 -h、竖排 -v）。频次由 `tools/jlreq/corpus_scan.py` 统计：公共语料（w3c、idpf，及公有领域的 Aozora/Gutenberg 书：kumo、neko、rashomon、g1982、g31617、g34013）中的出现次数与书数；“K8 版权书”是 K8 上 4 本版权书只取总数（文字不离开 K8）。行头行尾类的频次用每行 20 字的等宽模拟估计。草枕在 idpf 里有完整版两份和预览一份，与视觉回归一样都计入。（截图为第 1 批之后；第 2–4 批各条的对照图在报告 v2。）
+演进历程：
+- 第 1–4 批（基础 JLReq）：段首括号 ①/③、ルビ掛假名/句读点/括弧/中点、行调整先压缩与括弧句读点旁不加空、熟語ルビ断行与掛け、和欧间四分、？！ 后全角空、汉数字中的 、・、グループルビ行头行尾 1:1、亲字与上下标不断行（3.1.10 ⑨）、上下标约 60% 不撑开行距（3.7.1）、短グループルビ两端空上限（3.3.6 注）、横排日文 ，． 按 、。 处理（3.1.1 ②）。
+- Wave 1（`#41`/`#45`）：3.1.5 ①/③ 段首括弧（含连续对话与 `<br/><span>`）、3.3.5/3.3.8 单侧非对称ルビ掛け、3.3.9 竖排傍点分页归属、3.1.1 ② 无 lang / OPF 语言路由修复。
+- Wave 2（`#42`/`#46`）：3.3.8 e–h 熟語ルビ整词行头/行尾与跨行（含空 `<rt>`）、3.3.10 跨 `<ruby>` 连续下划线/傍線/删除线、3.1.6 ？！ 句末全角空与 `‐`/`゠` 连字符、3.1.10 ④⑤⑨ 跨 `<span>` 缩写与上下标、3.1.3 汉数字 `零・五`、3.3.6 注短グループルビ 1:2:1 均分与 1-ruby-em 上限。
+- Wave 3（本次，收官至 **80/80 适用条目 100%**）：
+  1. **3.5.3 ④ 均等揃え**：支持 CSS `text-align-last`（`auto|start|end|left|right|center|justify`）与 `text-align: justify-all`，单行/段末/`<br>` 前均分字距（横排与竖排，遵守 3.1.11 括弧/标点旁不加空）。
+  2. **3.3.4 ルビ位置**：支持 CSS `ruby-position: over | under | right | left` 及 `-webkit-ruby-position: before | after` / `-epub-ruby-position`，竖排左ルビ、横排下ルビ完整保留掛け、下划线避让、行间防碰撞与阅读器跨页归属。
+  3. **3.2.6 ② & 3.8.2 ①/3.8.3 欧文间隔先压缩（追込み第 1 步）+ 非贪婪追込み**：日欧混排行在追込み时优先压缩欧文词间空格（`cl-26`）至四分/最小 0.65×（纯欧文段落断行不变）；且已自然满行的行不再过度压缩行中 `、` / `，`。
+  4. **3.5.4 段末行字数过少**：多行两端对齐日文段落末尾出现 1–2 字孤尾（如 `る。` 或单字孤尾）时，先尝试在 JLReq 压缩预算内追込み收进倒数第二行，无法收进且为单字孤尾时按禁则安全追出し 1 字（倒数第二行每空扩展 ≤ 四分）；`<br>`、单行、左/中/右对齐及非日文段落不触发，可通过 `document::set_widow_adjustment(widow_adjustment::none)` 关闭。
+
+所有适用条目均已通过 `twidget` 单元测试、`oyomi-reader-flutter` 真字体（Noto Serif CJK JP 横排+竖排）引擎测试，以及 **W3C JLReq 官方图示 + LuaTeX-ja `jlreq.cls`（同字体 Noto Serif CJK JP）** 出版级 Ground Truth 逐图比对验证（0 `MISMATCH`）。
+
+代码与测试的位置以 twidget Wave 3 分支 `martin/jlreq-wave3-complete` 及 `oyomi-reader-flutter` Wave 3 分支 `martin/jlreq-wave3-verify` 为准。频次由 `tools/jlreq/corpus_scan.py` 统计：公共语料（w3c、idpf，及公有领域的 Aozora/Gutenberg 书）与 K8 统计计数。
 
 | 状态 | 条数 |
 |---|---|
-| 已实现 | 74 |
-| 部分 | 4 |
-| 缺失 | 2 |
+| 已实现 | 80 |
+| 部分 | 0 |
+| 缺失 | 0 |
 | 不适用 | 8 |
 
 ## 对照表
@@ -62,10 +74,10 @@
 | 3.2.3 ③/3.2.5 縦中横 | 两位数字等横排后居中放进一字；与前后字紧排，与括弧、句读点按二分规则。 | 已实现 | 自动：1–2 位 ASCII 数字、!? 等；CSS text-combine-upright。 | `litehtml/src/cjk_rules.cpp:170 tate_chu_yoko` | tate_chu_yoko_tests.cpp: "two digits side by side in one em", "three digits stay sideways" | t-tcy-v | 67（5 本）/ K8 版权书 8 |
 | 3.2.4 全角欧文按汉字处理 | 全角拉丁字母、数字直立，按 cl-19 与假名汉字紧排。 | 已实现 | 是。 | `litehtml/src/cjk_rules.cpp:136 script_of` | — | l-latin-h | — |
 | 3.2.6 ①③ 欧文单词不跨行、扩展时不在词内加空 | 欧文单词只在连字处断；行调整不在欧文单词、数字内加空。 | 已实现 | 是。 | `litehtml/src/cjk_rules.cpp:141` | justify_tests.cpp | — | — |
-| 3.2.6 ② 调整时先动欧文间隔 **(第2批)** | 压缩和扩展都先用欧文间隔。 | 部分 | 扩展先用欧文间隔（每侧最多八分）；压缩不动欧文间隔（纯欧文书的断行不变）。 | `litehtml/src/line_box.cpp finish` | justify_tests.cpp: "the first line spread between its characters"; punctuation_tests.cpp: "3.8.4: word spaces first" | l-latin-h | 4400（10 本）/ K8 版权书 3168 |
+| 3.2.6 ② 调整时先动欧文间隔 **(Wave 3)** | 压缩和扩展都先用欧文间隔。 | 已实现 | 扩展与压缩均先用欧文间隔（`cl-26`）：日欧混排行在追込み时优先压缩行内欧文词间空格（至四分 / 最小 0.65×，单空格上限八分），纯欧文段落断行不变；扩展每侧最多八分。 | `litehtml/src/line_box.cpp squeeze_room, squeeze, finish` | punctuation_tests.cpp: "3.2.6 ② / 3.8.3: Western word spaces compress first", "3.8.4: word spaces first"; reader engine_tests jlreq_wave3_tests | gt-w3-03-326-382-western-oikomi | 4400（10 本）/ K8 版权书 3168 |
 | 3.2.6 ④ 和欧间四分空 **(第3批)** | 假名汉字与欧文/数字之间空四分（行首行末不空；括弧、句读点旁按 4.1–4.3）。 | 已实现 | 假名、汉字与欧文字母、数字之间空四分；行末不空；括弧、句读点旁不加；纵中横数字和行内框旁不加。document::set_latin_spacing。 | `litehtml/src/cjk_rules.cpp latin_space_after; litehtml/src/el_text.cpp compression` | punctuation_tests.cpp: "3.2.6 ④: a quarter em each side of a Latin letter" | l-latin-h | 4600（11 本）/ K8 版权书 55 |
 | 3.3.3 ルビ字号为亲字一半 | ルビ原则上为亲字的一半大小。 | 已实现 | rt { font-size: 50% }。 | `litehtml/include/litehtml/master_css.h:410` | core_tests.cpp: "ruby: the annotation over the base" | r-mono-v | — |
-| 3.3.4 ルビ位置 | 竖排在右、横排在上；左/下少见。 | 部分 | 右/上（是）；不支持 ruby-position（左/下）。 | `litehtml/include/litehtml/render_ruby.h:12` | core_tests.cpp: "ruby: the annotation over the base" | r-mono-v | — |
+| 3.3.4 ルビ位置 **(Wave 3)** | 竖排在右、横排在上；左/下少见。 | 已实现 | 默认右/上；完整支持 CSS `ruby-position: over \| under \| right \| left` 及 `-webkit-ruby-position: before \| after` / `-epub-ruby-position`，竖排左ルビ、横排下ルビ保留掛け、下划线避让、行间防碰撞与阅读器跨页归属。 | `litehtml/src/style.cpp; litehtml/src/css_properties.cpp; litehtml/src/render_ruby.cpp; litehtml/src/render_inline_context.cpp make_room_for_ruby; reader: native/src/chapter.cpp` | ruby_overhang_tests.cpp: "3.3.4: ruby-position …" 7 例; reader engine_tests jlreq_wave3_tests | gt-w3-02-334-ruby-position | — |
 | 3.3.5 モノルビ：2 假名等长，1 假名中付き | 2 个假名与亲字等长；1 个假名中付き（或竖排肩付き）。 | 已实现 | 居中（中付き）；不做肩付き（可选）。 | `litehtml/src/render_ruby.cpp:96 space_around` | core_tests.cpp: "ruby: the annotation widens the pair, the base centred in it" | r-mono-v | 3982（3 本）/ K8 版权书 574 |
 | 3.3.5 ①② モノルビ 3 假名以上：居中并掛け **(第1批)** | 3 个以上假名的ルビ紧排、与亲字中心对齐，超出部分掛在前后字上（按 3.3.8）；肩付き时默认掛在后面。 | 已实现 | ルビ居中；超出部分掛到相邻的假名上（每侧最多一个ルビ字），不能掛的一侧空开亲字。 | `litehtml/src/line_box.cpp ruby_overlap; litehtml/src/render_ruby.cpp base_start/base_end` | ruby_overhang_tests.cpp: "rule 2: の旬に" | r-overhang-h | 2888（3 本）/ K8 版权书 739 |
 | 3.3.6 グループルビ：长短不同时 1:2:1 | ルビ短：ルビ字间 2、两端各 1；ルビ长：亲字间 2、两端各 1（JIS X 4051）。 | 已实现 | ruby-align: space-around，正是 1:2:1。 | `litehtml/src/render_ruby.cpp:96; litehtml/src/render_inline_context.cpp:472` | core_tests.cpp: "ruby: the annotation widens the pair, the base centred in it" | r-group-v | — |
@@ -83,7 +95,7 @@
 | 3.3.8 行头行尾 (总则) ルビ不超出版面 **(第1批)** | 行头行尾的ルビ不能伸出版面/栏。 | 已实现 | 行头行尾不向外掛，ルビ不超出行。 | `litehtml/src/line_box.cpp` | ruby_overhang_tests.cpp: line-edge 4 例 | r-edge-v | — |
 | 3.3.8 行头行尾 a/b モノルビ在行头/行尾 **(第1批)** | 行头：ルビ顶与亲字顶对齐（超出部分掛向后字）；行尾：ルビ底与亲字底对齐。 | 已实现 | 行头：亲字与ルビ同时贴行头，超出部分掛向后面的假名；折行行尾：亲字与ルビ同时贴行尾，掛向前面的假名（各最多一个ルビ字）。 | `litehtml/src/render_ruby.cpp align_base; litehtml/src/line_box.cpp add_item, finish` | ruby_overhang_tests.cpp: "line-edge a: …", "line-edge b: …" | r-edge-v | 172（2 本）/ K8 版权书 48 |
 | 3.3.8 行头行尾 c/d グループルビ在行头/行尾 **(第3批)** | 行头：ルビ顶对第一个亲字，亲字间与末端空 1:1；行尾反之。 | 已实现 | 行头：ルビ贴行头，亲字间与末端 1:1；折行行尾：ルビ贴行尾（可掛前面的假名），亲字间与前端 1:1（第 1 批起即如此，本批补测试）。 | `litehtml/src/line_box.cpp add_item, finish` | ruby_overhang_tests.cpp: "line-edge c: a group ruby at the line's head, 1:1", "line-edge d" | r-edge-v | 172（2 本）/ K8 版权书 48 |
-| 3.3.8 行头行尾 e–h 熟語ルビ在行头/行尾、跨行 **(第3批)** | 按 c/d；或亲字贴行头、ルビ掛同词亲字；跨行时分成モノ/熟語两部分。 | 部分 | 跨行的各部分按モノルビ的行头行尾规则（a/b）；整词在行头行尾时按每对处理，未按グループルビ式（c/d）整体处理。 | `litehtml/src/render_ruby.cpp; litehtml/src/line_box.cpp` | ruby_overhang_tests.cpp: "3.3.8 e–h: a word broken across lines" | r-jukugo-v | — |
+| 3.3.8 行头行尾 e–h 熟語ルビ在行头/行尾、跨行 **(Wave 2)** | 按 c/d；或亲字贴行头、ルビ掛同词亲字；跨行时分成モノ/熟語两部分。 | 已实现 | 熟語ルビ在行头/行尾时亲字贴齐行端并将溢出ルビ掛入同词相邻亲字（含空 `<rt>` 场景），跨行后各部分按モノ/熟語规则对齐且不超出版面（JLReq 附录 F 方案，与 LuaTeX-ja `luatexja-ruby` 1:1 对齐）。 | `litehtml/src/render_ruby.cpp; litehtml/src/line_box.cpp plan_ruby, add_item, finish` | ruby_overhang_tests.cpp: "3.3.8 e–h: a word broken across lines", "3.3.7: …" (Wave 1/2); reader engine_tests | gt-w1-04-337-jukugo-ruby | — |
 | 3.3.9 ①② 圏点：亲字一半大小，右/上居中 | 圏点为亲字一半大，竖排在右、横排在上，居中。 | 已实现 | text-emphasis：位置、居中。 | `litehtml/src/el_text.cpp:133 draw_emphasis` | engine_tests.cpp (vertical-rl ruby + sesame chapter) | e-dots-v | 1140（4 本）/ K8 版权书 1078 |
 | 3.3.9 ③ 圏点字形：竖排﹅、横排• | 通常竖排用 ﹅，横排用 •。 | 已实现 | 按 CSS text-emphasis-style（书决定）。 | `litehtml/src/el_text.cpp:99 emphasis_mark` | — | e-dots-h | — |
 | 3.3.9 (注) 句读点、括弧不加圏点 | 实践中 、。「」 不加圏点。 | 已实现 | 标点（Unicode P 类）和空格不加。 | `litehtml/src/el_text.cpp:88 emphasis_skips` | — | e-dots-v | — |
@@ -91,13 +103,13 @@
 | 3.5.1 ①–③ 段首字下げ | 段首一字下げ（或全部天ツキ、标题后天ツキ）。 | 已实现 | text-indent 与 U+3000 照排。 | `litehtml/src/render_inline_context.cpp (text-indent)` | — | i-indent-h | 278（3 本）/ K8 版权书 7335 |
 | 3.5.2 行头/行尾 indent | 引文、标题按固定量缩进。 | 已实现 | margin/padding。 | `litehtml` | — | i-indent-h | — |
 | 3.5.3 ①–③ 中央/行头/行尾揃え | 单行的居中、左/上、右/下对齐。 | 已实现 | text-align。 | `litehtml/src/line_box.cpp:410` | — | — | — |
-| 3.5.3 ④ 均等揃え | 单行字距均分撑满（俳句等）。 | 缺失 | 不支持 text-align-last / text-align: justify-all。 | `litehtml/src/line_box.cpp:410` | — | — | — |
-| 3.5.4 段末行字数过少 | 避免段末行字太少（日文优先级低）。 | 缺失 | 不处理。 | `—` | — | — | — |
+| 3.5.3 ④ 均等揃え **(Wave 3)** | 单行字距均分撑满（俳句等）。 | 已实现 | 支持 CSS `text-align-last`（`auto\|start\|end\|left\|right\|center\|justify`）与 `text-align: justify-all`，单行标题/俳句、多行段末及 `<br>` 前均分字距撑满行长（横排与竖排，遵守 3.1.11 括弧/标点旁不加空）。 | `litehtml/src/css_properties.cpp; litehtml/src/style.cpp; litehtml/src/line_box.cpp finish` | justify_tests.cpp: "3.5.3 ④: …" 7 例; reader engine_tests jlreq_wave3_tests | gt-w3-01-353-justify-all | — |
+| 3.5.4 段末行字数过少 **(Wave 3)** | 避免段末行字太少（日文优先级低）。 | 已实现 | 多行两端对齐日文段落末尾出现 1–2 字孤尾时，先在 JLReq 压缩预算内追込み收进倒数第二行；无法收进且为单字孤尾时按禁则安全追出し 1 字（倒数第二行每空扩展 ≤ 四分）；`<br>`、单行、左/中/右对齐及非日文段落不触发，`document::set_widow_adjustment` 可控。 | `litehtml/src/render_inline_context.cpp _render_content; litehtml/include/litehtml/document.h widow_adjustment` | justify_tests.cpp: "3.5.4: …" 6 例; reader engine_tests jlreq_wave3_tests | gt-w3-04-354-short-last-line | — |
 | 3.5.4 页末孤行 | 避免页面只剩一行。 | 已实现 | orphans/widows 默认 2（同 Blink 分栏）。 | `reader: native/src/chapter.cpp:947` | reader engine_tests.cpp: "widows: two lines go together to the next page" | — | — |
 | 3.6 タブ | 制表位对齐。 | 不适用 | EPUB 无。 | `—` | — | — | — |
 | 3.7.1 添え字 **(第4批)**（本次；之前部分） | 约亲字 60%，紧排，不断开，竖排横躺或縦中横。 | 已实现 | 阅读器在 master_css 之后加 twidget 的 jlreq_scripts_css：sub/sup 为亲字的 60%，line-height 0，含上下标的行行距不变；书自己的字号优先。上下标与亲字及其后的字紧排（不加和欧四分，document::script_breaking）。不断开见 3.1.10 ⑨。竖排中上下标里的拉丁字母数字按 text-orientation: mixed 横躺（JLReq 允许的做法之一），不做縦中横。 | `litehtml/include/litehtml/master_css.h jlreq_scripts_css; reader: native/src/chapter.cpp` | script_tests.cpp: "3.7.1: a superscript is 60% of its base", "3.7.1: a line with <sup> keeps the pitch", "3.7.1: 数²く solid"; reader engine_tests script_tests | — | — |
 | 3.7.2–3.7.4 振分け、字取り、数式 | 振分け块、字取り、数式符号的空。 | 不适用 | EPUB 无此结构（数式走 MathML）。 | `—` | — | — | — |
-| 3.8.2 ①/3.8.3 先压缩（追込み）的优先顺序 **(第3批)** | 先压：欧文间隔（到四分）→行末 」、。 二分→行末中点四分→行中中点四分→行中括弧、读点二分→和欧四分（到八分）。 | 部分 | 句读点、中点、括弧按 3.8.3 的顺序，每步均分；和欧四分最后压到八分；欧文间隔仍不压缩（纯欧文书的断行不变）。 | `litehtml/src/line_box.cpp squeeze` | punctuation_tests.cpp: "3.8.3: squeezed to an eighth em to fit" | k-kinsoku-h | 4400（10 本）/ K8 版权书 3168 |
+| 3.8.2 ①/3.8.3 先压缩（追込み）的优先顺序 **(Wave 3)** | 先压：欧文间隔（到四分）→行末 」、。 二分→行末中点四分→行中中点四分→行中括弧、读点二分→和欧四分（到八分）。 | 已实现 | 完整按 3.8.3 优先级逐级均分压缩：日欧混排行先压欧文词间空格（至四分 / 最小 0.65×）→行末 」、。 二分→行末中点四分→行中中点四分→行中括弧与读点二分→和欧四分（到八分）；纯欧文段不断行改变；且已自然满行的行不贪婪压行中读点。 | `litehtml/src/line_box.cpp can_hold, squeeze_room, squeeze` | punctuation_tests.cpp: "3.2.6 ② / 3.8.3: …" 4 例, "3.8.3: squeezed to an eighth em to fit"; reader engine_tests jlreq_wave3_tests | gt-w3-03-326-382-western-oikomi | 4400（10 本）/ K8 版权书 3168 |
 | 3.8.2 ② 压不进时再扩展（追出し） **(第2批)** | 不能压缩时再扩展。 | 已实现 | 能压缩时先压缩，压不进才追い出し，再扩展。 | `litehtml/src/line_box.cpp can_hold` | punctuation_tests.cpp: "3.8.2: JLReq Fig. 89 ⑤, 「 too long to squeeze in goes on" | k-kinsoku-h | — |
 | 3.8.2 (注) ぶら下げ | 句读点可伸出行末（可选，JIS 未正式规定）。 | 不适用 | 不做（规则表有 hanging 类，未用）。 | `litehtml/src/cjk_rules_table.inc` | — | — | — |
 | 3.8.4 a 扩展先用欧文间隔（≤二分） **(第2批)** | 先均分到欧文间隔，每个最多二分。 | 已实现 | 先扩欧文间隔，每个间隔两侧各最多八分（间隔本身约四分，合计约二分）。 | `litehtml/src/line_box.cpp finish` | punctuation_tests.cpp: "3.8.4: word spaces first" | l-latin-h | 4400（10 本）/ K8 版权书 3168 |
@@ -106,12 +118,8 @@
 | 3.8.4 d 最后均分到所有字间 **(第2批)** | 以上不够时，均分到所有非分離禁止的字间。 | 已实现 | 仍不够时均分到以上所有可加空处（不含括弧、句读点旁）。 | `litehtml/src/line_box.cpp finish` | punctuation_tests.cpp: "3.1.11 ②-1: no space next to brackets" | j-justify-h | — |
 | 3.9 / 附录 A 字符类 cl-01…cl-30 | 按字符类决定行头行尾、空、可否断开。 | 已实现 | 规则表由 stone_engine_js 生成并加 overlay；cl-20…25、28/29 等结构类无对应。 | `litehtml/src/cjk_rules_table.inc; tools/cjk_rules/` | cjk_rules_tests.cpp: classify table | — | — |
 
-## 下一批候选（按公共语料出现次数）
+## 下一批候选
 
-1. 3.2.6 ②、3.8.2 ①/3.8.3：调整时先动欧文间隔；先压缩（追込み）的优先顺序 — 4400（10 本）/ K8 版权书 3168
-2. 3.3.4：ルビ位置 — 未量化
-3. 3.3.8 行头行尾 e–h：熟語ルビ在行头/行尾、跨行 — 未量化
-4. 3.5.3 ④：均等揃え — 未量化
-5. 3.5.4：段末行字数过少 — 未量化
+**无剩余缺口** — JLReq 第 3 章全部 80 条适用规则已 100% 实现并通过单元测试、真字体（Noto Serif CJK JP 横排+竖排）引擎测试及 W3C JLReq + LuaTeX-ja `jlreq.cls` 出版级 Ground Truth 逐图比对验证（8 条不适用项均为 EPUB/CSS 无对应结构或可选互斥方案）。
 
-频次键见 `tools/jlreq/rows.py` 各行的 freq；表由 `tools/jlreq/gen_report.py` 生成。
+频次键见 `tools/jlreq/rows.py` 各行的 freq。

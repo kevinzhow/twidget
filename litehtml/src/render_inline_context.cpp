@@ -370,151 +370,335 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
             before = last[k];
         }
     }
-    for(size_t index = 0; index < events.size(); index++)
-    {
-        const auto& el        = events[index].first;
-        const auto  item_type = events[index].second;
-        m_trailing            = 0_px;
-        if(item_type == iterator_item_type_child)
+    const bool has_floats = std::any_of(events.begin(), events.end(), [](const auto& ev) {
+        return ev.second == iterator_item_type_child && ev.first->src_el()->is_float();
+    });
+
+    auto run_flow = [&](size_t pull_in_line, size_t force_break_event, std::vector<size_t>& line_starts) {
+        m_line_boxes.clear();
+        m_fragmented_texts.clear();
+        m_rendered_width.reset();
+        m_va_applied       = 0_px;
+        m_force_break_next = false;
+        line_starts.clear();
+        was_space  = false;
+        before     = nullptr;
+        removed_to = 0;
+
+        for(size_t index = 0; index < events.size(); index++)
         {
-            size_t next = index + 1;
-            for(; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
-                m_trailing += lbi_end(events[next].first).width();
-            // The next pieces stay on this line with this one while there is no break opportunity between them
-            // (no_break_opportunity; a ruby counts by its base text, on either side: <ruby>仕切<rt>しき</rt></ruby>って
-            // keeps 切 with っ): their width is kept free after it, so that they go to the next line together. Not past
-            // the line's width: what does not fit an empty line overflows it anyway.
-            auto is_ruby = [](const std::shared_ptr<render_item>& item) {
-                return item->src_el()->tag() == _ruby_ || std::dynamic_pointer_cast<render_item_ruby_pair>(item);
-            };
-            auto is_piece = [](const std::shared_ptr<render_item>& item) {
-                return item->src_el()->is_text() && !item->src_el()->is_break();
-            };
-            const bool  block_wraps = !is_one_of(ws, white_space_nowrap, white_space_pre);
-            std::shared_ptr<render_item> at = el;
-            size_t      at_index = index;
-            while(block_wraps && (is_piece(at) || is_ruby(at)) && m_trailing < self_size.render_width)
+            const auto& el        = events[index].first;
+            const auto  item_type = events[index].second;
+            m_trailing            = 0_px;
+            if(item_type == iterator_item_type_child)
             {
-                // Starts of elements, and whole empty ones (<span/>), between the two pieces.
-                pixel_t starts = 0_px;
-                size_t  n      = next;
-                for(; n < events.size() && events[n].second != iterator_item_type_child; n++)
-                    starts += events[n].second == iterator_item_type_start_parent ? lbi_start(events[n].first).width()
-                                                                                 : lbi_end(events[n].first).width();
-                if(n >= events.size() || events[n].second != iterator_item_type_child)
-                    break;
-                const auto& following = events[n].first;
-                const bool  across    = n > at_index + 1 || is_ruby(at) || is_ruby(following);
-                bool        joined    = false;
-                if(is_piece(at) && is_piece(following))
-                    joined = no_break_opportunity(at->src_el(), following->src_el(), across);
-                else if((is_piece(following) || is_ruby(following)) && !following->src_el()->is_space() &&
-                        !at->src_el()->is_space())
-                    // As can_hold asks (no_break_opportunity): also no break inside white-space: nowrap, as between
-                    // the pairs of a word of ruby.
-                    joined = no_break_opportunity(at->src_el(), following->src_el(), true);
-                if(!joined)
-                    break;
-                pixel_t width = 0_px;
-                if(is_piece(following))
+                size_t next = index + 1;
+                for(; next < events.size() && events[next].second == iterator_item_type_end_parent; next++)
+                    m_trailing += lbi_end(events[next].first).width();
+                // The next pieces stay on this line with this one while there is no break opportunity between them
+                // (no_break_opportunity; a ruby counts by its base text, on either side: <ruby>仕切<rt>しき</rt></ruby>って
+                // keeps 切 with っ): their width is kept free after it, so that they go to the next line together. Not past
+                // the line's width: what does not fit an empty line overflows it anyway.
+                auto is_ruby = [](const std::shared_ptr<render_item>& item) {
+                    return item->src_el()->tag() == _ruby_ || std::dynamic_pointer_cast<render_item_ruby_pair>(item);
+                };
+                auto is_piece = [](const std::shared_ptr<render_item>& item) {
+                    return item->src_el()->is_text() && !item->src_el()->is_break();
+                };
+                const bool  block_wraps = !is_one_of(ws, white_space_nowrap, white_space_pre);
+                std::shared_ptr<render_item> at = el;
+                size_t      at_index = index;
+                while(block_wraps && (is_piece(at) || is_ruby(at)) && m_trailing < self_size.render_width)
                 {
-                    size measured;
-                    following->src_el()->get_content_size(measured, self_size.render_width);
-                    width = measured.width;
-                } else
-                {
-                    // As place_inline measures an inline box: at its shrink-to-fit width, not the line's (render first: it
-                    // sets the width).
-                    const pixel_t natural = following->render(0_px, 0_px, self_size, fmt_ctx).natural_width;
-                    width = std::min(natural, following->width());
-                }
-                m_trailing += starts + width;
-                for(n++; n < events.size() && events[n].second == iterator_item_type_end_parent; n++)
-                    m_trailing += lbi_end(events[n].first).width();
-                at       = following;
-                at_index = n - 1;
-                while(at_index > 0 && events[at_index].second != iterator_item_type_child)
-                    at_index--;
-                next = n;
-            }
-        }
-        [&]() {
-        switch(item_type)
-        {
-        case iterator_item_type_child:
-            {
-                if(cjk_breaks && index < removed_to && el->src_el()->is_white_space())
-                {
-                    el->skip(true);
-                    return;
-                }
-                if(cjk_breaks && el->src_el()->is_white_space() && !was_space && before && east_asian_wide(edge_char(before, false)))
-                {
-                    // A run of collapsible white space with a segment break in it, between two wide characters:
-                    // removed (CSS Text 3 §4.1.3).
-                    bool   segment = false;
-                    size_t next    = index;
-                    for(; next < events.size(); next++)
+                    // Starts of elements, and whole empty ones (<span/>), between the two pieces.
+                    pixel_t starts = 0_px;
+                    size_t  n      = next;
+                    for(; n < events.size() && events[n].second != iterator_item_type_child; n++)
+                        starts += events[n].second == iterator_item_type_start_parent ? lbi_start(events[n].first).width()
+                                                                                     : lbi_end(events[n].first).width();
+                    if(n >= events.size() || events[n].second != iterator_item_type_child)
+                        break;
+                    const auto& following = events[n].first;
+                    const bool  across    = n > at_index + 1 || is_ruby(at) || is_ruby(following);
+                    bool        joined    = false;
+                    if(is_piece(at) && is_piece(following))
+                        joined = no_break_opportunity(at->src_el(), following->src_el(), across);
+                    else if((is_piece(following) || is_ruby(following)) && !following->src_el()->is_space() &&
+                            !at->src_el()->is_space())
+                        // As can_hold asks (no_break_opportunity): also no break inside white-space: nowrap, as between
+                        // the pairs of a word of ruby.
+                        joined = no_break_opportunity(at->src_el(), following->src_el(), true);
+                    if(!joined)
+                        break;
+                    pixel_t width = 0_px;
+                    if(is_piece(following))
                     {
-                        const auto& e = events[next];
-                        if(e.second != iterator_item_type_child)
-                            continue;
-                        if(!e.first->src_el()->is_white_space())
-                            break;
-                        std::string t;
-                        e.first->src_el()->get_text(t);
-                        segment = segment || t.find('\n') != std::string::npos;
+                        size measured;
+                        following->src_el()->get_content_size(measured, self_size.render_width);
+                        width = measured.width;
+                    } else
+                    {
+                        // As place_inline measures an inline box: at its shrink-to-fit width, not the line's (render first: it
+                        // sets the width).
+                        const pixel_t natural = following->render(0_px, 0_px, self_size, fmt_ctx).natural_width;
+                        width = std::min(natural, following->width());
                     }
-                    if(segment && next < events.size() && east_asian_wide(edge_char(events[next].first->src_el(), true)))
+                    m_trailing += starts + width;
+                    for(n++; n < events.size() && events[n].second == iterator_item_type_end_parent; n++)
+                        m_trailing += lbi_end(events[n].first).width();
+                    at       = following;
+                    at_index = n - 1;
+                    while(at_index > 0 && events[at_index].second != iterator_item_type_child)
+                        at_index--;
+                    next = n;
+                }
+            }
+            const size_t lines_before = m_line_boxes.size();
+            if(index == force_break_event && !m_line_boxes.empty() && !m_line_boxes.back()->is_empty())
+                m_force_break_next = true;
+            if(pull_in_line != SIZE_MAX && !m_line_boxes.empty())
+                m_line_boxes.back()->set_force_hold(m_line_boxes.size() == pull_in_line + 1);
+            [&]() {
+            switch(item_type)
+            {
+            case iterator_item_type_child:
+                {
+                    if(cjk_breaks && index < removed_to && el->src_el()->is_white_space())
                     {
-                        removed_to = next;
                         el->skip(true);
                         return;
                     }
-                }
-                // skip spaces to make rendering a bit faster
-                if(skip_spaces)
-                {
-                    if(el->src_el()->is_white_space())
+                    if(cjk_breaks && el->src_el()->is_white_space() && !was_space && before && east_asian_wide(edge_char(before, false)))
                     {
-                        if(was_space)
+                        // A run of collapsible white space with a segment break in it, between two wide characters:
+                        // removed (CSS Text 3 §4.1.3).
+                        bool   segment = false;
+                        size_t next    = index;
+                        for(; next < events.size(); next++)
                         {
+                            const auto& e = events[next];
+                            if(e.second != iterator_item_type_child)
+                                continue;
+                            if(!e.first->src_el()->is_white_space())
+                                break;
+                            std::string t;
+                            e.first->src_el()->get_text(t);
+                            segment = segment || t.find('\n') != std::string::npos;
+                        }
+                        if(segment && next < events.size() && east_asian_wide(edge_char(events[next].first->src_el(), true)))
+                        {
+                            removed_to = next;
                             el->skip(true);
                             return;
                         }
-                        was_space = true;
+                    }
+                    // skip spaces to make rendering a bit faster
+                    if(skip_spaces)
+                    {
+                        if(el->src_el()->is_white_space())
+                        {
+                            if(was_space)
+                            {
+                                el->skip(true);
+                                return;
+                            }
+                            was_space = true;
+                        } else
+                        {
+                            // skip all spaces after line break
+                            was_space = el->src_el()->is_break();
+                        }
+                    }
+                    if(cjk_breaks && !el->src_el()->is_white_space())
+                        before = el->src_el();
+                    // place element into rendering flow
+                    place_inline(std::make_unique<line_box_item>(el), self_size, fmt_ctx);
+                }
+                break;
+
+            case iterator_item_type_start_parent:
+                {
+                    el->clear_inline_boxes();
+                    el->pos() = position();
+                    place_inline(std::make_unique<lbi_start>(el), self_size, fmt_ctx);
+                }
+                break;
+
+            case iterator_item_type_end_parent:
+                {
+                    place_inline(std::make_unique<lbi_end>(el), self_size, fmt_ctx);
+                }
+                break;
+            }
+            }();
+            m_force_break_next = false;
+            while(line_starts.size() < m_line_boxes.size())
+                line_starts.push_back(index);
+            if(pull_in_line != SIZE_MAX && m_line_boxes.size() == pull_in_line + 1 && m_line_boxes.size() > lines_before)
+                m_line_boxes.back()->set_force_hold(true);
+        }
+        m_trailing = 0_px;
+        finish_last_box(true, self_size);
+    };
+
+    std::vector<size_t> line_starts;
+    run_flow(SIZE_MAX, SIZE_MAX, line_starts);
+
+    // JLReq 3.5.4 (段末行字数过少): short last-line widow control on multi-line justified Japanese paragraphs.
+    // Strategy A (追込み pull-in): absorb a 1–2 char dangling last line onto the penultimate line within JLReq's
+    // compression budget. Strategy B (追出し push-down): for a bare 1-char widow that cannot pull in, move the last
+    // kinsoku-safe char from the penultimate line down if penultimate expansion stays <= 0.25em per justifiable gap.
+    if(!has_floats && m_fragmented_texts.empty() && m_line_boxes.size() >= 2 &&
+       src_el()->get_document()->get_line_adjustment() == line_adjustment::jlreq &&
+       src_el()->get_document()->get_widow_adjustment() == widow_adjustment::jlreq &&
+       is_one_of(css().get_text_align(), text_align_justify, text_align_justify_all) &&
+       css().get_text_align_last() == text_align_last_auto)
+    {
+        const size_t n       = m_line_boxes.size();
+        const size_t pen_idx = n - 2;
+        const auto&  pen     = *m_line_boxes[pen_idx];
+        const auto&  last    = *m_line_boxes[n - 1];
+        const pixel_t em     = css().get_font_size();
+        const bool   same_w  = std::abs(float((pen.line_right() - pen.left()) - (last.line_right() - last.left()))) < 0.5f;
+        if(!pen.finished_with_break() && !last.finished_with_break() && same_w && em > 0_px &&
+           last.pre_finish_width() > 0_px && last.pre_finish_width() <= em * pixel_t(2.05f))
+        {
+            auto line_stats = [](const line_box& lb, size_t& chars_out, bool& has_jp, bool& has_non_text_box) {
+                chars_out        = 0;
+                has_jp           = false;
+                has_non_text_box = false;
+                for(const auto& item : lb.items())
+                {
+                    if(item->get_type() != line_box_item::type_text_part)
+                        continue;
+                    const auto& el = item->get_el()->src_el();
+                    if(el->is_white_space() || el->is_break())
+                        continue;
+                    if(auto text = std::dynamic_pointer_cast<el_text>(el))
+                    {
+                        const std::string& s = text->display_text();
+                        for(size_t i = 0; i < s.size();)
+                        {
+                            const unsigned char c0 = s[i];
+                            const size_t        len = std::min<size_t>(c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4, s.size() - i);
+                            const char32_t      cp  = decode_at(s, i);
+                            if(cp >= 0x2E80 && cjk::script_of(cp) == cjk::script::japanese)
+                                has_jp = true;
+                            chars_out++;
+                            i += len;
+                        }
+                    } else if(el->tag() == _ruby_ || std::dynamic_pointer_cast<render_item_ruby_pair>(item->get_el()))
+                    {
+                        has_jp = true;
+                        chars_out++;
                     } else
                     {
-                        // skip all spaces after line break
-                        was_space = el->src_el()->is_break();
+                        has_non_text_box = true;
                     }
                 }
-                if(cjk_breaks && !el->src_el()->is_white_space())
-                    before = el->src_el();
-                // place element into rendering flow
-                place_inline(std::make_unique<line_box_item>(el), self_size, fmt_ctx);
-            }
-            break;
+            };
+            size_t pen_chars = 0, last_chars = 0;
+            bool   pen_jp = false, last_jp = false, pen_box = false, last_box_non_text = false;
+            line_stats(pen, pen_chars, pen_jp, pen_box);
+            line_stats(last, last_chars, last_jp, last_box_non_text);
+            const pixel_t pen_line_w  = pen.line_right() - pen.left();
+            const pixel_t pen_pre_w   = pen.pre_finish_width();
+            const pixel_t last_pre_w  = last.pre_finish_width();
+            const size_t  pen_ev_from = pen_idx < line_starts.size() ? line_starts[pen_idx] : events.size();
+            const size_t  pen_ev_to   = (pen_idx + 1) < line_starts.size() ? line_starts[pen_idx + 1] : events.size();
 
-        case iterator_item_type_start_parent:
+            if((pen_jp || last_jp) && !last_box_non_text && last_chars >= 1 && last_chars <= 2 && pen_ev_from < pen_ev_to)
             {
-                el->clear_inline_boxes();
-                el->pos() = position();
-                place_inline(std::make_unique<lbi_start>(el), self_size, fmt_ctx);
+                // Strategy A: try pulling the 1–2 char tail onto the penultimate line within JLReq compression budget.
+                std::vector<size_t> tmp_starts;
+                run_flow(pen_idx, SIZE_MAX, tmp_starts);
+                const bool pulled_in = m_line_boxes.size() == n - 1 && !m_line_boxes.back()->overfull();
+                if(!pulled_in)
+                {
+                    // Strategy B: bare 1-char widow only -> push last kinsoku-safe item down if penultimate expansion <= 0.25em/gap.
+                    size_t cut_event = SIZE_MAX;
+                    if(last_chars == 1 && last_pre_w <= em * pixel_t(1.05f))
+                    {
+                        // Walk backwards through pen's child events to find the rightmost kinsoku-safe break point.
+                        std::vector<size_t> pen_children;
+                        for(size_t k = pen_ev_from; k < pen_ev_to && k < events.size(); k++)
+                            if(events[k].second == iterator_item_type_child && !events[k].first->src_el()->is_break())
+                                pen_children.push_back(k);
+                        pixel_t moved_w = 0_px;
+                        for(size_t ci = pen_children.size(); ci-- > 1;)
+                        {
+                            const size_t cur_ev  = pen_children[ci];
+                            const size_t prev_ev = pen_children[ci - 1];
+                            const auto&  cur_ri  = events[cur_ev].first;
+                            const auto&  prev_ri = events[prev_ev].first;
+                            moved_w += cur_ri->width();
+                            if(moved_w > em * pixel_t(2.05f))
+                                break;
+                            if(cur_ri->src_el()->is_white_space())
+                                continue;
+                            if(no_break_opportunity(prev_ri->src_el(), cur_ri->src_el(), true))
+                                continue;
+                            // Count justifiable non-avoided gaps in the remaining prefix [0, ci).
+                            size_t   prefix_gaps = 0;
+                            char32_t prev_c      = 0;
+                            bool     has_prev_c  = false;
+                            for(size_t pi = 0; pi < ci; pi++)
+                            {
+                                const auto& p_el = events[pen_children[pi]].first->src_el();
+                                if(p_el->is_white_space())
+                                {
+                                    if(has_prev_c)
+                                        prefix_gaps++;
+                                    prev_c     = U' ';
+                                    has_prev_c = true;
+                                    continue;
+                                }
+                                if(auto pt = std::dynamic_pointer_cast<el_text>(p_el))
+                                {
+                                    const std::string& s = pt->display_text();
+                                    for(size_t b = 0; b < s.size();)
+                                    {
+                                        const unsigned char c0 = s[b];
+                                        const size_t len = std::min<size_t>(c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4, s.size() - b);
+                                        const char32_t c = pt->rule_char(decode_at(s, b));
+                                        if(has_prev_c && cjk::justifiable_gap(prev_c, c) &&
+                                           cjk::justify_gap_kind(prev_c, c) != cjk::gap_kind::avoided)
+                                            prefix_gaps++;
+                                        prev_c     = c;
+                                        has_prev_c = true;
+                                        b += len;
+                                    }
+                                } else
+                                {
+                                    if(has_prev_c && cjk::justify_gap_kind(prev_c, 0) != cjk::gap_kind::avoided)
+                                        prefix_gaps++;
+                                    prev_c     = 0;
+                                    has_prev_c = true;
+                                }
+                            }
+                            const pixel_t remaining_w = pen_pre_w - moved_w;
+                            if(prefix_gaps >= 4 && remaining_w > 0_px &&
+                               (pen_line_w - remaining_w) <= em * pixel_t(0.25f) * pixel_t(float(prefix_gaps)))
+                            {
+                                cut_event = cur_ev;
+                                break;
+                            }
+                        }
+                    }
+                    if(cut_event != SIZE_MAX)
+                    {
+                        run_flow(SIZE_MAX, cut_event, tmp_starts);
+                        if(m_line_boxes.size() != n)
+                            run_flow(SIZE_MAX, SIZE_MAX, tmp_starts);
+                    } else
+                    {
+                        run_flow(SIZE_MAX, SIZE_MAX, tmp_starts);
+                    }
+                }
             }
-            break;
-
-        case iterator_item_type_end_parent:
-            {
-                place_inline(std::make_unique<lbi_end>(el), self_size, fmt_ctx);
-            }
-            break;
         }
-        }();
     }
-    m_trailing = 0_px;
 
-    finish_last_box(true, self_size);
     make_room_for_ruby();
     for(const auto& text : m_fragmented_texts)
     {
@@ -614,20 +798,16 @@ void litehtml::render_item_inline_context::space_around(pixel_t width, pixel_t m
 
 void litehtml::render_item_inline_context::make_room_for_ruby()
 {
-    // As Chromium 156: a line whose ruby annotations reach into the line above moves down until their em boxes clear
-    // that line's em boxes. The first line's annotations hang over the box's top.
+    // As Chromium 156: a line whose over-ruby reaches into the line above, or whose predecessor's under-ruby reaches
+    // into this line (JLReq 3.3.4), moves down until their em boxes clear each other.
     if(m_line_boxes.size() < 2)
         return;
     const auto& fm    = css().get_font_metrics();
     pixel_t     shift = 0_px;
-    for(size_t i = 1; i < m_line_boxes.size(); i++)
-    {
-        auto& line = m_line_boxes[i];
-        if(shift != 0_px)
-            line->y_shift(shift);
-        bool    found = false;
-        pixel_t reach = 0_px;
-        for(const auto& item : line->items())
+    auto ruby_bounds = [](const line_box& lb, bool& has_over, pixel_t& over_top, bool& has_under, pixel_t& under_bot) {
+        has_over = has_under = false;
+        over_top = under_bot = 0_px;
+        for(const auto& item : lb.items())
         {
             const auto& el = item->get_el();
             if(item->get_type() != line_box_item::type_text_part)
@@ -635,35 +815,51 @@ void litehtml::render_item_inline_context::make_room_for_ruby()
             auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(el);
             if(!pair && el->src_el()->tag() != _ruby_)
                 continue;
+            auto note = [&](const render_item_ruby_pair& p, pixel_t py, pixel_t ph) {
+                if(p.annotation_overflow > 0_px)
+                {
+                    const pixel_t top = py - p.annotation_overflow;
+                    over_top          = has_over ? std::min(over_top, top) : top;
+                    has_over          = true;
+                }
+                if(p.annotation_under_overflow > 0_px)
+                {
+                    const pixel_t bot = py + ph + p.annotation_under_overflow;
+                    under_bot         = has_under ? std::max(under_bot, bot) : bot;
+                    has_under         = true;
+                }
+            };
             if(pair)
             {
-                // A ruby of one pair is that pair.
-                if(pair->annotation_overflow > 0_px)
-                {
-                    const pixel_t top = el->pos().y - pair->annotation_overflow;
-                    reach             = found ? std::min(reach, top) : top;
-                    found             = true;
-                }
+                note(*pair, el->pos().y, el->pos().height);
                 continue;
             }
             for(const auto& child : el->children())
-            {
-                auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(child);
-                if(!pair || pair->annotation_overflow <= 0_px)
-                    continue;
-                const pixel_t top = el->pos().y + pair->pos().y - pair->annotation_overflow;
-                reach             = found ? std::min(reach, top) : top;
-                found             = true;
-            }
+                if(auto cp = std::dynamic_pointer_cast<render_item_ruby_pair>(child))
+                    note(*cp, el->pos().y + cp->pos().y, cp->pos().height);
         }
-        if(!found)
+    };
+    for(size_t i = 1; i < m_line_boxes.size(); i++)
+    {
+        auto& line = m_line_boxes[i];
+        if(shift != 0_px)
+            line->y_shift(shift);
+        const auto& prev = m_line_boxes[i - 1];
+        bool        prev_over = false, prev_under = false, cur_over = false, cur_under = false;
+        pixel_t     prev_ot = 0_px, prev_ub = 0_px, cur_ot = 0_px, cur_ub = 0_px;
+        ruby_bounds(*prev, prev_over, prev_ot, prev_under, prev_ub);
+        ruby_bounds(*line, cur_over, cur_ot, cur_under, cur_ub);
+        if(!cur_over && !prev_under)
             continue;
-        const auto&   prev      = m_line_boxes[i - 1];
-        const pixel_t em_bottom = prev->bottom() - prev->baseline() + fm.em_bottom();
-        if(reach < em_bottom)
+        const pixel_t prev_em_bottom = prev->bottom() - prev->baseline() + fm.em_bottom();
+        const pixel_t cur_em_top     = line->bottom() - line->baseline() - fm.em_top();
+        const pixel_t prev_limit     = prev_under ? std::max(prev_em_bottom, prev_ub) : prev_em_bottom;
+        const pixel_t cur_limit      = cur_over ? std::min(cur_em_top, cur_ot) : cur_em_top;
+        if(cur_limit < prev_limit)
         {
-            line->y_shift(em_bottom - reach);
-            shift += em_bottom - reach;
+            const pixel_t delta = prev_limit - cur_limit;
+            line->y_shift(delta);
+            shift += delta;
         }
     }
 }
@@ -1079,14 +1275,16 @@ litehtml::pixel_t litehtml::render_item_inline_context::new_box(const std::uniqu
     m_line_boxes.emplace_back(std::make_unique<line_box>(new_pos.top, new_pos.left + first_line_margin + text_indent,
                                                          new_pos.left + new_pos.width, css().line_height(),
                                                          css().get_font_metrics(), css().get_text_align(),
-                                                         css().get_direction() == direction_rtl));
+                                                         css().get_direction() == direction_rtl,
+                                                         css().get_text_align_last()));
     // JLReq 3.1.5: an opening bracket that starts a paragraph. In ① (full_em, the default), with an indent of an em or
     // more its first half goes (ink at the indent); with less, in a book that indents its paragraphs, it keeps its full
     // width after em/2 - text_indent so a full em precedes its ink (全角アキ). In ③ (half_em, 二分アキ), with an indent
     // up to 1em (including CSS p { text-indent: 1em }) in an indented paragraph/book, it keeps its full width starting
     // flush (shifting back by -text_indent) so its ink sits at 0.5em and the next character aligns with 1em normal
     // paragraphs. Not for centred/end-aligned lines, hanging indents, or deep (>1em) indents.
-    if(paragraph && is_one_of(css().get_text_align(), text_align_left, text_align_justify, text_align_start))
+    if(paragraph &&
+       is_one_of(css().get_text_align(), text_align_left, text_align_justify, text_align_justify_all, text_align_start))
     {
         const pixel_t em      = css().get_font_size();
         const bool    full_em = src_el()->get_document()->get_paragraph_brackets() == paragraph_brackets::full_em;
@@ -1231,7 +1429,7 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
 
     bool add_box = true;
 
-    if(!m_line_boxes.empty())
+    if(!m_line_boxes.empty() && !m_force_break_next)
     {
         if(m_line_boxes.back()->can_hold(item, src_el()->css().get_white_space(), item->get_type() == line_box_item::type_text_part ? m_trailing : 0_px))
         {
@@ -1240,6 +1438,7 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
     }
     if(add_box)
     {
+        m_force_break_next = false;
         new_box(item, self_size, fmt_ctx);
     }
 
