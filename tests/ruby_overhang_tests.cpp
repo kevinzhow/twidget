@@ -16,6 +16,7 @@
 #include <litehtml.h>
 #include <litehtml/cjk_rules.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -49,12 +50,22 @@ struct Drawn {
     std::string text;
     float x, y, width;
     bool ruby;
+    int decoration = 0;
+};
+
+struct FillRect {
+    float x, y, width, height;
 };
 
 struct Stub : document_container {
     float w = 400, h = 400;
     std::vector<Drawn> drawn;
-    // The font is its size.
+    std::vector<FillRect> fills;
+    struct FontInfo {
+        float size;
+        int decoration;
+    };
+    std::vector<FontInfo> fonts;
     uint_ptr create_font(const font_description& d, const document*, font_metrics* fm) override {
         if (fm) {
             fm->font_size = d.size;
@@ -63,13 +74,15 @@ struct Stub : document_container {
             fm->height = d.size;
             fm->x_height = d.size * 0.5f;
             fm->ch_width = d.size / 2;
-            fm->draw_spaces = false;
+            fm->draw_spaces = d.decoration_line != text_decoration_line_none;
         }
-        return uint_ptr(std::lround(float(d.size)));
+        fonts.push_back({float(d.size), d.decoration_line});
+        return fonts.size();
     }
     void delete_font(uint_ptr) override {}
     pixel_t text_width(const char* text, uint_ptr font) override {
-        return pixel_t(float(font) * float(code_points(text).size()));
+        const float sz = font >= 1 && font <= fonts.size() ? fonts[font - 1].size : 16.0f;
+        return pixel_t(sz * float(code_points(text).size()));
     }
     void split_text(const char* text, const std::function<void(const char*)>& on_word,
                     const std::function<void(const char*)>& on_space) override {
@@ -92,15 +105,17 @@ struct Stub : document_container {
         if (s.size() > start) on_word(s.substr(start).c_str());
     }
     void draw_text(uint_ptr, const char* text, uint_ptr font, web_color, const position& pos) override {
-        const bool ruby = font < 16;
-        const float width = float(font) * float(code_points(text).size());
+        const FontInfo fi = font >= 1 && font <= fonts.size() ? fonts[font - 1] : FontInfo{16.0f, 0};
+        const bool ruby = fi.size < 16.0f;
+        const float width = fi.size * float(code_points(text).size());
         if (ruby && !drawn.empty() && drawn.back().ruby && std::abs(drawn.back().y - float(pos.y)) < 0.5f &&
-            std::abs(drawn.back().x + drawn.back().width - float(pos.x)) < 0.5f) {
+            std::abs(drawn.back().x + drawn.back().width - float(pos.x)) < 0.5f &&
+            drawn.back().decoration == fi.decoration) {
             drawn.back().text += text;
             drawn.back().width += width;
             return;
         }
-        drawn.push_back({text, float(pos.x), float(pos.y), width, ruby});
+        drawn.push_back({text, float(pos.x), float(pos.y), width, ruby, fi.decoration});
     }
     pixel_t pt_to_px(float pt) const override { return pt * 96 / 72; }
     pixel_t get_default_font_size() const override { return 16; }
@@ -109,7 +124,10 @@ struct Stub : document_container {
     void load_image(const char*, const char*, bool) override {}
     void get_image_size(const char*, const char*, size& sz) override { sz = {}; }
     void draw_image(uint_ptr, const background_layer&, const std::string&, const std::string&) override {}
-    void draw_solid_fill(uint_ptr, const background_layer&, const web_color&) override {}
+    void draw_solid_fill(uint_ptr, const background_layer& layer, const web_color&) override {
+        fills.push_back({float(layer.border_box.x), float(layer.border_box.y), float(layer.border_box.width),
+                         float(layer.border_box.height)});
+    }
     void draw_linear_gradient(uint_ptr, const background_layer&, const background_layer::linear_gradient&) override {}
     void draw_radial_gradient(uint_ptr, const background_layer&, const background_layer::radial_gradient&) override {}
     void draw_conic_gradient(uint_ptr, const background_layer&, const background_layer::conic_gradient&) override {}
@@ -382,13 +400,79 @@ void run(bool vertical) {
     expect(80, "あい" + tokyo + "うえ", "あ@0 い@16 ^とうきょうと@24 東@32 京@56 | う@0 え@16",
            "line-edge d: a group ruby ending a wrapped line, 1:1");
     // 3.3.6 (注), Appendix F: a group ruby much shorter than its base spreads 1:2:1, but the space at each end is at
-    // most one ruby character; the rest goes between the ruby characters (short_ruby::jlreq).
+    // most one ruby character; the rest goes between the ruby characters (short_ruby::jlreq), per character (not
+    // keeping small kana glued to the preceding kana).
     expect(400, "あ" + r("東京都庁", "かな") + "い", "あ@0 ^か@24 ^な@64 東@16 京@32 都@48 庁@64 い@80",
            "3.3.6 (注): かな over 東京都庁, one ruby character at each end (not 1:2:1's 12 px)");
-    expect(400, "あ" + r("東京都庁舎", "ちょう") + "い", "あ@0 ^ちょ@24 ^う@80 東@16 京@32 都@48 庁@64 舎@80 い@96",
-           "3.3.6 (注): ちょう over five kanji (ちょ one unit: ょ may not start a line), the ends 8 px, 40 px between");
+    expect(400, "あ" + r("東京都庁舎", "ちょう") + "い", "あ@0 ^ち@24 ^ょ@52 ^う@80 東@16 京@32 都@48 庁@64 舎@80 い@96",
+           "3.3.6 (注): ちょう over five kanji spreads evenly per character (ends 8 px, 20 px between ち/ょ/う)");
+    expect(400, "あ" + r("東京都庁", "ちょ") + "い", "あ@0 ^ち@24 ^ょ@64 東@16 京@32 都@48 庁@64 い@80",
+           "3.3.6 (注): 2-char small-kana ruby ちょ over 東京都庁 splits evenly between ち and ょ");
     expect(400, "あ" + r("東京", "とう") + "い", "あ@0 ^と@20 ^う@36 東@16 京@32 い@48",
            "3.3.6: とう over 東京, 1:2:1 within one ruby character at the ends, as before");
+    // 3.3.8 e-h: unsplit jukugo ruby at line head and wrapped line end.
+    expect(400, "<ruby>胡<rt>きゅう</rt>瓜<rt>り</rt></ruby>に", "^きゅう@0 胡@0 ^り@24 瓜@16 に@32",
+           "3.3.8 e-h: unsplit jukugo 胡瓜 at line head has 0 gap inside word");
+    expect(80, "あいう<ruby>瓜<rt>り</rt>胡<rt>きゅう</rt></ruby>え", "あ@0 い@16 う@32 ^り@48 瓜@48 ^きゅう@56 胡@64 | え@0",
+           "3.3.8 e-h: unsplit jukugo 瓜胡 at wrapped line end overhangs 瓜 cleanly to fit flush");
+    expect(84, "あいう<ruby>瓜<rt>り</rt>胡<rt>きゅう</rt></ruby>え", "あ@0 い@16 う@32 ^り@48 瓜@48 ^きゅう@56 胡@64 | え@0",
+           "3.3.8 e-h: unsplit jukugo 瓜胡 ending wrapped line leaves 0 gap between 瓜 and 胡");
+    // P1-7 (3.3.10): text-decoration from ancestor propagates to <ruby> base text (mono, jukugo, group) continuously
+    // without decorating <rt>.
+    {
+        auto check_deco = [&](const std::string& html, float span_end, const std::string& what) {
+            Stub c;
+            if (vertical) c.h = 400;
+            auto doc = document::createFromString(
+                std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                    "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0\">" + html +
+                    "</p></body></html>",
+                &c, master_css);
+            doc->render(400);
+            doc->draw(0, 0, 0, nullptr);
+            bool rt_decorated = false;
+            bool base_decorated = false;
+            std::vector<std::pair<float, float>> segs;
+            for (const auto& d : c.drawn) {
+                if (d.ruby) {
+                    if (d.decoration != 0) rt_decorated = true;
+                } else {
+                    if (d.decoration != 0) {
+                        base_decorated = true;
+                        if (!vertical) segs.push_back({d.x, d.x + d.width});
+                    }
+                }
+            }
+            for (const auto& f : c.fills) {
+                if (f.width > 0 && f.height > 0 && f.height <= 4.0f) {
+                    segs.push_back({f.x, f.x + f.width});
+                }
+            }
+            std::sort(segs.begin(), segs.end());
+            float covered = 0;
+            bool continuous = !segs.empty() && segs.front().first <= 0.5f;
+            for (const auto& [a, b] : segs) {
+                if (a > covered + 0.5f) continuous = false;
+                covered = std::max(covered, b);
+            }
+            if (covered < span_end - 0.5f) continuous = false;
+            check(!rt_decorated && (vertical ? !c.fills.empty() : base_decorated) && continuous,
+                  mode + "3.3.10: " + what + " (rt_deco=" + std::to_string(rt_decorated) +
+                      " base_deco=" + std::to_string(base_decorated) + " fills=" + std::to_string(c.fills.size()) +
+                      " covered=" + std::to_string(covered) + "/" + std::to_string(span_end) +
+                      " cont=" + std::to_string(continuous) + ")");
+        };
+        check_deco("<span style=\"text-decoration:underline\">前<ruby>漢字<rt>かんじ</rt></ruby>後</span>", 64.0f,
+                   "underline continuous across mono/group <ruby>漢字</ruby>");
+        check_deco("<span style=\"text-decoration:underline\">前<ruby>漢<rt>かん</rt>字<rt>じ</rt></ruby>後</span>", 64.0f,
+                   "underline continuous across jukugo <ruby>漢|字</ruby>");
+        check_deco("<span style=\"text-decoration:underline\">前<ruby>東京<rt>とうきょうと</rt></ruby>後</span>", 80.0f,
+                   "underline continuous across wider group ruby <ruby>東京</ruby>");
+        check_deco("<span style=\"text-decoration:underline\">後<ruby>旬<rt>しゅん</rt></ruby>又</span>", 56.0f,
+                   "underline continuous across kanji-bounded <ruby>旬</ruby>");
+        check_deco("<span style=\"text-decoration:line-through\">前<ruby>漢字<rt>かんじ</rt></ruby>後</span>", 64.0f,
+                   "line-through continuous across <ruby>");
+    }
     {
         const std::string got = lay_out(vertical, 400, "あ" + r("東京都庁", "かな") + "い", ruby_overhang::punctuation,
                                         ruby_breaking::per_base, "left", short_ruby::space_around);

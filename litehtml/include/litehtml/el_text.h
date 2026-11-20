@@ -47,6 +47,15 @@ namespace litehtml
     /// much nearer the piece's start.
     pixel_t trim_shift(const std::vector<char_trim>& trims, size_t at);
 
+    /// Snaps a text box's logical y to a device pixel, matching el_text::draw.
+    pixel_t snap_text_top_px(pixel_t top, const font_metrics& fm);
+
+    /// Draws text decoration lines (underline, overline, line-through) across `pos` using the exact geometry of
+    /// el_text (vertical) and Container/Renderer (horizontal). Used by el_text (vertical) and render_item_ruby_pair
+    /// (bridging inter-character gaps in spaced ruby bases).
+    void draw_text_decoration_lines(document* doc, uint_ptr hdc, const std::string& text, const css_properties& css,
+                                    web_color color, const position& pos, bool vertical);
+
     class el_text : public element
     {
       protected:

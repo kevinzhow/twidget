@@ -112,10 +112,17 @@ namespace litehtml::cjk
     };
     gap_kind justify_gap_kind(char32_t before, char32_t after);
 
-    // JLReq 3.1.6 ①: whether a full-width space goes after c, a ？！ (or ‼⁇⁈⁉) ending a sentence, before next: a kana,
-    // kanji or opening bracket that is not a particle going on with the sentence (と, って, か …); none before a closing
-    // bracket, punctuation or a space (a U+3000 the book has), nor at a line's end (`at`).
-    bool dividing_space_after(char32_t c, char32_t next, uint8_t at);
+    // JLReq 3.1.6 ①: space (in ems) after c, a ？！ (or ‼⁇⁈⁉) ending a sentence, before next: 1.0em before normal
+    // sentence-starting characters (kana, kanji, Latin, digits, prefix symbols, etc.), 0.5em before full-width opening
+    // brackets (total 1.0em visual gap with the bracket's leading 0.5em), and 0 before closing brackets, not-starting
+    // marks (っ, ！, ？, 。, 、, ・, etc.), spaces (U+3000), or at line end (`at`).
+    float dividing_space_em(char32_t c, char32_t next, uint8_t at);
+    bool  dividing_space_after(char32_t c, char32_t next, uint8_t at);
+
+    // JLReq 3.1.6 (hyphens): target advance in ems for full-width Japanese hyphen glyphs (0.25em for U+2010 ‐, 0.50em
+    // for U+30A0 ゠; 0 otherwise). Applied only when the font's glyph is full-width so proportional Latin fonts stay
+    // untouched.
+    float hyphen_target_em(char32_t c);
 
     // JLReq 3.2.6 ④: whether a quarter em goes after c, before next: between kana or kanji and a Latin letter or digit,
     // either way round; none at a line's end (`at`), nor next to punctuation, spaces or full-width letters.

@@ -89,6 +89,43 @@ namespace litehtml::cjk
 
         bool numeric(char32_t c) { return ascii_digit(c) || (c >= 0xFF10 && c <= 0xFF19); }
 
+        bool kanji_numeral(char32_t c)
+        {
+            return c == 0x3007 || std::u32string_view(U"零一二三四五六七八九十百千万億兆").find(c) != std::u32string_view::npos;
+        }
+
+        // JLReq Appendix A cl-12 (prefixed abbreviations) and cl-13 (postfixed abbreviations): inseparable from
+        // adjacent numerals (JLReq 3.1.10 ④⑤, 3.1.11 ①).
+        bool prefix_abbrev(char32_t c)
+        {
+            switch(c)
+            {
+            case '#': case '$': case 0x00A3: case 0x00A5: case 0x20AC: case 0x2116: case 0x3012:
+            case 0xFF03: case 0xFF04: case 0xFFE1: case 0xFFE5:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        bool postfix_abbrev(char32_t c)
+        {
+            switch(c)
+            {
+            case '%': case 0x00A2: case 0x00B0: case 0x2030: case 0x2031: case 0x2032: case 0x2033:
+            case 0x2103: case 0x2109: case 0xFF05: case 0xFFE0:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        bool abbrev_number_pair(char32_t before, char32_t after)
+        {
+            const auto is_num = [](char32_t c) { return numeric(c) || kanji_numeral(c); };
+            return (prefix_abbrev(before) && is_num(after)) || (is_num(before) && postfix_abbrev(after));
+        }
+
         // UAX #29's MidNum and MidNumLet (and the apostrophe): between two digits, part of one number (1.5, 12,000).
         bool mid_num(char32_t c)
         {
@@ -128,7 +165,7 @@ namespace litehtml::cjk
     bool no_break_between(char32_t before, char32_t after)
     {
         const classes a = classify(before), b = classify(after);
-        return (a & not_ending) || (b & not_starting) || (a & b & inseparable);
+        return (a & not_ending) || (b & not_starting) || (a & b & inseparable) || abbrev_number_pair(before, after);
     }
 
     script script_of(char32_t c)
@@ -145,7 +182,7 @@ namespace litehtml::cjk
             return false;
         if(is_space(before) || is_space(after))
             return true;
-        if(classify(before) & classify(after) & inseparable)
+        if((classify(before) & classify(after) & inseparable) || abbrev_number_pair(before, after))
             return false;
         return script_of(before) != script::latin || script_of(after) != script::latin;
     }
@@ -159,10 +196,7 @@ namespace litehtml::cjk
         constexpr classes punctuation = opening | first_half | middle_dot;
         const classes     is          = classify(c);
         // JLReq 3.1.3: in kanji numerals, a place or approximation 、 and a decimal ・ are set solid.
-        auto numeral = [](char32_t x) {
-            return x == 0x3007 || std::u32string_view(U"一二三四五六七八九十百千万億兆").find(x) != std::u32string_view::npos;
-        };
-        if((c == 0x3001 || c == 0x30FB) && numeral(prev) && numeral(next))
+        if((c == 0x3001 || c == 0x30FB) && kanji_numeral(prev) && kanji_numeral(next))
             return c == 0x3001 ? trim{0, 0.5f} : trim{0.25f, 0.25f};
         // JLReq 3.1.5 ①: a wrapped line's opening bracket is flush with the line head (天ツキ); one that starts a
         // paragraph keeps its first half there (the paragraph's indent before it is line_box's).
@@ -241,7 +275,7 @@ namespace litehtml::cjk
                 return true;
             switch(c)
             {
-            case 0x30A0: case 0x301C:                                                        // cl-03
+            case 0x30A0: case 0x301C: case 0xFF5E:                                           // cl-03
             case 0xFF01: case 0xFF1F: case 0x203C: case 0x2047: case 0x2048: case 0x2049:    // cl-04
             case 0x3000:
                 return true;
@@ -283,14 +317,34 @@ namespace litehtml::cjk
         }
     } // namespace
 
+    float dividing_space_em(char32_t c, char32_t next, uint8_t at)
+    {
+        if((at & line_end) || next == 0 || is_space(next) ||
+           !(c == 0xFF01 || c == 0xFF1F || c == 0x203C || (c >= 0x2047 && c <= 0x2049)))
+            return 0.0f;
+        const classes b = classify(next);
+        // JLReq 3.1.6 ① / Appendix B: no space before closing brackets, another dividing mark, stops, commas,
+        // middle dots, hyphens, small kana (っ in 何？って), etc.
+        if(b & not_starting)
+            return 0.0f;
+        // Before a full-width opening bracket (cl-01), add 0.5em so its built-in leading 0.5em gives 1.0em total.
+        if(b & opening)
+            return 0.5f;
+        return 1.0f;
+    }
+
     bool dividing_space_after(char32_t c, char32_t next, uint8_t at)
     {
-        if((at & line_end) || !(c == 0xFF01 || c == 0xFF1F || c == 0x203C || (c >= 0x2047 && c <= 0x2049)))
-            return false;
-        // Particles that go on with the sentence after ？！ (何？って, 本当？と, ええ！かな).
-        if(std::u32string_view(U"とっってかのもやにをはがねよなぞわ").find(next) != std::u32string_view::npos)
-            return false;
-        return kana_or_kanji(next) || (classify(next) & opening);
+        return dividing_space_em(c, next, at) > 0.0f;
+    }
+
+    float hyphen_target_em(char32_t c)
+    {
+        if(c == 0x2010)
+            return 0.25f;
+        if(c == 0x30A0)
+            return 0.5f;
+        return 0.0f;
     }
 
     bool latin_space_after(char32_t c, char32_t next, uint8_t at)

@@ -155,6 +155,24 @@ int main() {
         {"―", "―", true, "―― (U+2015) is not split"},
         {"─", "─", true, "── (U+2500, the overlay) is not split"},
         {"9", "%", true, "% does not start a line after a number"},
+        {"9", "％", true, "fullwidth ％ does not start a line after a number"},
+        {"9", "‰", true, "‰ does not start a line after a number"},
+        {"9", "℃", true, "℃ does not start a line after a number"},
+        {"9", "℉", true, "℉ does not start a line after a number"},
+        {"9", "°", true, "° does not start a line after a number"},
+        {"9", "′", true, "′ does not start a line after a number"},
+        {"9", "″", true, "″ does not start a line after a number"},
+        {"9", "¢", true, "¢ does not start a line after a number"},
+        {"¥", "1", true, "¥ does not end a line before a number"},
+        {"￥", "1", true, "fullwidth ￥ does not end a line before a number"},
+        {"$", "5", true, "$ does not end a line before a number"},
+        {"€", "5", true, "€ does not end a line before a number"},
+        {"£", "5", true, "£ does not end a line before a number"},
+        {"№", "1", true, "№ does not end a line before a number"},
+        {"〒", "1", true, "〒 does not end a line before a number"},
+        {"あ", "〜", true, "〜 (U+301C) does not start a line"},
+        {"あ", "～", true, "～ (U+FF5E) does not start a line"},
+        {"¥", "あ", false, "¥ may break before non-numeric Japanese"},
         {"a", ".", true, ". does not start a line"},
         {"漢", "字", false, "a line may break between two kanji"},
         {"あ", "い", false, "a line may break between two kana"},
@@ -168,6 +186,18 @@ int main() {
         const std::string want = p.together ? together_tail + line2 : together_tail + a + "@16,2 " + b + "@0,22";
         const std::string got = layout("24px", kan + kan + "<span>" + a + "</span>" + b);
         check(got == want, std::string(p.why) + " across </span>: " + got);
+    }
+    // Cross-<span> postfix abbreviations after digits with no Japanese-Latin quarter-em gap before the digit.
+    {
+        const std::pair<const char*, const char*> postfix[] = {
+            {"%", "%"}, {"％", "fullwidth ％"}, {"‰", "‰"}, {"℃", "℃"}, {"℉", "℉"},
+            {"°", "°"}, {"′", "′"}, {"″", "″"}, {"¢", "¢"},
+        };
+        for (const auto& [sym, name] : postfix) {
+            const std::string g = layout("24px", std::string("12<span>5</span>") + sym);
+            check(g == std::string("12@0,2 5@0,22 ") + sym + "@8,22",
+                  std::string("3.1.10 ⑤: ") + name + " stays with preceding digit across </span>: " + g);
+        }
     }
     // The boundary is an element's start, or several.
     std::string got = layout("24px", kan + kan + "サ<span>ー</span>");
@@ -222,6 +252,8 @@ int main() {
         {U'・', not_starting | middle_dot},
         {U'：', not_starting | middle_dot},
         {U'ー', not_starting},
+        {U'〜', not_starting},
+        {U'～', not_starting},
         {U'…', inseparable},
         {U'─', inseparable},
         {U'漢', 0},
@@ -245,6 +277,7 @@ int main() {
         {U'α', U'β', false},    {U'…', U'…', false},   {U'‥', U'‥', false},   {U'―', U'―', false},
         {U'—', U'—', false},    {U'─', U'─', false},   {U'葛', 0xE0100, false}, {U'か', 0x3099, false},
         {U'…', U'あ', true},    {U'ア', U'ー', true},
+        {U'¥', U'1', false},    {U'￥', U'1', false},  {U'0', U'％', false},  {U'0', U'‰', false},  {U'0', U'℃', false},
     };
     for (auto [a, b, widens] : gaps) {
         char what[96];

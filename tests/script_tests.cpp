@@ -221,18 +221,58 @@ void run(bool vertical) {
         check(line_texts(l.c.glyphs) == "あいう|数2えお", "3.1.10 ⑨: a subscript is not split from its base" + m + ": " +
                                                               line_texts(l.c.glyphs));
     }
-    // H₂O: neither after H nor after ₂.
+    // H₂O: neither after H nor after ₂ (width 64 holds あいH₂ = 57.6px but not あいH₂O = 73.6px).
     {
         Laid l;
-        lay_out(l, vertical, 64, "あいうH<sub>2</sub>Oえ");
-        check(line_texts(l.c.glyphs) == "あいう|H2Oえ", "3.1.10 ⑨: H₂O is not split" + m + ": " + line_texts(l.c.glyphs));
+        lay_out(l, vertical, 64, "あいH<sub>2</sub>Oえ");
+        check(line_texts(l.c.glyphs) == "あい|H2Oえ", "3.1.10 ⑨: H₂O is not split as H₂|O" + m + ": " + line_texts(l.c.glyphs));
     }
-    // A note mark after 。 stays with it (。 may not start a line, so う goes along).
+    // Multi-part chemical formula C₆H₁₂O₆ stays whole across sub/base boundaries.
+    {
+        Laid l;
+        lay_out(l, vertical, 96, "あいC<sub>6</sub>H<sub>12</sub>O<sub>6</sub>え");
+        check(line_texts(l.c.glyphs) == "あい|C6H12O6|え", "3.1.10 ⑨: C₆H₁₂O₆ stays intact" + m + ": " + line_texts(l.c.glyphs));
+    }
+    // A note mark after 。 stays with it and never overflows the line edge (even when narrow enough to fit in 。's
+    // line-end half-em trim, which is NOT available because <sup> follows 。).
     {
         Laid l;
         lay_out(l, vertical, 64, "あいう。<sup>注</sup>えお");
         check(line_texts(l.c.glyphs).find("。注") != std::string::npos,
               "3.1.10 ⑨: a note mark after 。 is not split from it" + m + ": " + line_texts(l.c.glyphs));
+    }
+    {
+        // Proportional/narrow <sup>1</sup> (width 6px <= 8px line-end trim of 。): must wrap う。1 to line 2 instead
+        // of overflowing past the 64px line edge.
+        Laid l;
+        lay_out(l, vertical, 64, "あいう。<sup style=\"font-size:6px\">1</sup>えお");
+        float max_right = 0;
+        for (const auto& g : l.c.glyphs) max_right = std::max(max_right, g.along + g.size);
+        check(line_texts(l.c.glyphs) == "あい|う。1え|お" && max_right <= 64.5f,
+              "3.1.10 ⑨: あいう。<sup>1</sup> does not overflow right margin" + m + ": " + line_texts(l.c.glyphs) +
+                  " max_right=" + num(max_right));
+    }
+    // After a note mark, normal Japanese prose (え) may still break to the next line.
+    {
+        Laid l;
+        lay_out(l, vertical, 80, "あいう。<sup>1</sup>えお");
+        check(line_texts(l.c.glyphs) == "あいう。1|えお",
+              "3.1.10 ⑨: break allowed after <sup>1</sup> before Japanese prose" + m + ": " + line_texts(l.c.glyphs));
+    }
+    // Justified lines put zero extra space between a base and its script (JLReq 3.1.11 ①).
+    {
+        Laid l;
+        if (vertical) l.c.h = 80;
+        l.doc = document::createFromString(
+            std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                "><body style=\"margin:0;font-size:16px;line-height:20px\"><p style=\"margin:0;text-align:justify\">"
+                "う。<sup>1</sup>えおか</p></body></html>",
+            &l.c, std::string(master_css) + jlreq_scripts_css);
+        l.doc->render(pixel_t(vertical ? 400 : 80));
+        l.doc->draw(0, 0, 0, nullptr);
+        const Glyph *stop = find(l.c.glyphs, "。"), *one = find(l.c.glyphs, "1");
+        check(stop && one && std::abs((one->along - stop->along) - 16.0f) < 0.5f,
+              "3.1.11 ①: justified line puts no extra gap between 。 and <sup>1</sup>" + m + ": " + positions(l.c.glyphs));
     }
     // After a space, a script may start a line.
     {

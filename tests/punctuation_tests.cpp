@@ -527,15 +527,33 @@ void run(bool vertical, bool half_forms) {
             check(zh == zh_before, mode + "3.1.1 ②: " + fw + " in Chinese text as before: " + zh + "\n     want " + zh_before);
         }
     }
-    // JLReq 3.1.3: 、 between kanji numerals (二、三日) and ・ as their decimal point (三・五) are set solid.
+    // JLReq 3.1.3: 、 between kanji numerals (二、三日) and ・ as their decimal point (三・五, 零・五) are set solid.
     expect(400, "二、三日", "二@0 、*@16 三@24 日@40", "3.1.3: 、 between kanji numerals, solid");
     expect2(400, "三・五倍", "三@0 ・*@16 五@24 倍@40", "三@0 ・@12 五@24 倍@40", "3.1.3: ・ between kanji numerals, solid");
+    expect2(400, "零・五倍", "零@0 ・*@16 五@24 倍@40", "零@0 ・@12 五@24 倍@40", "3.1.3: ・ after 零, solid");
+    expect(400, "零、五", "零@0 、*@16 五@24", "3.1.3: 、 after 零, solid");
     expect(400, "二、さん", "二@0 、@16 さ@32 ん@48", "3.1.3: not before kana");
+    // JLReq 3.1.6 (hyphens): ‐ (U+2010) is 0.25em and ゠ (U+30A0) is 0.50em when full-width.
+    expect(400, "あ\u2010い", "あ@0 \u2010@10 い@20", "3.1.6 (hyphens): ‐ (U+2010) trimmed to 0.25em (4px centered in 16px)");
+    expect2(400, "あ\u30A0い", "あ@0 \u30A0*@16 い@24", "あ@0 \u30A0@12 い@24",
+            "3.1.6 (hyphens): ゠ (U+30A0) trimmed to 0.50em (8px centered in 16px)");
     // JLReq 3.1.6 ① (document::set_dividing_space, full_em by default): a full-width space after ？！ ending a sentence
-    // when the book has none; none before a closing bracket, a U+3000 the book has, a particle that goes on the
-    // sentence (と, って …), nor at a line's end.
+    // when the book has none; 0.5em before full-width opening bracket (total 1.0em visual gap with 「's lead half-em);
+    // full-width before Latin/digits and normal sentence-starting kana (no single-kana particle blacklist); none before
+    // closing brackets, not-starting marks (っ, ！, ？, 。, 、), spaces (U+3000), nor at a line's end.
     expect(400, "なんだ！そうか", "な@0 ん@16 だ@32 ！@48 そ@80 う@96 か@112", "3.1.6 ①: a full-width space after ！");
-    expect(400, "本当？と言う", "本@0 当@16 ？@32 と@48 言@64 う@80", "3.1.6 ①: none before と");
+    expect(400, "なんだ！もう帰る", "な@0 ん@16 だ@32 ！@48 も@80 う@96 帰@112 る@128", "3.1.6 ①: full-width space before も");
+    expect(400, "そうだ！なんだ", "そ@0 う@16 だ@32 ！@48 な@80 ん@96 だ@112", "3.1.6 ①: full-width space before な");
+    expect(400, "そうか？はい", "そ@0 う@16 か@32 ？@48 は@80 い@96", "3.1.6 ①: full-width space before は");
+    expect(400, "えっ！かまわない", "え@0 っ@16 ！@32 か@64 ま@80 わ@96 な@112 い@128", "3.1.6 ①: full-width space before か");
+    expect(400, "本当？わたしは", "本@0 当@16 ？@32 わ@64 た@80 し@96 は@112", "3.1.6 ①: full-width space before わ");
+    expect(400, "なんだ！よし", "な@0 ん@16 だ@32 ！@48 よ@80 し@96", "3.1.6 ①: full-width space before よ");
+    expect(400, "なんだ！100円", "な@0 ん@16 だ@32 ！@48 1@80 0@96 0@112 円@132", "3.1.6 ①: full-width space before ASCII digits");
+    expect(400, "本当？OK", "本@0 当@16 ？@32 O@64 K@80", "3.1.6 ①: full-width space before Latin");
+    expect(400, "なんだ！「そうか」", "な@0 ん@16 だ@32 ！@48 「@80 そ@88 う@104 か@120 」@136",
+           "3.1.6 ①: 1.0em total visual gap before 「 (0.5em + 「's leading 0.5em)");
+    expect(400, "何？って", "何@0 ？@16 っ@32 て@48", "3.1.6 ①: none before small っ (not_starting)");
+    expect(400, "なんだ！？そうか", "な@0 ん@16 だ@32 ！@48 ？@64 そ@96 う@112 か@128", "3.1.6 ①: none between ！ and ？, 1em after ？");
     expect(400, "えっ！」と", "え@0 っ@16 ！@32 」@48 と@64", "3.1.6 ①: none before 」");
     expect(400, "あ！　い", "あ@0 ！@16 　@32 い@48", "3.1.6 ①: none where the book has U+3000");
     expect(64, "あいう！そこ", "あ@0 い@16 う@32 ！@48 | そ@0 こ@16", "3.1.6 ①: none at a line's end");
