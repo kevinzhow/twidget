@@ -314,11 +314,46 @@ void run(bool vertical, bool half_forms) {
                 "3.1.5 ③: the paragraph's wrapped line still starts with 「 flush (天ツキ)", three);
     expect_body(400, p1 + "あい" + e + "<p style=\"margin:0;text-indent:0\">「か」き</p>", "あ@16 い@32 | 「@8 か@16 」@32 き@48",
                 "3.1.5 ③: 草枕's text-indent:0 conversation among text-indent:1em paragraphs", three);
-    expect_body(400, p1 + "「か」き" + e, "「*@16 か@24 」@40 き@56", "3.1.5 ③: a paragraph's own text-indent:1em as in ①", three);
+    expect_body(400, p1 + "「か」き" + e, "「@8 か@16 」@32 き@48",
+                "3.1.5 ③: a paragraph's own text-indent:1em sets 二分アキ", three);
+    expect_body(80, p1 + "あいうえ" + e + p1 + "「かき」くけこさし「すせ" + e,
+                "あ@16 い@32 う@48 え@64 | 「@8 か@16 き@32 」@48 く@64 | け@0 こ@16 さ@32 し@48 | 「*@0 す@8 せ@24",
+                "3.1.5 ③: CSS text-indent:1em paragraph sets 二分アキ, wrapped 「 stays 天ツキ", three);
+    expect_body(400, p1 + "<span>「か」</span>き" + e, "「@8 か@16 」@32 き@48",
+                "3.1.5 ③: CSS text-indent:1em with <span> around 「", three);
+    expect_body(400, "<p style=\"margin:0;text-indent:2em\">「か」き</p>", "「*@32 か@40 」@56 き@72",
+                "3.1.5 ③: deep text-indent:2em stays untouched", three);
     expect_body(400, p0 + "あい" + e + p0 + "「か」き" + e, "あ@0 い@16 | 「*@0 か@8 」@24 き@40",
                 "3.1.5 ③: a book that indents no paragraph as before", three);
     expect_body(400, "<p style=\"margin:0\">　あい<br/>「か」き<br/>　う</p>", "　@0 あ@16 い@32 | 「@8 か@16 」@32 き@48 | 　@0 う@16",
                 "3.1.5 ③: lines after <br> (毒姫)", three);
+    // P0-2: long dialogue sequences (>16 consecutive dialogue paragraphs), <div><p> wrappers, line-1 U+3000 before <br>,
+    // and <br/> followed by <span> must not break indentation or falsely justify the line before <br/>.
+    for (auto scheme : {paragraph_brackets::full_em, paragraph_brackets::half_em}) {
+        const std::string sname = scheme == paragraph_brackets::full_em ? "3.1.5 ①: " : "3.1.5 ③: ";
+        const std::string bpos = scheme == paragraph_brackets::full_em ? "「@16 か@24 」@40" : "「@8 か@16 」@32";
+        std::string many = p0 + "　あ" + e;
+        std::string want_many = "　@0 あ@16";
+        for (int k = 0; k < 19; k++) {
+            many += p0 + "「か」" + e;
+            want_many += " | " + bpos;
+        }
+        many += p0 + "　い" + e;
+        want_many += " | 　@0 い@16";
+        expect_body(400, many, want_many, sname + "19 consecutive dialogue paragraphs all keep bracket indent", scheme);
+        expect_body(400, "<div>" + p0 + "　あ" + e + "</div><div>" + p0 + "「か」" + e + "</div>",
+                    "　@0 あ@16 | " + bpos, sname + "<div><p> wrappers share paragraph indentation", scheme);
+        expect_body(400, p0 + "　あい<br/>「か」き" + e,
+                    "　@0 あ@16 い@32 | " + bpos + (scheme == paragraph_brackets::full_em ? " き@56" : " き@48"),
+                    sname + "<br/> after line-1 U+3000 indents following 「", scheme);
+        expect_body(200, "<p style=\"margin:0;text-align:justify\">　あいう<br/>「かき」く<br/><span>「さし」</span>す</p>",
+                    scheme == paragraph_brackets::full_em
+                        ? "　@0 あ@16 い@32 う@48 | 「@16 か@24 き@40 」@56 く@72 | 「@16 さ@24 し@40 」@56 す@72"
+                        : "　@0 あ@16 い@32 う@48 | 「@8 か@16 き@32 」@48 く@64 | 「@8 さ@16 し@32 」@48 す@64",
+                    sname + "<br/> followed by <span> does not justify line before <br/>", scheme);
+    }
+    expect(160, "あいう。<br/><span>か</span>", "あ@0 い@16 う@32 。@48 | か@0",
+           "3.1.9: 。 before <br/><span> stays full width and line is not justified");
     {
         Laid l;
         lay_out_body(l, vertical, half_forms, 400, p0 + "　あ" + e + p0 + "「か」" + e);

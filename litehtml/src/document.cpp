@@ -1598,6 +1598,7 @@ namespace litehtml
             for(render_item* item : m_layout_marked)
                 item->pos() = position();
             m_layout_marked.clear();
+            m_paragraphs_indented.clear();
             return;
         }
         std::vector<render_item*> pending{m_root_render.get()};
@@ -2771,6 +2772,7 @@ namespace litehtml
             m_root_render = m_root->create_render_item(nullptr);
             m_render_tree_serial++;
             m_layout_marked.clear();
+            m_paragraphs_indented.clear();
             m_relayout_roots.clear();
             m_layout_before_valid = false;
 
@@ -3382,6 +3384,7 @@ namespace litehtml
                 invalidate_layout_cache();
             }
             m_layout_marked.clear();
+            m_paragraphs_indented.clear();
             m_vertical = m_root->css().is_vertical_rl();
             if(!m_vertical)
                 for(const auto& child : m_root->children())
@@ -3817,6 +3820,7 @@ namespace litehtml
             m_root_render = m_root->create_render_item(nullptr);
             m_render_tree_serial++;
             m_layout_marked.clear();
+            m_paragraphs_indented.clear();
             m_relayout_roots.clear();
             m_layout_before_valid = false;
             if(m_root_render)

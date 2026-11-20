@@ -119,16 +119,62 @@ void litehtml::render_item_ruby_pair::align_base(pixel_t shift)
     base_shift                  = shift;
 }
 
+void litehtml::render_item_ruby_pair::align_annotation(pixel_t shift)
+{
+    if(!has_annotation || m_children.size() < 2 || shift == ann_shift)
+        return;
+    m_children.front()->pos().x += shift - ann_shift;
+    ann_shift                    = shift;
+}
+
 litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_t x, pixel_t y, bool second_pass,
                                                                        const containing_block_context& self_size,
                                                                        formatting_context* fmt_ctx)
 {
     auto ret            = render_item_block_context::_render_content(x, y, second_pass, self_size, fmt_ctx);
     annotation_overflow = 0_px;
-    base_start = base_end = ruby_em = base_shift = overlap_before = ann_start = ann_end = 0_px;
+    base_start = base_end = ruby_em = base_shift = ann_shift = ann_used_start = overlap_before = ann_start = ann_end = 0_px;
     japanese_base = false;
-    if(!has_annotation || m_children.size() < 2)
+    if(m_children.empty())
         return ret;
+    if(!has_annotation || m_children.size() < 2)
+    {
+        // A word member without <rt> (e.g. <ruby>承<rt>うけたまわ</rt>る</ruby>) still exposes its base and full
+        // empty annotation room so an adjacent long reading of the same word may overhang it (JLReq 3.3.7).
+        if(word_member)
+        {
+            const auto& b = m_children.back();
+            bool        any = false;
+            if(auto inl = std::dynamic_pointer_cast<render_item_inline_context>(b); inl && inl->line_boxes().size() == 1)
+                for(const auto& item : inl->line_boxes().front()->items())
+                {
+                    if(item->get_type() != line_box_item::type_text_part || item->get_el()->src_el()->is_white_space())
+                        continue;
+                    if(!any)
+                        if(auto text = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el()); text && !text->display_text().empty())
+                        {
+                            const std::string&  s  = text->display_text();
+                            const unsigned char c0 = s[0];
+                            const size_t        n  = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+                            char32_t            c  = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
+                            for(size_t k = 1; k < n && k < s.size(); k++)
+                                c = (c << 6) | (static_cast<unsigned char>(s[k]) & 0x3F);
+                            japanese_base = cjk::script_of(c) == cjk::script::japanese;
+                        }
+                    base_start = any ? std::min(base_start, item->left()) : item->left();
+                    base_end   = any ? std::max(base_end, item->right()) : item->right();
+                    any        = true;
+                }
+            if(any)
+            {
+                base_start += b->pos().x;
+                base_end   += b->pos().x;
+            }
+            ann_start = b->pos().x + b->pos().width;
+            ann_end   = 0_px;
+        }
+        return ret;
+    }
     // ruby-align: space-around, Chromium's default: the narrower of the two spreads over the pair. A Japanese annotation
     // shorter than its base keeps at most one ruby character at each end, the rest between its characters (JLReq 3.3.6
     // (注), Appendix F; short_ruby::jlreq).
@@ -180,9 +226,11 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
             base_start = base_end = 0_px;
     }
     // Where the annotation's text is in the pair (JLReq 3.3.7: what a longer reading next to it may overhang).
+    // An empty <rt></rt> has no annotation ink, so its entire pair width is free on both sides (ann_start = whole,
+    // ann_end = 0).
     const pixel_t whole = m_children.front()->pos().x + m_children.front()->pos().width;
-    ann_start = 0_px;
-    ann_end   = whole;
+    ann_start = whole;
+    ann_end   = 0_px;
     if(auto inl = std::dynamic_pointer_cast<render_item_inline_context>(m_children.front()); inl && inl->line_boxes().size() == 1)
     {
         bool any = false;
@@ -200,8 +248,8 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
             ann_end   += m_children.front()->pos().x;
         } else
         {
-            ann_start = 0_px;
-            ann_end   = whole;
+            ann_start = whole;
+            ann_end   = 0_px;
         }
     }
     // As Chromium 156 measures it: the annotation's box (its line, line-height: normal) ends where the base's em box
