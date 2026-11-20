@@ -158,20 +158,47 @@ std::string format(const std::vector<Drawn>& drawn) {
 }
 
 // <p>html</p>, left-aligned, in a line (column) `length` px long.
-std::string lay_out(bool vertical, float length, const std::string& html, ruby_overhang overhang = ruby_overhang::punctuation) {
+std::string lay_out(bool vertical, float length, const std::string& html, ruby_overhang overhang = ruby_overhang::punctuation,
+                    ruby_breaking breaking = ruby_breaking::per_base, const char* align = "left") {
     Stub c;
     if (vertical) c.h = length;
     auto doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
-                                              "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0\">" +
-                                              html + "</p></body></html>",
+                                              "><body style=\"margin:0;font-size:16px;line-height:32px\"><p style=\"margin:0;text-align:" +
+                                              align + "\">" + html + "</p></body></html>",
                                           &c);
     doc->set_ruby_overhang(overhang);
+    doc->set_ruby_breaking(breaking);
     doc->render(pixel_t(vertical ? 400 : length));
     doc->draw(0, 0, 0, nullptr);
     return format(c.drawn);
 }
 
 std::string r(const std::string& base, const std::string& ruby) { return "<ruby>" + base + "<rt>" + ruby + "</rt></ruby>"; }
+
+// What was drawn of the base text (not annotations): (text, block position), in order.
+std::vector<std::pair<std::string, float>> base_drawn(bool vertical, float length, const std::string& html,
+                                                      const char* line_height = "32px") {
+    Stub c;
+    if (vertical) c.h = length;
+    auto doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                                              "><body style=\"margin:0;font-size:16px;line-height:" + line_height +
+                                              "\"><p style=\"margin:0\">" + html + "</p></body></html>",
+                                          &c);
+    doc->render(pixel_t(vertical ? 400 : length));
+    doc->draw(0, 0, 0, nullptr);
+    std::vector<std::pair<std::string, float>> out;
+    for (const auto& d : c.drawn)
+        if (!d.ruby) out.emplace_back(d.text, d.y);
+    return out;
+}
+
+// The block position of each line of base text, in order (an annotation is not a line of its own).
+std::vector<float> line_positions(bool vertical, float length, const std::string& html) {
+    std::vector<float> lines;
+    for (const auto& [text, y] : base_drawn(vertical, length, html))
+        if (lines.empty() || std::abs(lines.back() - y) > 0.5f) lines.push_back(y);
+    return lines;
+}
 
 void run(bool vertical) {
     const std::string mode = vertical ? "vertical: " : "horizontal: ";
@@ -242,6 +269,64 @@ void run(bool vertical) {
            "a group ruby longer than its base overhangs by its base's outer gaps");
     expect(400, "の<ruby>旬<rt>しゅん</rt>旬<rt>しゅん</rt></ruby>に", "の@0 ^しゅん@12 旬@16 ^しゅん@36 旬@40 に@56",
            "a ruby of two pairs overhangs by its first pair before and its last pair after");
+    // 熟語ルビ (one <ruby> of several pairs, document::set_ruby_breaking, per_base by default): a line may break between
+    // its base units, never inside one (JLReq 3.1.10 ⑦, 3.3.7); a pair whose reading is longer than its base overhangs
+    // the other bases of the word only where their own readings leave room, by up to one ruby character (3.3.7,
+    // Appendix F); each part of a word broken across lines is set by the line-edge rules (3.3.8 e–h); justify puts no
+    // space between the bases of one word (3.1.11 ②-7).
+    const std::string kanji = "<ruby>漢<rt>かん</rt>字<rt>じ</rt></ruby>";
+    expect(80, "あいうえ" + kanji + "お", "あ@0 い@16 う@32 え@48 ^かん@64 漢@64 ^じ@4 | 字@0 お@16",
+           "3.3.7: a line breaks between a word's base units");
+    {
+        const std::string got = lay_out(vertical, 80, "あいうえ" + kanji + "お", ruby_overhang::punctuation, ruby_breaking::whole);
+        check(got == "あ@0 い@16 う@32 え@48 ^かん@0 | 漢@0 ^じ@20 字@16 お@32",
+              mode + "ruby_breaking::whole: the word goes on whole, as before: " + got);
+    }
+    expect(80, "あいう" + kanji + "っ", "あ@0 い@16 う@32 ^かん@48 漢@48 ^じ@4 | 字@0 っ@16",
+           "3.3.7: っ, which may not start a line, takes 字 with it, not the whole word");
+    expect(400, "の<ruby>胡<rt>きゅう</rt>瓜<rt>り</rt></ruby>に", "の@0 ^きゅう@12 胡@16 ^り@36 瓜@32 に@48",
+           "3.3.7: きゅう overhangs 瓜, whose り leaves room, by its excess");
+    expect(400, "の<ruby>瓜<rt>り</rt>胡<rt>きゅう</rt></ruby>に", "の@0 ^り@20 瓜@16 ^きゅう@28 胡@32 に@48",
+           "3.3.7: and the other way round");
+    expect(64, "あいう<ruby>胡<rt>きゅう</rt>瓜<rt>り</rt></ruby>え", "あ@0 い@16 う@32 ^きゅう@40 胡@48 ^り@4 | 瓜@0 え@16",
+           "3.3.8 e–h: a word broken across lines, 胡 ending the line as a mono ruby does (line-edge b)");
+    {
+        const std::string want = "あ@0 ^かん@18 漢@18 ^じ@38 字@34 い@52 う@70 え@88 | お@0";
+        const std::string got = lay_out(vertical, 104, "あ" + kanji + "いうえお", ruby_overhang::punctuation, ruby_breaking::per_base, "justify");
+        check(got == want, mode + "3.1.11 ②-7: justify puts no space between a word's bases: " + got + "\n     want " + want);
+    }
+    // A word inside white-space: nowrap does not break between its bases: it goes on whole, not past the line's end.
+    expect(72, "あいう<span style=\"white-space:nowrap\">" + kanji + "</span>え",
+           "あ@0 い@16 う@32 ^かん@0 | 漢@0 ^じ@20 字@16 え@32", "3.3.7: a word in white-space: nowrap goes on whole");
+    // JLReq 3.3.2 / 3.2.2: ruby sits in the space between lines, so a line with ruby, or with a jukugo word split at
+    // its end or start, keeps the pitch line-height gives (32 px; an 8 px annotation fits in its 8 px half-leading).
+    for (const auto& [html, what] : std::vector<std::pair<std::string, std::string>>{
+             {"あいうえおかきくけこさしすせそた", "no ruby"},
+             {"あいうえおか" + r("旬", "しゅん") + "きくけこさしすせ", "a group ruby inside the second line"},
+             {"あいうえ" + kanji + "おかきくけこさしすせ", "a jukugo word split between the first two lines"}}) {
+        const auto lines = line_positions(vertical, 80, html);
+        std::string got;
+        bool        even = lines.size() >= 3;
+        for (size_t i = 0; i < lines.size(); i++) {
+            got += (i ? " " : "") + std::to_string(int(std::lround(lines[i])));
+            if (i && std::abs(lines[i] - lines[i - 1] - 32) > 0.5f) even = false;
+        }
+        check(even, mode + "3.3.2: line pitch stays 32 px with " + what + ": lines at " + got);
+    }
+    // A line moved down to make room for the annotations (line-height 16px: none between lines) moves a split word's
+    // pairs with it, once: 漢 stays on the first line's baseline with え, 字 on the second's with お.
+    {
+        const auto drawn = base_drawn(vertical, 80, "あいうえ" + kanji + "おかきくけこ", "16px");
+        auto at = [&](const std::string& t) {
+            for (const auto& [text, y] : drawn)
+                if (text.find(t) != std::string::npos) return y;
+            return -1.f;
+        };
+        std::string got;
+        for (const auto& [text, y] : drawn) got += text + "@" + std::to_string(int(std::lround(y))) + " ";
+        check(std::abs(at("漢") - at("え")) < 0.5f && std::abs(at("字") - at("お")) < 0.5f && at("お") > at("え") + 15,
+              mode + "a moved line moves a split word's pairs once, with the rest of the line: " + got);
+    }
     // The overhang counts when the line breaks: の旬にあ fits in four ems.
     expect(64, "の" + shun + "にあ", "の@0 ^しゅん@12 旬@16 に@32 あ@48", "the line holds what the overhang makes room for");
     // Line edges (a, b): at a line's head the base and its ruby start together; at a wrapped line's end they end
@@ -254,6 +339,13 @@ void run(bool vertical) {
            "line-edge b: a ruby that fits only with its whole excess over the kana before it ends the line there");
     expect(80, "あいう漢" + shun + "おか", "あ@0 い@16 う@32 漢@48 ^しゅん@0 | 旬@0 お@16 か@32",
            "line-edge b: after a kanji it does not fit, and starts the next line");
+    // Group ruby at the line edges (3.3.8 c, d): its reading flush with the line's head (or, ending a wrapped line, its
+    // end, overhanging the kana before it by a ruby character), its bases spaced 1:1 between them and at the other end,
+    // not space-around's 1:2:1.
+    const std::string tokyo = r("東京", "とうきょうと");
+    expect(400, tokyo + "のあ", "^とうきょうと@0 東@0 京@24 の@40 あ@56", "line-edge c: a group ruby at the line's head, 1:1");
+    expect(80, "あい" + tokyo + "うえ", "あ@0 い@16 ^とうきょうと@24 東@32 京@56 | う@0 え@16",
+           "line-edge d: a group ruby ending a wrapped line, 1:1");
     // JLReq's rules are for Japanese: a ruby over Latin text (IDPF hefty-water's 2H₂ under "hydrogen") stays as
     // CSS lays it out, its base centred, also at a line's head and next to kana.
     expect(400, r("ab", "abcdefgh") + "の", "^abcdefgh@0 a@8 b@40 の@64", "a ruby over Latin text: no line-edge alignment, no overhang");

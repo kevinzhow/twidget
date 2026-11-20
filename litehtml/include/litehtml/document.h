@@ -81,6 +81,34 @@ namespace litehtml
         kana,
     };
 
+    /// How a <ruby> of several base and annotation pairs (熟語ルビ, jukugo ruby) breaks across lines (JLReq 3.1.10 ⑦,
+    /// 3.3.7). per_base: between its base units, never inside one; a reading longer than its base overhangs the other
+    /// bases of the word where their readings leave room, by up to one ruby character. whole: the word is one
+    /// unbreakable inline box, as before.
+    enum class ruby_breaking : uint8_t
+    {
+        per_base,
+        whole,
+    };
+
+    /// The space between Japanese and Latin text (JLReq 3.2.6 ④). quarter: a quarter em between kana or kanji and a
+    /// Latin letter or digit, none at a line's end nor next to punctuation; line adjustment squeezes it to an eighth em
+    /// and widens it (3.8.3, 3.8.4 b). none: they meet solid, as before.
+    enum class latin_spacing : uint8_t
+    {
+        quarter,
+        none,
+    };
+
+    /// The space after ？！ ending a sentence (JLReq 3.1.6 ①). full_em: a full-width space when the book has none (not
+    /// before a closing bracket, a U+3000, a particle going on with the sentence, nor at a line's end). none: as the
+    /// book has it.
+    enum class dividing_space : uint8_t
+    {
+        full_em,
+        none,
+    };
+
     class document : public std::enable_shared_from_this<document>
     {
       public:
@@ -190,6 +218,9 @@ namespace litehtml
         paragraph_brackets                      m_paragraph_brackets = paragraph_brackets::full_em;
         line_adjustment                         m_line_adjustment    = line_adjustment::jlreq;
         ruby_overhang                           m_ruby_overhang      = ruby_overhang::punctuation;
+        ruby_breaking                           m_ruby_breaking      = ruby_breaking::per_base;
+        latin_spacing                           m_latin_spacing      = latin_spacing::quarter;
+        dividing_space                          m_dividing_space     = dividing_space::full_em;
         bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
@@ -314,6 +345,12 @@ namespace litehtml
         line_adjustment              get_line_adjustment() const { return m_line_adjustment; }
         void                         set_ruby_overhang(ruby_overhang mode) { m_ruby_overhang = mode; }
         ruby_overhang                get_ruby_overhang() const { return m_ruby_overhang; }
+        void                         set_ruby_breaking(ruby_breaking mode) { m_ruby_breaking = mode; }
+        ruby_breaking                get_ruby_breaking() const { return m_ruby_breaking; }
+        void                         set_latin_spacing(latin_spacing mode) { m_latin_spacing = mode; }
+        latin_spacing                get_latin_spacing() const { return m_latin_spacing; }
+        void                         set_dividing_space(dividing_space mode) { m_dividing_space = mode; }
+        dividing_space               get_dividing_space() const { return m_dividing_space; }
         bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;

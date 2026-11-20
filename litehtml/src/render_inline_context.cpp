@@ -138,6 +138,30 @@ namespace
             auto text = std::dynamic_pointer_cast<litehtml::el_text>(el);
             return text ? (first ? first_char(text->display_text()) : last_char(text->display_text())) : 0;
         }
+        // A base unit of a word of ruby pairs (an anonymous box of its <ruby>): its base's text, from its render items.
+        if(auto pair = std::dynamic_pointer_cast<litehtml::render_item_ruby_pair>(el->get_render_item());
+           pair && pair->in_word() && !pair->children().empty())
+        {
+            std::function<char32_t(const std::shared_ptr<litehtml::render_item>&)> walk =
+                [&](const std::shared_ptr<litehtml::render_item>& ri) -> char32_t {
+                if(auto text = std::dynamic_pointer_cast<litehtml::el_text>(ri->src_el()); text && !text->is_white_space())
+                    return first ? first_char(text->display_text()) : last_char(text->display_text());
+                const auto& kids = ri->children();
+                if(first)
+                {
+                    for(auto it = kids.begin(); it != kids.end(); ++it)
+                        if(char32_t c = walk(*it))
+                            return c;
+                } else
+                {
+                    for(auto it = kids.rbegin(); it != kids.rend(); ++it)
+                        if(char32_t c = walk(*it))
+                            return c;
+                }
+                return 0;
+            };
+            return walk(pair->children().back());
+        }
         if(el->tag() != litehtml::_ruby_ && !(el->parent() && el->parent()->tag() == litehtml::_ruby_))
             return 0;
         const auto& kids = el->children();
@@ -280,12 +304,24 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
                 continue;
             if(auto text = std::dynamic_pointer_cast<render_text>(events[kids[k]].first))
             {
-                text->before = before;
-                text->after  = 0;
+                text->before        = before;
+                text->after         = 0;
+                text->after_solid = false;
                 for(size_t n = k + 1; n < kids.size(); n++)
                     if(!gone[n])
                     {
                         text->after = first[n];
+                        text->after_solid = !events[kids[n]].first->src_el()->is_text();
+                        // A tate-chu-yoko token starting the next text (vertical text): a Japanese character there.
+                        if(auto next = std::dynamic_pointer_cast<el_text>(events[kids[n]].first->src_el());
+                           next && next->parent() && next->parent()->css().is_vertical_rl())
+                        {
+                            const std::string& shown = next->display_text();
+                            const auto         tcy   = next->parent()->css().combines_upright()
+                                                           ? std::vector<cjk::span>{{0, shown.size()}}
+                                                           : cjk::tate_chu_yoko(shown, 0, shown.size());
+                            text->after_solid = !tcy.empty() && tcy.front().from == 0;
+                        }
                         break;
                     }
             }
@@ -306,7 +342,9 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
             // (no_break_opportunity; a ruby counts by its base text, on either side: <ruby>仕切<rt>しき</rt></ruby>って
             // keeps 切 with っ): their width is kept free after it, so that they go to the next line together. Not past
             // the line's width: what does not fit an empty line overflows it anyway.
-            auto is_ruby = [](const std::shared_ptr<render_item>& item) { return item->src_el()->tag() == _ruby_; };
+            auto is_ruby = [](const std::shared_ptr<render_item>& item) {
+                return item->src_el()->tag() == _ruby_ || std::dynamic_pointer_cast<render_item_ruby_pair>(item);
+            };
             auto is_piece = [](const std::shared_ptr<render_item>& item) {
                 return item->src_el()->is_text() && !item->src_el()->is_break();
             };
@@ -330,7 +368,9 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
                     joined = no_break_opportunity(at->src_el(), following->src_el(), across);
                 else if((is_piece(following) || is_ruby(following)) && !following->src_el()->is_space() &&
                         !at->src_el()->is_space())
-                    joined = cjk::no_break_between(edge_char(at->src_el(), false), edge_char(following->src_el(), true));
+                    // As can_hold asks (no_break_opportunity): also no break inside white-space: nowrap, as between
+                    // the pairs of a word of ruby.
+                    joined = no_break_opportunity(at->src_el(), following->src_el(), true);
                 if(!joined)
                     break;
                 pixel_t width = 0_px;
@@ -515,9 +555,12 @@ void litehtml::render_item_inline_context::make_room_for_ruby()
         for(const auto& item : line->items())
         {
             const auto& el = item->get_el();
-            if(el->src_el()->tag() != _ruby_ || item->get_type() != line_box_item::type_text_part)
+            if(item->get_type() != line_box_item::type_text_part)
                 continue;
-            if(auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(el))
+            auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(el);
+            if(!pair && el->src_el()->tag() != _ruby_)
+                continue;
+            if(pair)
             {
                 // A ruby of one pair is that pair.
                 if(pair->annotation_overflow > 0_px)
@@ -1015,7 +1058,10 @@ void litehtml::render_item_inline_context::place_inline(std::unique_ptr<line_box
                 item->get_el()->src_el()->get_content_size(sz, self_size.render_width);
                 item->get_el()->pos() = sz;
                 text_item->compress(cjk::line_middle, cjk::line_middle);
-                item->set_rendered_min_width(sz.width);
+                // Measured as it is set where compression adds space (the Japanese–Latin quarter em, ？！'s space), so
+                // that a table or a shrink-to-fit box makes room for it; as the text alone where compression takes
+                // space away, as before.
+                item->set_rendered_min_width(std::max(sz.width, item->get_el()->pos().width));
                 auto text = std::dynamic_pointer_cast<el_text>(item->get_el()->src_el());
                 const auto wrapping = text_item->css().get_wrapping();
                 const auto whitespace = text_item->css().get_white_space();

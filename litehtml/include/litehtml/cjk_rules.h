@@ -71,7 +71,8 @@ namespace litehtml::cjk
     };
 
     // Punctuation compression of c between prev and next (0: none, as at a paragraph's start) at `at` (line_position
-    // bits): an opening bracket at a line's start (not at a paragraph_start) or after another punctuation mark gives up
+    // bits): 、 between kanji numerals (二、三日) gives up its second half and ・ between them (三・五) both quarters
+    // (JLReq 3.1.3); an opening bracket at a line's start (not at a paragraph_start) or after another punctuation mark gives up
     // its first half; a closing
     // bracket or 、。 before a closing bracket, 、。 or a middle dot gives up its second half, and so does one ending a
     // line that wraps. Nothing else is trimmed (・：； keep their ems).
@@ -88,6 +89,7 @@ namespace litehtml::cjk
         line_end_dot,
         middle_dot,
         bracket,
+        latin,  // the quarter em between Japanese and Latin, to an eighth (latin_space_after)
     };
     struct squeeze
     {
@@ -109,6 +111,15 @@ namespace litehtml::cjk
         japanese,
     };
     gap_kind justify_gap_kind(char32_t before, char32_t after);
+
+    // JLReq 3.1.6 ①: whether a full-width space goes after c, a ？！ (or ‼⁇⁈⁉) ending a sentence, before next: a kana,
+    // kanji or opening bracket that is not a particle going on with the sentence (と, って, か …); none before a closing
+    // bracket, punctuation or a space (a U+3000 the book has), nor at a line's end (`at`).
+    bool dividing_space_after(char32_t c, char32_t next, uint8_t at);
+
+    // JLReq 3.2.6 ④: whether a quarter em goes after c, before next: between kana or kanji and a Latin letter or digit,
+    // either way round; none at a line's end (`at`), nor next to punctuation, spaces or full-width letters.
+    bool latin_space_after(char32_t c, char32_t next, uint8_t at);
 
     // Whether a ruby longer than its base may overhang c next to the base (JLReq 3.3.8 rule 2): hiragana (cl-15),
     // katakana (cl-16), the prolonged sound mark (cl-10) and small kana (cl-11); not iteration marks, kanji (rule 1)

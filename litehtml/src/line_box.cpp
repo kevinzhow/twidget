@@ -28,9 +28,10 @@ namespace
     bool ruby_of(const litehtml::line_box_item* item, ruby_sides& out)
     {
         using namespace litehtml;
-        if(!item || item->get_type() != line_box_item::type_text_part || item->get_el()->src_el()->tag() != _ruby_)
+        if(!item || item->get_type() != line_box_item::type_text_part)
             return false;
         const auto& el = item->get_el();
+        // A pair: a ruby of one pair, or a base unit of a word (render_item_ruby_word).
         if(auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(el))
         {
             if(!pair->has_annotation || pair->ruby_em <= 0_px || !pair->japanese_base)
@@ -41,6 +42,8 @@ namespace
             out.em     = pair->ruby_em;
             return true;
         }
+        if(el->src_el()->tag() != _ruby_)
+            return false;
         render_item_ruby_pair *first = nullptr, *last = nullptr;
         for(const auto& child : el->children())
             if(auto pair = std::dynamic_pointer_cast<render_item_ruby_pair>(child))
@@ -84,6 +87,31 @@ namespace
         for(size_t k = 1; k < n && at + k < s.size(); k++)
             c = (c << 6) | (static_cast<unsigned char>(s[at + k]) & 0x3F);
         return c;
+    }
+
+    // The pair a line item is when it is a base unit of a word of ruby pairs (熟語ルビ), else none.
+    litehtml::render_item_ruby_pair* word_pair(const litehtml::line_box_item* item)
+    {
+        if(!item || item->get_type() != litehtml::line_box_item::type_text_part)
+            return nullptr;
+        auto pair = dynamic_cast<litehtml::render_item_ruby_pair*>(item->get_el().get());
+        return pair && pair->in_word() ? pair : nullptr;
+    }
+
+    // Whether a line item is the start, continuation or end of a word of ruby pairs that breaks between them.
+    bool word_split(const litehtml::line_box_item* item)
+    {
+        if(!item || item->get_type() == litehtml::line_box_item::type_text_part)
+            return false;
+        auto word = dynamic_cast<const litehtml::render_item_ruby_word*>(item->get_el().get());
+        return word && word->split();
+    }
+
+    // Whether two line items are base units of the same word.
+    bool same_word(const litehtml::line_box_item* a, const litehtml::line_box_item* b)
+    {
+        auto *pa = word_pair(a), *pb = word_pair(b);
+        return pa && pb && pa->parent() && pa->parent() == pb->parent();
     }
 
     // The code point at text[i], and its length in bytes.
@@ -696,6 +724,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         enum { nothing, text, box } before = nothing;  // what came last: a text, an inline box, or neither yet
         char32_t last = 0;                             // the last text's last character
         char32_t last_kind = 0;                        // the same, 0 when a tate-chu-yoko token ends it
+        const line_box_item* last_box = nullptr;      // the last inline box
         int      slot = -1;                            // the item the gap after it goes before
         size_t i = 0;
         for(auto it = m_items.begin(); it != m_items.end(); ++it, ++i)
@@ -729,7 +758,13 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             };
             if(before != nothing && (before == box || !src || cjk::justifiable_gap(last, chars.front())))
                 gaps.push_back({size_t(slot), 0, false,
-                                cjk::justify_gap_kind(before == box ? 0 : last_kind, src && !in_tcy(0) ? chars.front() : 0), em});
+                                // none between two bases of one word (JLReq 3.1.11 ②-7)
+                                !src && before == box && same_word(last_box, it->get())
+                                    ? cjk::gap_kind::avoided
+                                    : cjk::justify_gap_kind(before == box ? 0 : last_kind, src && !in_tcy(0) ? chars.front() : 0),
+                                em});
+            if(!src)
+                last_box = it->get();
             before = src ? text : box;
             slot   = -1;
             if(!src)
@@ -774,7 +809,9 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         };
         constexpr float none = std::numeric_limits<float>::infinity();
         fill([](cjk::gap_kind k) { return k == cjk::gap_kind::word_space; }, 1.0f / 8);
-        fill([](cjk::gap_kind k) { return k == cjk::gap_kind::latin; }, 1.0f / 2);
+        // Japanese–Latin gaps up to half an em: a quarter more where the quarter of 3.2.6 ④ is already there.
+        const bool quarter = m_items.front()->get_el()->src_el()->get_document()->get_latin_spacing() == latin_spacing::quarter;
+        fill([](cjk::gap_kind k) { return k == cjk::gap_kind::latin; }, quarter ? 1.0f / 4 : 1.0f / 2);
         fill([](cjk::gap_kind k) { return k == cjk::gap_kind::japanese; }, 1.0f / 4);
         fill([](cjk::gap_kind k) { return k != cjk::gap_kind::avoided; }, none);
         even = std::all_of(gaps.begin(), gaps.end(), [&](const gap& g) { return std::abs(g.add - gaps.front().add) < 0.001f; });
@@ -949,8 +986,12 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
         bool    is_top_bottom_box = false;
         bool    ignore            = false;
 
+        // A word of ruby pairs that breaks between them (render_item_ruby_word::split) puts its pairs on the line
+        // itself: its start and end are those of an inline element, as a <span>'s, not an inline-block's (whose
+        // baseline and height would be the word's laid out whole, annotations included, JLReq 3.3.2).
+        const bool split_word = word_split(lbi.get());
         // Align element by baseline
-        if(!is_one_of(lbi->get_el()->src_el()->css().get_display(), display_inline_text, display_inline))
+        if(!split_word && !is_one_of(lbi->get_el()->src_el()->css().get_display(), display_inline_text, display_inline))
         {
             // Apply margins, paddings and border for inline boxes
             content_offset = lbi->get_el()->content_offset_top();
@@ -1020,7 +1061,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             }
         } else
         {
-            if(!lbi->get_el()->src_el()->is_inline_box())
+            if(split_word || !lbi->get_el()->src_el()->is_inline_box())
             {
                 line_max_height.add_item(lbi.get());
                 const pixel_t leading = lbi->get_el()->css().line_height().computed_value - lbi->height();
@@ -1053,7 +1094,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             }
         }
 
-        if(!lbi->get_el()->src_el()->is_inline_box() && !lbi->get_el()->css().line_height().css_value.is_predefined())
+        if((split_word || !lbi->get_el()->src_el()->is_inline_box()) && !lbi->get_el()->css().line_height().css_value.is_predefined())
         {
             if(line_height.has_value())
             {
@@ -1451,7 +1492,8 @@ litehtml::pixel_t litehtml::line_box::squeeze_room(const line_box_item* next) co
     if(auto part = squeezable_text(next))
     {
         auto       text  = std::dynamic_pointer_cast<el_text>(part->src_el());
-        const auto ended = text->compression(text->display_text(), part->before, part->after, cjk::line_middle, cjk::line_end);
+        const auto ended = text->compression(text->display_text(), part->before, part->after, cjk::line_middle, cjk::line_end,
+                                             part->after_solid);
         room += trim_shift(ended, SIZE_MAX) - trim_shift(part->trims, SIZE_MAX);
         auto qs = squeeze_of(*part, cjk::line_middle, cjk::line_end);
         if(!qs.empty() && qs.front().at == 0)
@@ -1515,7 +1557,8 @@ void litehtml::line_box::squeeze(pixel_t over, bool wraps)
         first = false;
     }
     std::vector<pixel_t> take_start(places.size(), 0_px), take_end(places.size(), 0_px);
-    for(auto step : {cjk::squeeze_step::line_end_dot, cjk::squeeze_step::middle_dot, cjk::squeeze_step::bracket})
+    for(auto step : {cjk::squeeze_step::line_end_dot, cjk::squeeze_step::middle_dot, cjk::squeeze_step::bracket,
+                     cjk::squeeze_step::latin})
     {
         pixel_t room = 0_px;
         for(const auto& p : places)
@@ -1583,6 +1626,21 @@ litehtml::pixel_t litehtml::line_box::ruby_overlap(const line_box_item* item) co
     if(!prev)
         return 0_px;
     ruby_sides r;
+    // JLReq 3.3.7 (Appendix F): within a word, a reading longer than its base overhangs the base next to it where that
+    // base's own reading leaves room, by up to one ruby character; two long readings stay apart.
+    if(same_word(prev, item))
+    {
+        auto *a = word_pair(prev), *b = word_pair(item);
+        if(!a->has_annotation || !b->has_annotation || !a->japanese_base || !b->japanese_base)
+            return 0_px;
+        const pixel_t b_excess = b->base_start, a_free = a->pos().width - a->ann_end;
+        const pixel_t a_excess = a->pos().width - a->base_end - a->base_shift, b_free = b->ann_start;
+        if(b_excess > 0_px && a_free > 0_px)
+            return std::min({b_excess, a_free, b->ruby_em});
+        if(a_excess > 0_px && b_free > 0_px)
+            return std::min({a_excess, b_free, a->ruby_em});
+        return 0_px;
+    }
     if(ruby_of(item, r))
     {
         // Laid out again before it is placed: its base where it was laid out.

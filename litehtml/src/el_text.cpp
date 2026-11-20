@@ -310,7 +310,7 @@ namespace
     {
         using namespace litehtml;
         auto*               container   = doc->container();
-        const uint_ptr      font        = css.get_font();
+        const uint_ptr      font        = css.get_font_undecorated();  // the lines are drawn along the column
         const uint_ptr      upright     = css.get_font_upright();
         const font_metrics& fm          = css.get_font_metrics();
         const pixel_t       em          = fm.font_size;
@@ -394,6 +394,45 @@ namespace
             run = i + n;
         }
         flush(text.size());
+    }
+
+    // The text's decorations in vertical text, one line along the column for the whole piece, as Chromium 156 draws
+    // vertical Japanese: the underline on the right (JLReq's 傍線; text-underline-position: left puts it on the left),
+    // the overline on the other side, line-through on the central baseline. In the line's frame (before the page's
+    // turn) the column's right is its top.
+    void draw_vertical_lines(litehtml::document* doc, litehtml::uint_ptr hdc, const std::string& text,
+                             const litehtml::css_properties& css, litehtml::web_color color, const litehtml::position& pos)
+    {
+        using namespace litehtml;
+        const int lines = css.get_text_decoration_line();
+        if(lines == text_decoration_line_none || pos.width <= 0_px)
+            return;
+        auto*               container = doc->container();
+        const font_metrics& fm        = css.get_font_metrics();
+        const pixel_t       em        = fm.font_size;
+        const pixel_t       cy        = central_baseline(container, text, css, pos.y + pos.height - fm.descent);
+        const auto&         given     = css.get_text_decoration_thickness();
+        pixel_t thickness = std::max(1_px, em / 14_px);
+        if(!given.is_predefined())
+            thickness = std::max(1_px, given.calc_percent(em));
+        web_color line_color = css.get_text_decoration_color();
+        if(line_color == web_color::current_color)
+            line_color = color;
+        const int  where      = css.get_text_underline_position();
+        const bool under_left = (where & text_underline_position_left) && !(where & text_underline_position_right);
+        const pixel_t right   = cy - em / 2_px - thickness - thickness;  // a line's width from the em box
+        const pixel_t left    = cy + em / 2_px + thickness;
+        auto line = [&](pixel_t y) {
+            background_layer layer;
+            layer.border_box = layer.clip_box = layer.origin_box = position(pos.x, y, pos.width, thickness);
+            container->draw_solid_fill(hdc, layer, line_color);
+        };
+        if(lines & text_decoration_line_underline)
+            line(under_left ? left : right);
+        if(lines & text_decoration_line_overline)
+            line(under_left ? right : left);
+        if(lines & text_decoration_line_line_through)
+            line(cy - thickness / 2_px);
     }
 } // namespace
 
@@ -761,6 +800,7 @@ void litehtml::el_text::draw(uint_ptr hdc, pixel_t x, pixel_t y, const position*
                     static const std::vector<cjk::span> no_tokens;
                     const auto& tcy = text_item && text_item->is_fragment ? no_tokens : m_tate_chu_yoko;
                     draw_vertical(doc, hdc, shown, el_parent->css(), color, pos, gap, trims, tcy);
+                    draw_vertical_lines(doc, hdc, shown, el_parent->css(), color, pos);
                     draw_emphasis(doc, hdc, shown, el_parent->css(), pos, true, gap, trims, tcy);
                 } else if(text_item && text_item->hyphen)
                 {
@@ -818,7 +858,7 @@ litehtml::pixel_t litehtml::trim_shift(const std::vector<char_trim>& trims, size
 }
 
 std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::string& shown, char32_t before, char32_t after,
-                                                                uint8_t first, uint8_t last) const
+                                                                uint8_t first, uint8_t last, bool after_solid) const
 {
     std::vector<char_trim> out;
     element::ptr           el_parent = parent();
@@ -827,6 +867,9 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
     std::vector<std::pair<size_t, char32_t>> chars;
     for(size_t i = 0, n = 0; i < shown.size(); i += n)
         chars.push_back({i, code_point_at(shown, i, n)});
+    const bool    latin    = get_document()->get_latin_spacing() == latin_spacing::quarter;
+    const bool    dividing = get_document()->get_dividing_space() == dividing_space::full_em;
+    const pixel_t em    = el_parent->css().get_font_metrics().font_size;
     for(size_t k = 0; k < chars.size(); k++)
     {
         const char32_t prev = k ? chars[k - 1].second : before;
@@ -837,12 +880,20 @@ std::vector<litehtml::char_trim> litehtml::el_text::compression(const std::strin
                        [&](const cjk::span& t) { return t.from <= chars[k].first && chars[k].first < t.to; }))
             continue;
         const cjk::trim t   = cjk::compression(prev, chars[k].second, next, at);
-        if(t.start == 0 && t.end == 0)
+        // JLReq 3.2.6 ④: a quarter em after it where Japanese meets Latin, not before a tate-chu-yoko token.
+        const bool next_upright = k + 1 < chars.size()
+                                      ? std::any_of(m_tate_chu_yoko.begin(), m_tate_chu_yoko.end(),
+                                                    [&](const cjk::span& s) { return s.from <= chars[k + 1].first && chars[k + 1].first < s.to; })
+                                      : after_solid;
+        const bool space = latin && !next_upright && cjk::latin_space_after(chars[k].second, next, at);
+        // JLReq 3.1.6 ①: a full-width space after ？！ ending a sentence, where the book has none.
+        const bool full = dividing && cjk::dividing_space_after(chars[k].second, next, at);
+        if(t.start == 0 && t.end == 0 && !space && !full)
             continue;
         const size_t  from    = chars[k].first;
         const size_t  to      = k + 1 < chars.size() ? chars[k + 1].first : shown.size();
         const pixel_t advance = char_advance(shown, from, to);
-        out.push_back({from, advance * pixel_t(t.start), advance * pixel_t(t.end)});
+        out.push_back({from, advance * pixel_t(t.start), advance * pixel_t(t.end) - (space ? em / 4_px : 0_px) - (full ? em : 0_px)});
     }
     return out;
 }
@@ -861,9 +912,16 @@ std::vector<litehtml::char_squeeze> litehtml::el_text::squeezable(const std::str
     std::vector<char_squeeze> out;
     if(!parent() || shown.empty())
         return out;
+    const pixel_t em = parent()->css().get_font_metrics().font_size;
     for(size_t i = 0, n = 0; i < shown.size(); i += n)
     {
         const char32_t c = code_point_at(shown, i, n);
+        // The quarter em between Japanese and Latin after it (compression's negative end): to an eighth, last (3.8.3).
+        for(const auto& t : trims)
+            if(t.at == i && t.end < 0_px && !(i + n == shown.size() && (last & cjk::line_end)) &&
+               !cjk::dividing_space_after(c, U'あ', cjk::line_middle))  // not ？！'s full-width space, which stays
+                if(const pixel_t room = std::min(-t.end, em / 4_px) - em / 8_px; room > 0_px)
+                    out.push_back({i, 0_px, room, cjk::squeeze_step::latin});
         if(!(cjk::classify(c) & (cjk::opening | cjk::closing | cjk::middle_dot | cjk::full_stop_comma)))
             continue;
         if(std::any_of(m_tate_chu_yoko.begin(), m_tate_chu_yoko.end(),
@@ -887,7 +945,7 @@ void litehtml::render_text::compress(uint8_t first, uint8_t last)
     const pixel_t was  = trim_shift(trims, SIZE_MAX);
     auto          text = std::dynamic_pointer_cast<el_text>(src_el());
     if(text && !is_fragment && !text->is_white_space() && !text->is_break())
-        trims = text->compression(text->display_text(), before, after, first, last);
+        trims = text->compression(text->display_text(), before, after, first, last, after_solid);
     else
         trims.clear();
     pos().width += was - trim_shift(trims, SIZE_MAX);

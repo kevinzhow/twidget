@@ -122,9 +122,12 @@ namespace litehtml
         pixel_t advance_to(const std::string& shown, size_t bytes) const;
         /// Punctuation compression of `shown` (its text) between `before` and `after`, the characters next to it in its
         /// line's flow (0: none), its first and last characters at `first` and `last` (cjk::line_position): each trimmed
-        /// character, with its share of its advance (an em, upright in vertical text).
+        /// character, with its share of its advance (an em, upright in vertical text). With latin_spacing::quarter, the
+        /// quarter em between Japanese and Latin (cjk::latin_space_after) is a negative end of the character before it;
+        /// none before what follows set solid (`after_solid`: a tate-chu-yoko token, an inline box) nor a tate-chu-yoko
+        /// token inside its text.
         std::vector<char_trim> compression(const std::string& shown, char32_t before, char32_t after, uint8_t first,
-                                           uint8_t last) const;
+                                           uint8_t last, bool after_solid = false) const;
         /// The advance of `shown`'s character at bytes [from, to) for compression, line adjustment and ruby overhang:
         /// an em upright in vertical text, else as measured.
         pixel_t char_advance(const std::string& shown, size_t from, size_t to) const;

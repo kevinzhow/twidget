@@ -178,12 +178,14 @@ struct Laid {
 };
 
 // <p>html</p> in a line (column) `length` px long.
-void lay_out(Laid& l, bool vertical, float length, const std::string& html, const char* align = "left") {
+void lay_out(Laid& l, bool vertical, float length, const std::string& html, const char* align = "left",
+             latin_spacing spacing = latin_spacing::none) {
     if (vertical) l.c.h = length;
     l.doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
                                            "><body style=\"margin:0;font-size:16px;line-height:20px\"><p style=\"margin:0;text-align:" +
                                            align + "\">" + html + "</p></body></html>",
                                        &l.c);
+    l.doc->set_latin_spacing(spacing);  // none: the tokens alone; quarter: 3.2.6 ④ next to them
     l.doc->render(pixel_t(vertical ? 400 : length));
     l.doc->draw(0, 0, 0, nullptr);
 }
@@ -259,6 +261,14 @@ int main() {
         lay_out(l, true, 400, "第12回");
         check(selected(l, true, 1) == "16+16", "vertical: selecting 12 in 第12回: " + selected(l, true, 1));
         check(selected(l, true, 2) == "32+16", "vertical: selecting 回 after it: " + selected(l, true, 2));
+    }
+    {
+        // JLReq 3.2.6 ④: a tate-chu-yoko token is set as a Japanese character, no quarter em next to it.
+        Laid q, n;
+        lay_out(q, true, 400, "第12回です", "left", latin_spacing::quarter);
+        lay_out(n, true, 400, "第12回です");
+        check(listed(q.c.drawn) == listed(n.c.drawn),
+              "vertical: 3.2.6 ④: no Latin quarter em next to a tate-chu-yoko token: " + listed(q.c.drawn));
     }
     {
         Laid l;

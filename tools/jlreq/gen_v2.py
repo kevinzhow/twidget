@@ -40,7 +40,7 @@ SPEC = {
     "3.3.5-2": ("r-overhang", [("img2_3_16", 121), ("img2_3_30", 135)], "partly",
                 "ruby-overhang: auto（默认）会掛假名，但也掛汉字（後旬又 紧排，违反规则 1），行头不掛后字。", None),
     "3.3.6-2": ("r-short", [("img2_3_21", 126)], "no", "ruby-align: space-around，两端空不设上限。", None),
-    "3.3.7-2": ("r-jukugo", [("img2_3_24", 129), ("img2_3_25", 130)], "no", "每对单独排，京 与 きょう 拉开；没有按グループルビ处理。", None),
+    "3.3.7-2": ("r-jukugo-room", [("img2_3_24", 129), ("img2_3_25", 130)], "no", "每对单独排，胡 与 瓜 之间空开，きゅう 不掛同词的 瓜。", None),
     "3.3.7-3": ("r-jukugo-break", [("img2_3_28", 133)], "yes", "可在亲字间断行。", None),
     "3.3.8-1": ("r-overhang", [("img2_3_30", 135), ("img2_3_31", 136)], "no", "也掛汉字：後旬又 紧排。", None),
     "3.3.8-2": ("r-overhang", [("img2_3_30", 135), ("img2_3_31", 136)], "yes", "掛假名（の旬に 紧排）。", None),
@@ -81,10 +81,13 @@ def esc(s):
 rows = []
 for r in ROWS:
     b1 = dict(r, **r.get("after", {}))  # after batch 1 (before batch 2)
-    now = dict(b1, **r.get("after2", {}))
+    b2 = dict(b1, **r.get("after2", {}))  # after batch 2 (before batch 3)
+    now = dict(b2, **r.get("after3", {}))
+    if r.get("after3"):
+        r = dict(r, batch=3)
     if r["id"] not in SPEC:
         continue
-    rows.append((r, b1, now, SPEC[r["id"]]))
+    rows.append((r, b1 if r.get("batch") == 2 else b2, now, SPEC[r["id"]]))
 
 used_cases = sorted({s[0] for _, _, _, s in rows})
 for c in used_cases:
@@ -93,6 +96,7 @@ for c in used_cases:
     copy(os.path.join(HERE, "out", "ours-png", "base-%s-p1.png" % c), "ours-base-%s.png" % c)
     copy(os.path.join(HERE, "out", "ours-png", "b1-%s-p1.png" % c), "ours-b1-%s.png" % c)
     copy(os.path.join(HERE, "out", "ours-png", "b2-%s-p1.png" % c), "ours-b2-%s.png" % c)
+    copy(os.path.join(HERE, "out", "ours-png", "b3-%s-p1.png" % c), "ours-b3-%s.png" % c)
     copy(os.path.join(HERE, "out", "viv-png", c + ".png"), "viv-%s.png" % c)
 for _, _, _, s in rows:
     for f, _ in s[1]:
@@ -131,14 +135,16 @@ def fig(src, width, cap):
 p = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
      "<title>JLReq 对照报告 v2</title><style>%s</style></head><body><main>" % CSS,
      "<h1>JLReq 对照报告 v2：参考排版、Chromium、我们</h1>",
-     '<p class="mut">2026-11-19 · 任务 #oyomi:#38 · %s · %s · 我们：twidget 39b4432 的引擎（第 2 批之后）、3e0f21a（main，第 1 批之后）与 9e7730b（第 1 批之前）经 reader-cli</p>' % (CHROME, VIV)]
+     '<p class="mut">2026-11-19 · 任务 #oyomi:#38 · %s · %s · 我们：twidget alice/jlreq-b3-side（第 3 批之后）、a1d529d（main，第 2 批之后）、3e0f21a（第 1 批之后）与 9e7730b（第 1 批之前）经 reader-cli</p>' % (CHROME, VIV)]
 p.append("<p>v1 只有“我们”的截图，没有正确的参考。v2 为 %d 条（全部缺失/部分条目和第 1、2 批）各配四样东西："
          "JLReq 原图（W3C）；同一测试句按规则排对的参考排版（能用实现了该规则的渲染器就用它，否则在 Chromium 中按规则的几何量手排，每条注明做法）；"
          "Chromium 用该规则对应的 CSS 渲染并给出结论；我们的渲染（该条所在批次之前，与现在）。</p>" % len(rows))
 p.append("<p><b>第 2 批</b>（标“第2批”）：行的调整处理——先压缩再推行（3.1.12、3.8.2/3.8.3），扩展时不在括弧、句读点旁加空、先扩欧文间隔与和欧之间（3.1.11、3.8.4）；"
          "ルビ掛句读点和括弧（3.3.8 规则 3–6）。改动的例子：j-expand 的 、 换成 。（按 JLReq 正文行中括弧与读点的二分可压到ベタ，原句 、「 合起来正好压出一字，就不再是追出し的例子了）；"
          "r-adjacent 的参考按规则 6 正文掛「（之前按注不掛）；新增 r-punct（规则 3）。</p>")
-p.append("<p><b>Chromium 结论</b>：符合 %d、部分 %d、不符合 %d。<b>我们（第 2 批之后）</b>：%s。</p>" % (
+p.append("<p><b>第 3 批</b>（标“第3批”）：熟語ルビ可在亲字之间断行，长ルビ掛同词亲字留下的空（3.1.10 ⑦⑧、3.3.7、3.3.8 e–h）；和欧间四分（3.2.6 ④、3.8.4 b）；"
+         "グループルビ行头行尾 1:1（3.3.8 c/d）；句末 ？！ 后补全角空（3.1.6 ①）；汉数字中的 、・ 紧排（3.1.3）。</p>")
+p.append("<p><b>Chromium 结论</b>：符合 %d、部分 %d、不符合 %d。<b>我们（第 3 批之后）</b>：%s。</p>" % (
     counts.get("yes", 0), counts.get("partly", 0), counts.get("no", 0),
     "、".join("%s %d" % (ST[k], v) for k, v in sorted(ours_after.items(), key=lambda kv: ["done", "partial", "missing", "na"].index(kv[0])))))
 p.append("<p><b>v2 核对中改正的状态</b>（对照 Chromium 和参考后发现 v1 记错）：3.1.6 ②（行末 ？！ 的空）与 3.1.10 ④⑤（¥、％）我们本来就符合，改为已实现；"
@@ -150,7 +156,7 @@ p.append('<p class="mut">做法说明：所有页面 20px Noto Serif CJK JP、�
 # summary table
 p.append("<h2>总表</h2><div class=tw><table><thead><tr><th>条目</th><th>参考的做法</th><th>Chromium</th><th>我们 前 → 后</th></tr></thead><tbody>")
 def mark(r):
-    return ' <span class=b1>第%d批</span>' % r["batch"] if r.get("batch") in (1, 2) else ""
+    return ' <span class=b1>第%d批</span>' % r["batch"] if r.get("batch") in (1, 2, 3) else ""
 
 
 for r, b1, now, s in rows:
@@ -176,11 +182,13 @@ for r, b1, now, s in rows:
         verdict, VERDICT[verdict], esc(cnote), ("<br>CSS: <code>%s</code>" % esc(m["chrome_css"])) if m["chrome_css"] else "<br>CSS: 默认")))
     if viv and os.path.exists(os.path.join(IMG, "viv-%s.png" % case)):
         cells.append(fig("img/viv-%s.png" % case, w, '<b>Vivliostyle</b> <span class="tag %s">%s</span>' % (viv, VERDICT[viv])))
-    if r.get("batch") == 2:
+    if r.get("batch") == 3:
+        cells.append(fig("img/ours-b2-%s.png" % case, w, '<b>我们 第3批前</b> <span class="tag %s">%s</span>' % (b1["status"], ST[b1["status"]])))
+    elif r.get("batch") == 2:
         cells.append(fig("img/ours-b1-%s.png" % case, w, '<b>我们 第2批前</b> <span class="tag %s">%s</span>' % (b1["status"], ST[b1["status"]])))
     elif r.get("batch") == 1 or r["status"] != now["status"]:
         cells.append(fig("img/ours-base-%s.png" % case, w, '<b>我们 第1批前</b> <span class="tag %s">%s</span>' % (r["status"], ST[r["status"]])))
-    cells.append(fig("img/ours-b2-%s.png" % case, w, '<b>我们 现在</b> <span class="tag %s">%s</span> %s' % (now["status"], ST[now["status"]], esc(now["ours"]))))
+    cells.append(fig("img/ours-b3-%s.png" % case, w, '<b>我们 现在</b> <span class="tag %s">%s</span> %s' % (now["status"], ST[now["status"]], esc(now["ours"]))))
     p.append('<div class=rule id="r-%s"><h3>%s %s%s</h3><div class="req">%s <a class=mut href="%s">JLReq %s</a></div><div class=cols>%s</div></div>' % (
         esc(r["id"]), esc(r["sec"]), esc(r["title"]), mark(r), esc(r["req"]), JL,
         esc(r["sec"]), "".join(cells)))

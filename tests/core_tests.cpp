@@ -4144,6 +4144,59 @@ int main() {
         check(marks == 2, "text-emphasis (as -webkit-): a filled circle on あ and い, none on 。 (" + std::to_string(marks) + ")");
     }
 
+    // ── Decorations in vertical text: one line along the column, as Chromium 156 draws vertical Japanese: underline
+    // on the right (text-underline-position auto, JLReq's 傍線), or the left with text-underline-position: left;
+    // overline on the other side; line-through down the middle. Not a short line under each upright glyph. ──
+    {
+        StubBackend vb;
+        Renderer d(300, 1, false, vb);
+        d.receive(parse(R"J({"type":"ops","ops":[{"op":"el","id":2,"tag":"html","adopt":"html","attrs":[["style","writing-mode:vertical-rl"]]},{"op":"el","id":3,"tag":"head","adopt":"head"},
+            {"op":"el","id":4,"tag":"body","adopt":"body","attrs":[["style","margin:0;font-size:16px;line-height:32px"]]},
+            {"op":"el","id":10,"tag":"p","attrs":[["style","margin:0"]]},{"op":"ins","parent":4,"id":10,"before":null},
+            {"op":"el","id":11,"tag":"span","attrs":[["style","text-decoration:underline"]]},{"op":"ins","parent":10,"id":11,"before":null},
+            {"op":"text","id":12,"data":"\u3042\u3044"},{"op":"ins","parent":11,"id":12,"before":null},
+            {"op":"el","id":20,"tag":"p","attrs":[["style","margin:0"]]},{"op":"ins","parent":4,"id":20,"before":null},
+            {"op":"el","id":21,"tag":"span","attrs":[["style","text-decoration:overline"]]},{"op":"ins","parent":20,"id":21,"before":null},
+            {"op":"text","id":22,"data":"\u3042\u3044"},{"op":"ins","parent":21,"id":22,"before":null},
+            {"op":"el","id":30,"tag":"p","attrs":[["style","margin:0"]]},{"op":"ins","parent":4,"id":30,"before":null},
+            {"op":"el","id":31,"tag":"span","attrs":[["style","text-decoration:line-through"]]},{"op":"ins","parent":30,"id":31,"before":null},
+            {"op":"text","id":32,"data":"\u3042\u3044"},{"op":"ins","parent":31,"id":32,"before":null},
+            {"op":"el","id":40,"tag":"p","attrs":[["style","margin:0;text-underline-position:left"]]},{"op":"ins","parent":4,"id":40,"before":null},
+            {"op":"el","id":41,"tag":"span","attrs":[["style","text-decoration:underline"]]},{"op":"ins","parent":40,"id":41,"before":null},
+            {"op":"text","id":42,"data":"\u3042\u3044"},{"op":"ins","parent":41,"id":42,"before":null}]})J"));
+        DisplayList list = d.paint();
+        // In the page's frame (turned: y across the columns, a column's right edge at its smaller y), the four
+        // columns are 32 px each from y 0; each one's centre line is 16 px into it. The stub draws あい 48 px long.
+        int depth = 0, in_glyph = 0;
+        std::vector<Rect> lines[4];
+        for (const Command& c : list) {
+            if (c.kind == Cmd::GroupPush) depth++;
+            else if (c.kind == Cmd::GroupPop) depth--;
+            else if (c.kind == Cmd::FillRect && c.rect.h < 4) {
+                if (depth > 1) in_glyph++;
+                const int col = int((c.rect.y + c.rect.h / 2) / 32);
+                // A line drawn a text piece at a time is one line: pieces end to end at the same place across.
+                if (depth == 1 && col >= 0 && col < 4) {
+                    auto& v = lines[col];
+                    if (!v.empty() && std::abs(v.back().y - c.rect.y) < 0.01f && std::abs(v.back().x + v.back().w - c.rect.x) < 0.01f)
+                        v.back().w += c.rect.w;
+                    else
+                        v.push_back(c.rect);
+                }
+            }
+        }
+        check(in_glyph == 0, "vertical decorations: none drawn inside an upright glyph's turn (" + std::to_string(in_glyph) + ")");
+        const char* what[4] = {"underline", "overline", "line-through", "underline, text-underline-position: left"};
+        for (int k = 0; k < 4; k++) {
+            const bool one = lines[k].size() == 1 && std::abs(lines[k][0].w - 48) < 0.5f;
+            const float mid = one ? lines[k][0].y + lines[k][0].h / 2 - (32 * k + 16) : 0;
+            const bool side = !one ? false : k == 0 ? mid < -8 : k == 2 ? std::abs(mid) < 1.5f : mid > 8;
+            check(one && side, std::string("vertical ") + what[k] + ": one 48 px line along the column, " +
+                                   (k == 0 ? "on its right" : k == 2 ? "down its middle" : "on its left") + " (" +
+                                   std::to_string(lines[k].size()) + " lines, centre " + std::to_string(mid) + " from the column's)");
+        }
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
