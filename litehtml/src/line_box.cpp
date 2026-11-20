@@ -496,12 +496,15 @@ void litehtml::line_box::add_item(std::unique_ptr<line_box_item> item)
 }
 
 litehtml::pixel_t litehtml::line_box::calc_va_baseline(const va_context& current, vertical_align va,
-                                                       const font_metrics& new_font, pixel_t top, pixel_t bottom)
+                                                       const font_metrics& new_font, pixel_t top, pixel_t bottom,
+                                                       bool vertical)
 {
     switch(va)
     {
     case va_super:
-        return current.baseline - current.fm.super_shift;
+        return current.baseline -
+               (vertical ? std::max(current.fm.super_shift, current.fm.font_size * pixel_t(0.5f))
+                         : current.fm.super_shift);
     case va_sub:
         return current.baseline + current.fm.sub_shift;
     case va_middle:
@@ -1057,13 +1060,15 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             {
                 current_context.baseline = calc_va_baseline(
                     current_context, lbi->get_el()->css().get_vertical_align(), lbi->get_el()->css().get_font_metrics(),
-                    current_context.start_lbi->top(), current_context.start_lbi->bottom());
+                    current_context.start_lbi->top(), current_context.start_lbi->bottom(),
+                    lbi->get_el()->css().is_vertical_rl());
             } else
             {
                 current_context.start_lbi = nullptr;
                 current_context.baseline  = calc_va_baseline(current_context, lbi->get_el()->css().get_vertical_align(),
                                                              lbi->get_el()->css().get_font_metrics(),
-                                                             line_max_height.top, line_max_height.bottom);
+                                                             line_max_height.top, line_max_height.bottom,
+                                                             lbi->get_el()->css().is_vertical_rl());
             }
             current_context.fm          = lbi->get_el()->css().get_font_metrics();
             current_context.line_height = lbi->get_el()->css().line_height().computed_value;
@@ -1111,7 +1116,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             default:
                 bl = calc_va_baseline(current_context, lbi->get_el()->css().get_vertical_align(),
                                       lbi->get_el()->css().get_font_metrics(), line_max_height.top,
-                                      line_max_height.bottom);
+                                      line_max_height.bottom, lbi->get_el()->css().is_vertical_rl());
                 break;
             }
         }

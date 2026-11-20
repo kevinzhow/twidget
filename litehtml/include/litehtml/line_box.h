@@ -333,7 +333,7 @@ namespace litehtml
         /// after its last closing bracket or 、。, as a wrapped one did), as far as it can.
         void           squeeze(pixel_t over, bool wraps);
         static pixel_t calc_va_baseline(const va_context& current, vertical_align va, const font_metrics& new_font,
-                                        pixel_t top, pixel_t bottom);
+                                        pixel_t top, pixel_t bottom, bool vertical = false);
     };
 } // namespace litehtml
 

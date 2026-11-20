@@ -533,8 +533,8 @@ void run(bool vertical, bool half_forms) {
     expect2(400, "零・五倍", "零@0 ・*@16 五@24 倍@40", "零@0 ・@12 五@24 倍@40", "3.1.3: ・ after 零, solid");
     expect(400, "零、五", "零@0 、*@16 五@24", "3.1.3: 、 after 零, solid");
     expect(400, "二、さん", "二@0 、@16 さ@32 ん@48", "3.1.3: not before kana");
-    // JLReq 3.1.6 (hyphens): ‐ (U+2010) is 0.25em and ゠ (U+30A0) is 0.50em when full-width.
-    expect(400, "あ\u2010い", "あ@0 \u2010@10 い@20", "3.1.6 (hyphens): ‐ (U+2010) trimmed to 0.25em (4px centered in 16px)");
+    // JLReq 3.1.6 (hyphens): ‐ (U+2010) is 0.375em (0.25em bar + sidebearing) and ゠ (U+30A0) is 0.50em when full-width.
+    expect(400, "あ\u2010い", "あ@0 \u2010@11 い@22", "3.1.6 (hyphens): ‐ (U+2010) trimmed to 0.375em (6px centered in 16px)");
     expect2(400, "あ\u30A0い", "あ@0 \u30A0*@16 い@24", "あ@0 \u30A0@12 い@24",
             "3.1.6 (hyphens): ゠ (U+30A0) trimmed to 0.50em (8px centered in 16px)");
     // JLReq 3.1.6 ① (document::set_dividing_space, full_em by default): a full-width space after ？！ ending a sentence

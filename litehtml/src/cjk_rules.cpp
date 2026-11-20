@@ -340,8 +340,10 @@ namespace litehtml::cjk
 
     float hyphen_target_em(char32_t c)
     {
+        // U+2010 HYPHEN: full-width CJK fonts draw a 0.25em bar centered in 1em; 0.375em (0.25em bar + 1/16em
+        // sidebearing each side) keeps ‐ narrower than ゠ (0.50em) without fusing into adjacent kanji.
         if(c == 0x2010)
-            return 0.25f;
+            return 0.375f;
         if(c == 0x30A0)
             return 0.5f;
         return 0.0f;

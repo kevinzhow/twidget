@@ -345,6 +345,11 @@ void run(bool vertical) {
         const Glyph* three = find(l.c.glyphs, "3");
         check(base && two && three && two->mid < base->mid && three->mid > base->mid,
               "3.7.1: ² above the base's middle, ₃ below" + m);
+        if (vertical) {
+            check(base && two && (base->mid - two->mid) >= 5.0f,
+                  "3.7.1: vertical <sup> shifts right >= 0.31em from base middle (got " +
+                      (base && two ? num(base->mid - two->mid) : "none") + ")");
+        }
     }
 
     // 3.7.1: in vertical-rl (text-orientation: mixed), digits inside <sub>/<sup> do NOT trigger automatic 1-2 digit

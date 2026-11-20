@@ -344,7 +344,9 @@ namespace
                    trim_shift(trims, end);
         };
         // A sideways run is drawn a piece between two gaps (or around a trimmed mark: full width, moved back by the
-        // half it gives up) at a time.
+        // half it gives up) at a time. A trimmed sideways hyphen (U+2010) is aligned to the upright em-box centre so
+        // it sits symmetrically between adjacent upright CJK glyphs on the column centreline.
+        const pixel_t em_shift = (baseline - fm.em_top() + em / 2_px) - cy;
         auto flush = [&](size_t end) {
             for(size_t from = run; from < end;)
             {
@@ -353,7 +355,15 @@ namespace
                 position      at   = pos;
                 at.x              += advance(from);
                 if(const char_trim* t = trim_at(trims, from))
+                {
                     at.x -= t->start;
+                    size_t n_cp = 0;
+                    if(cjk::hyphen_target_em(code_point_at(text, from, n_cp)) > 0.0f)
+                    {
+                        at.x += em_shift;
+                        at.y -= em_shift;
+                    }
+                }
                 at.width           = container->text_width(text.substr(from, to - from).c_str(), font);
                 container->draw_text(hdc, text.substr(from, to - from).c_str(), font, color, at);
                 from = to;
@@ -436,7 +446,7 @@ namespace
             line_color = color;
         const int  where      = css.get_text_underline_position();
         const bool under_left = (where & text_underline_position_left) && !(where & text_underline_position_right);
-        const pixel_t right   = cy - em / 2_px - thickness - thickness;  // a line's width from the em box
+        const pixel_t right   = cy - em / 2_px - thickness - thickness * pixel_t(0.20f);
         const pixel_t left    = cy + em / 2_px + thickness;
         auto line = [&](pixel_t y) {
             background_layer layer;
