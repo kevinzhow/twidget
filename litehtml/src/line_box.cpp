@@ -86,7 +86,7 @@ namespace
         char32_t            c  = n == 1 ? c0 : n == 2 ? c0 & 0x1F : n == 3 ? c0 & 0x0F : c0 & 0x07;
         for(size_t k = 1; k < n && at + k < s.size(); k++)
             c = (c << 6) | (static_cast<unsigned char>(s[at + k]) & 0x3F);
-        return c;
+        return text->rule_char(c);
     }
 
     // The pair a line item is when it is a base unit of a word of ruby pairs (熟語ルビ), else none.
@@ -761,7 +761,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
                                 // none between two bases of one word (JLReq 3.1.11 ②-7)
                                 !src && before == box && same_word(last_box, it->get())
                                     ? cjk::gap_kind::avoided
-                                    : cjk::justify_gap_kind(before == box ? 0 : last_kind, src && !in_tcy(0) ? chars.front() : 0),
+                                    : cjk::justify_gap_kind(before == box ? 0 : last_kind, src && !in_tcy(0) ? src->rule_char(chars.front()) : 0),
                                 em});
             if(!src)
                 last_box = it->get();
@@ -770,7 +770,7 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
             if(!src)
                 continue;
             last      = chars.back();
-            last_kind = in_tcy(shown.size() - 1) ? 0 : last;
+            last_kind = in_tcy(shown.size() - 1) ? 0 : src->rule_char(last);
             // stone's isJustifiableGapTbRl: none inside a tate-chu-yoko token, its characters set together in one em.
             for(size_t at : cjk::justifiable_gaps(shown))
                 if(part->is_fragment || std::none_of(src->tate_chu_yoko().begin(), src->tate_chu_yoko().end(),
@@ -780,8 +780,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
                     do
                         back--;
                     while(back > 0 && (static_cast<unsigned char>(shown[back]) & 0xC0) == 0x80);
-                    const char32_t prev = in_tcy(back) ? 0 : decode_at(shown, back, n);
-                    gaps.push_back({i, at, true, cjk::justify_gap_kind(prev, in_tcy(at) ? 0 : decode_at(shown, at, n)), em});
+                    const char32_t prev = in_tcy(back) ? 0 : src->rule_char(decode_at(shown, back, n));
+                    gaps.push_back({i, at, true, cjk::justify_gap_kind(prev, in_tcy(at) ? 0 : src->rule_char(decode_at(shown, at, n))), em});
                 }
         }
         if(gaps.empty())
