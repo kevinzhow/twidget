@@ -159,7 +159,8 @@ std::string format(const std::vector<Drawn>& drawn) {
 
 // <p>html</p>, left-aligned, in a line (column) `length` px long.
 std::string lay_out(bool vertical, float length, const std::string& html, ruby_overhang overhang = ruby_overhang::punctuation,
-                    ruby_breaking breaking = ruby_breaking::per_base, const char* align = "left") {
+                    ruby_breaking breaking = ruby_breaking::per_base, const char* align = "left",
+                    short_ruby short_spacing = short_ruby::jlreq) {
     Stub c;
     if (vertical) c.h = length;
     auto doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
@@ -168,6 +169,7 @@ std::string lay_out(bool vertical, float length, const std::string& html, ruby_o
                                           &c);
     doc->set_ruby_overhang(overhang);
     doc->set_ruby_breaking(breaking);
+    doc->set_short_ruby(short_spacing);
     doc->render(pixel_t(vertical ? 400 : length));
     doc->draw(0, 0, 0, nullptr);
     return format(c.drawn);
@@ -346,6 +348,19 @@ void run(bool vertical) {
     expect(400, tokyo + "のあ", "^とうきょうと@0 東@0 京@24 の@40 あ@56", "line-edge c: a group ruby at the line's head, 1:1");
     expect(80, "あい" + tokyo + "うえ", "あ@0 い@16 ^とうきょうと@24 東@32 京@56 | う@0 え@16",
            "line-edge d: a group ruby ending a wrapped line, 1:1");
+    // 3.3.6 (注), Appendix F: a group ruby much shorter than its base spreads 1:2:1, but the space at each end is at
+    // most one ruby character; the rest goes between the ruby characters (short_ruby::jlreq).
+    expect(400, "あ" + r("東京都庁", "かな") + "い", "あ@0 ^か@24 ^な@64 東@16 京@32 都@48 庁@64 い@80",
+           "3.3.6 (注): かな over 東京都庁, one ruby character at each end (not 1:2:1's 12 px)");
+    expect(400, "あ" + r("東京都庁舎", "ちょう") + "い", "あ@0 ^ちょ@24 ^う@80 東@16 京@32 都@48 庁@64 舎@80 い@96",
+           "3.3.6 (注): ちょう over five kanji (ちょ one unit: ょ may not start a line), the ends 8 px, 40 px between");
+    expect(400, "あ" + r("東京", "とう") + "い", "あ@0 ^と@20 ^う@36 東@16 京@32 い@48",
+           "3.3.6: とう over 東京, 1:2:1 within one ruby character at the ends, as before");
+    {
+        const std::string got = lay_out(vertical, 400, "あ" + r("東京都庁", "かな") + "い", ruby_overhang::punctuation,
+                                        ruby_breaking::per_base, "left", short_ruby::space_around);
+        check(got == "あ@0 ^か@28 ^な@60 東@16 京@32 都@48 庁@64 い@80", mode + "short_ruby::space_around: 1:2:1 as before: " + got);
+    }
     // JLReq's rules are for Japanese: a ruby over Latin text (IDPF hefty-water's 2H₂ under "hydrogen") stays as
     // CSS lays it out, its base centred, also at a line's head and next to kana.
     expect(400, r("ab", "abcdefgh") + "の", "^abcdefgh@0 a@8 b@40 の@64", "a ruby over Latin text: no line-edge alignment, no overhang");
