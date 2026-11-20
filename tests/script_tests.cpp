@@ -176,6 +176,13 @@ std::string line_texts(const std::vector<Glyph>& glyphs) {
     return out;
 }
 
+// Each character and where it starts along its line: "数@0 2@16".
+std::string positions(const std::vector<Glyph>& glyphs) {
+    std::string out;
+    for (const auto& g : glyphs) out += (out.empty() ? "" : " ") + g.c + "@" + num(g.along);
+    return out;
+}
+
 const Glyph* find(const std::vector<Glyph>& glyphs, const std::string& c) {
     for (const auto& g : glyphs)
         if (g.c == c) return &g;
@@ -232,6 +239,24 @@ void run(bool vertical) {
         Laid l;
         lay_out(l, vertical, 64, "abc <sup>1</sup>def");
         check(line_texts(l.c.glyphs) == "abc|1def", "a script after a space may start the line" + m + ": " + line_texts(l.c.glyphs));
+    }
+
+    // 3.7.1: a script is set solid with its base and what follows: no quarter em between Japanese and a Latin digit
+    // there (3.2.6 ④ is for Latin text, not for 添え字); a Latin word after kana still gets it.
+    {
+        Laid l;
+        lay_out(l, vertical, 400, "数<sup>2</sup>く、数<sub>3</sub>と");
+        check(positions(l.c.glyphs) == "数@0 2@16 く@25.6 、@41.6 数@57.6 3@73.6 と@83.2",
+              "3.7.1: 数²く solid, no quarter em next to the script" + m + ": " + positions(l.c.glyphs));
+        // (In vertical text a lone digit stands upright in one em, tate-chu-yoko, solid anyway.)
+        Laid w;
+        lay_out(w, vertical, 400, "数<sup>2</sup>く、数<sub>3</sub>と", script_breaking::css);
+        check(vertical || positions(w.c.glyphs) != positions(l.c.glyphs), "script_breaking::css: the quarter em next to the script as before" + m +
+                                                                  ": " + positions(w.c.glyphs));
+        Laid t;
+        lay_out(t, vertical, 400, "かなWord");
+        check(positions(t.c.glyphs) == "か@0 な@16 W@36 o@52 r@68 d@84", "3.2.6 ④: kana before a Latin word keep the quarter em" + m +
+                                                                            ": " + positions(t.c.glyphs));
     }
 
     // 3.7.1: about 60% of the base.
