@@ -111,7 +111,9 @@ namespace litehtml
 
     /// Line breaks next to 添え字, a <sup> or <sub> (or any vertical-align: super or sub box) (JLReq 3.1.10 ⑨). keep: no
     /// break between a base and its script (数², H₂O, a note mark after 。); a script may still start a line after a
-    /// space. css: a break is allowed where the text on either side allows one, as before (and as Chromium does).
+    /// space; and a script is set solid with its base and what follows (no 和欧間 quarter em next to it, 3.7.1). css: a
+    /// break is allowed where the text on either side allows one, and the quarter em goes there, as before (and as
+    /// Chromium breaks).
     enum class script_breaking : uint8_t
     {
         keep,

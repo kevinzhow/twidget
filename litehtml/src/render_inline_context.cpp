@@ -202,6 +202,27 @@ namespace
     }
 } // namespace
 
+bool litehtml::script_boundary(const element::ptr& before, const element::ptr& after)
+{
+    const auto doc = before->get_document();
+    if(!doc || doc->get_script_breaking() != script_breaking::keep)
+        return false;
+    std::vector<const element*> theirs;
+    for(auto p = after->parent(); p; p = p->parent())
+        theirs.push_back(p.get());
+    element::ptr common;
+    for(auto p = before->parent(); p && !common; p = p->parent())
+        if(std::find(theirs.begin(), theirs.end(), p.get()) != theirs.end())
+            common = p;
+    auto in_script = [&](const element::ptr& el) {
+        for(auto p = el->parent(); p && p != common; p = p->parent())
+            if(is_one_of(p->css().get_vertical_align(), va_super, va_sub))
+                return true;
+        return false;
+    };
+    return in_script(before) || in_script(after);
+}
+
 bool litehtml::same_text(const element::ptr& before, const element::ptr& after)
 {
     const auto parent = before->parent();
@@ -328,6 +349,9 @@ litehtml::rendered_width litehtml::render_item_inline_context::_render_content(
                                                            : cjk::tate_chu_yoko(shown, 0, shown.size());
                             text->after_solid = !tcy.empty() && tcy.front().from == 0;
                         }
+                        // 添え字 (JLReq 3.7.1): a script is set solid with its base and with what follows it.
+                        text->after_solid = text->after_solid ||
+                                            script_boundary(events[kids[k]].first->src_el(), events[kids[n]].first->src_el());
                         break;
                     }
             }

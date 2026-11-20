@@ -176,6 +176,9 @@ namespace litehtml
     /// are letters under word-break: keep-all (§5.2); or, with `kinsoku` (pieces of different texts: one text's pieces
     /// are where the container's split_text broke it), the CJK rule set forbids a break (cjk::no_break_between).
     bool no_break_opportunity(const std::shared_ptr<element>& before, const std::shared_ptr<element>& after, bool kinsoku);
+    /// Whether one of two pieces next to each other is in a box of vertical-align super or sub (a script, 添え字) that
+    /// the other is not in, under script_breaking::keep: they are set solid (no quarter em between Japanese and Latin).
+    bool script_boundary(const std::shared_ptr<element>& before, const std::shared_ptr<element>& after);
     /// Whether `before` and `after` are pieces of one text: adjacent children of one element.
     bool same_text(const std::shared_ptr<element>& before, const std::shared_ptr<element>& after);
 
