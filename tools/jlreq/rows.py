@@ -10,7 +10,7 @@ ROWS = [
     dict(id="3.1.1-2", sec="3.1.1 ②", title="横排 ，． 作为句读点", req="横排可用 ，．/，。/、。 三组之一；用 ，． 时它们与 、。 同属句读点（cl-06/07），后面二分空，可压缩。",
          status="partial", ours="，．（U+FF0C/FF0E）在规则表里只有“不可行首”，不算 full_stop_comma：行末不去二分，后接「 时「 不减半，连续约物不压缩。",
          code="litehtml/src/cjk_rules_table.inc; tools/cjk_rules/overlay.json", test="—", shot="p-comma-period-h",
-         freq=["fullwidth-comma-period:h", "fullwidth-comma-period:v"]),
+         freq=["fullwidth-comma-period:h", "fullwidth-comma-period:v"], after4={'status': 'done', 'ours': '横排、语言为日文（最近的 lang/xml:lang，没有时用容器的语言）时，，． 按 、。（cl-07/06）处理：行末去后二分、后接「 时「减半、」．等连续约物压缩、行调整时 ， 可压（． 在行中不压，同 。）、旁边不加空。竖排、标为中文等其他语言时照旧（中文的 ， 可能居中）。document::set_comma_period。', 'code': 'litehtml/src/el_text.cpp el_text::rule_char; litehtml/src/line_box.cpp edge_of', 'test': 'punctuation_tests.cpp: "3.1.1 ②: …" 10 例（横排同 、。；竖排、zh-CN 照旧）'}),
     dict(id="3.1.1-3", sec="3.1.1 ③", title="横排引号/方括号", req="横排可用 “ ” ‘ ’ 代替「」；〝〟只用于竖排；横排方括号用［］。",
          status="na", ours="由书的文字决定，引擎不改字。", code="—", test="—", shot=""),
     # 3.1.2
@@ -92,7 +92,7 @@ ROWS = [
          status="partial", ours="グループルビ不分开（是）；熟語ルビ不能断（同上）。", code="litehtml/src/render_ruby.cpp:7", test="—", shot="r-jukugo-v",
          freq=["ruby-multi-pair:h", "ruby-multi-pair:v"], after3={'status': 'done', 'ours': 'グループルビ（一对）不分开；熟語ルビ按单位可断。', 'code': 'litehtml/src/render_ruby.cpp', 'test': 'ruby_overhang_tests.cpp: "3.3.7: っ, which may not start a line, takes 字 with it"'}),
     dict(id="3.1.10-9", sec="3.1.10 ⑨", title="添え字不分割", req="亲字与上下标之间不断。", status="missing", ours="亲字与 <sup> 之间可断（数|² 断开，v2 核对；Chromium 也断）。",
-         code="litehtml/src/render_inline_context.cpp:191", test="v2 例 s-sup", shot=""),
+         code="litehtml/src/render_inline_context.cpp:191", test="v2 例 s-sup", shot="", after4={'status': 'done', 'ours': '亲字与其上下标（vertical-align: super/sub 的框）之间不断（数²、H₂O、。后的注号）；空格之后的上标仍可行首。document::set_script_breaking。', 'code': 'litehtml/src/render_inline_context.cpp no_break_opportunity', 'test': 'script_tests.cpp: "3.1.10 ⑨: 数² is not split" 等'}),
     dict(id="3.1.10-10", sec="3.1.10 ⑩–⑫", title="合印、割注括弧、振分け", req="合印前/内不断；cl-28 后、cl-29 前不断；振分け单位不断。", status="na",
          ours="EPUB 无这些结构。", code="—", test="—", shot=""),
     # 3.1.11
@@ -146,7 +146,7 @@ ROWS = [
          ours="ruby-align: space-around，正是 1:2:1。", code="litehtml/src/render_ruby.cpp:96; litehtml/src/render_inline_context.cpp:472",
          test="core_tests.cpp: \"ruby: the annotation widens the pair, the base centred in it\"", shot="r-group-v"),
     dict(id="3.3.6-2", sec="3.3.6 (注)", title="短ルビ两端空的上限", req="ルビ比亲字短很多时，两端空不超过一个ルビ字（或 1.5 倍）。", status="missing",
-         ours="两端空不设上限。", code="litehtml/src/render_inline_context.cpp:472", test="—", shot="r-group-v"),
+         ours="两端空不设上限。", code="litehtml/src/render_inline_context.cpp:472", test="—", shot="r-group-v", after4={'status': 'done', 'ours': '日文ルビ比亲字短时仍按 1:2:1，但两端各不超过一个ルビ字（ルビ字号），其余分到ルビ字（断行单位）之间。document::set_short_ruby。', 'code': 'litehtml/src/render_ruby.cpp render_item_ruby_pair; litehtml/src/render_inline_context.cpp space_around', 'test': 'ruby_overhang_tests.cpp: "3.3.6 (注): かな over 東京都庁, one ruby character at each end"'}),
     dict(id="3.3.7-1", sec="3.3.7", title="熟語ルビ：每字 ≤2 假名按モノルビ", req="每个亲字的ルビ不超过 2 字时，逐字按モノルビ配置。", status="done",
          ours="每对 rt 各成一对，居中。", code="litehtml/src/render_ruby.cpp:7", test="—", shot="r-jukugo-v", freq=["ruby-multi-pair:h", "ruby-multi-pair:v"]),
     dict(id="3.3.7-2", sec="3.3.7", title="熟語ルビ：某字 ≥3 假名", req="按グループルビ配置，或让ルビ掛到同一熟語的其他亲字上（不超过一个ルビ字）。", status="partial",
@@ -205,7 +205,7 @@ ROWS = [
          code="reader: native/src/chapter.cpp:947", test="reader engine_tests.cpp: \"widows: two lines go together to the next page\"", shot=""),
     dict(id="3.6", sec="3.6", title="タブ", req="制表位对齐。", status="na", ours="EPUB 无。", code="—", test="—", shot=""),
     dict(id="3.7.1", sec="3.7.1", title="添え字", req="约亲字 60%，紧排，不断开，竖排横躺或縦中横。", status="partial", ours="sub/sup 用 font-size: smaller（约 83%）；不断开未保证。",
-         code="litehtml/include/litehtml/master_css.h:382", test="—", shot=""),
+         code="litehtml/include/litehtml/master_css.h:382", test="—", shot="", after4={'status': 'done', 'ours': '阅读器在 master_css 之后加 twidget 的 jlreq_scripts_css：sub/sup 为亲字的 60%，line-height 0，含上下标的行行距不变；书自己的字号优先。上下标与亲字及其后的字紧排（不加和欧四分，document::script_breaking）。不断开见 3.1.10 ⑨。竖排中上下标里的拉丁字母数字按 text-orientation: mixed 横躺（JLReq 允许的做法之一），不做縦中横。', 'code': 'litehtml/include/litehtml/master_css.h jlreq_scripts_css; reader: native/src/chapter.cpp', 'test': 'script_tests.cpp: "3.7.1: a superscript is 60% of its base", "3.7.1: a line with <sup> keeps the pitch", "3.7.1: 数²く solid"; reader engine_tests script_tests'}),
     dict(id="3.7.2", sec="3.7.2–3.7.4", title="振分け、字取り、数式", req="振分け块、字取り、数式符号的空。", status="na", ours="EPUB 无此结构（数式走 MathML）。", code="—", test="—", shot=""),
     # 3.8
     dict(id="3.8.2-1", batch=2, sec="3.8.2 ①/3.8.3", title="先压缩（追込み）的优先顺序", req="先压：欧文间隔（到四分）→行末 」、。 二分→行末中点四分→行中中点四分→行中括弧、读点二分→和欧四分（到八分）。",

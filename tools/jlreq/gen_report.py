@@ -7,10 +7,11 @@ sys.path.insert(0, os.path.dirname(__file__))
 from rows import ROWS
 
 AFTER = "--after" in sys.argv  # each batch-1 row as batch 1 left it
-BATCH3 = "--batch3" in sys.argv  # and each batch-3 row as batch 3 leaves it (implies --batch2)
+BATCH4 = "--batch4" in sys.argv  # and each batch-4 row as batch 4 leaves it (implies --batch3)
+BATCH3 = "--batch3" in sys.argv or BATCH4  # and each batch-3 row as batch 3 leaves it (implies --batch2)
 BATCH2 = "--batch2" in sys.argv or BATCH3  # and each batch-2 row as batch 2 leaves it (implies --after)
 AFTER = AFTER or BATCH2
-args = [a for a in sys.argv[1:] if a not in ("--after", "--batch2", "--batch3")]
+args = [a for a in sys.argv[1:] if a not in ("--after", "--batch2", "--batch3", "--batch4")]
 pub = json.load(open(args[0]))
 priv = json.load(open(args[1]))
 shots, md_out, html_dir = args[2], args[3], args[4]
@@ -32,10 +33,17 @@ if BATCH3:
             r["before_status"] = r["status"]
             r.update(r["after3"])
             r["batch"] = 3
+if BATCH4:
+    for r in ROWS:
+        r.pop("before_status", None)
+        if r.get("after4"):
+            r["before_status"] = r["status"]
+            r.update(r["after4"])
+            r["batch"] = 4
 
 
 def batch_mark(r):
-    return {1: "第1批", 2: "第2批", 3: "第3批"}.get(r.get("batch"), "")
+    return {1: "第1批", 2: "第2批", 3: "第3批", 4: "第4批"}.get(r.get("batch"), "")
 
 ST = {"done": "已实现", "partial": "部分", "missing": "缺失", "na": "不适用"}
 ORDER = ["done", "partial", "missing", "na"]
@@ -67,7 +75,18 @@ for r in ROWS:
 ranked = sorted(groups.values(), key=lambda g: (-freq(g[0], pub), -freq(g[0], priv), g[0]["id"]))
 
 BEFORE_COUNTS = {s: sum(1 for r in ROWS if r.get("before_status", r["status"]) == s) for s in ORDER}
-if BATCH3:
+if BATCH4:
+    SUMMARY = (
+        "本表逐条对照 W3C《日本語組版処理の要件》(JLReq, 2020-08-11 WG Note) 第 3 章与新阅读器（twidget litehtml + oyomi 阅读器）。"
+        "共 %d 条：已实现 %d、部分 %d、缺失 %d、不适用 %d（第 4 批之前：已实现 %d、部分 %d、缺失 %d）。"
+        "第 1 批：段首括号 ①/③、ルビ掛假名；第 2 批：行的调整处理（先压缩、括弧句读点旁不加空）、ルビ掛句读点和括弧；"
+        "第 3 批：熟語ルビ断行与掛け、和欧间四分、？！ 后全角空、汉数字中的 、・、グループルビ行头行尾 1:1。"
+        "第 4 批（标“本次”的行）：亲字与上下标之间不断行（3.1.10 ⑨）；上下标约亲字 60%%、不撑开行距（3.7.1）；"
+        "短グループルビ两端空不超过一个ルビ字（3.3.6 注）；横排日文中 ，． 按 、。 处理（3.1.1 ②）。"
+        "仍缺：欧文间隔的压缩（3.2.6 ②、3.8.2）及少数罕见条目；见“下一批候选”。" % (
+            total, counts["done"], counts["partial"], counts["missing"], counts["na"], BEFORE_COUNTS["done"],
+            BEFORE_COUNTS["partial"], BEFORE_COUNTS["missing"]))
+elif BATCH3:
     SUMMARY = (
         "本表逐条对照 W3C《日本語組版処理の要件》(JLReq, 2020-08-11 WG Note) 第 3 章与新阅读器（twidget litehtml + oyomi 阅读器）。"
         "共 %d 条：已实现 %d、部分 %d、缺失 %d、不适用 %d（第 3 批之前：已实现 %d、部分 %d、缺失 %d）。"
@@ -107,7 +126,8 @@ else:
             total, counts["done"], counts["partial"], counts["missing"], counts["na"]))
 
 METHOD = (
-    ("代码与测试的位置以 twidget 分支 alice/jlreq-b3-side（main a1d529d + 第 3 批）为准。" if BATCH3 else
+    ("代码与测试的位置以 twidget 分支 alice/jlreq-b4-comma-period（main 15ba438 + 第 4 批）为准。" if BATCH4 else
+     "代码与测试的位置以 twidget 分支 alice/jlreq-b3-side（main a1d529d + 第 3 批）为准。" if BATCH3 else
      "代码与测试的位置以 twidget 分支 alice/jlreq-line-adjust（main 3e0f21a + 第 2 批）为准。" if BATCH2 else
      "代码与测试的位置以 twidget 9e7730b（main e6790b9 + #22）、阅读器 83076d2（#31）为准。") + "截图是 `reader-cli` 画的我们自己的小页面"
     "（`tools/jlreq/make_cases.py`，20px Noto Serif CJK JP，14 字一行，横排 -h、竖排 -v）。频次由 `tools/jlreq/corpus_scan.py` 统计："
@@ -122,7 +142,7 @@ def md_cell(s):
 
 def write_md():
     out = ["# JLReq 规则级对照（新阅读器）", "", "## 摘要", "", SUMMARY, "", METHOD + (
-        "（截图为第 1 批之后；第 2、3 批各条的对照图在报告 v2。）" if BATCH2 else "（截图为这次修改之后。）" if AFTER else ""), "",
+        "（截图为第 1 批之后；第 2–4 批各条的对照图在报告 v2。）" if BATCH4 else "（截图为第 1 批之后；第 2、3 批各条的对照图在报告 v2。）" if BATCH2 else "（截图为这次修改之后。）" if AFTER else ""), "",
            "| 状态 | 条数 |", "|---|---|"]
     out += ["| %s | %d |" % (ST[s], counts[s]) for s in ORDER]
     out += ["", "## 对照表", "",
