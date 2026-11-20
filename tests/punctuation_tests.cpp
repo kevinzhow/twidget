@@ -442,6 +442,56 @@ void run(bool vertical, bool half_forms) {
               mode + "3.2.6 ④: a table's column measured with the quarter em: " + drawn(l.c.glyphs, half_forms));
     }
 
+    // JLReq 3.1.1 ②: in horizontal text ，． are 読点 and 句点 (cl-07, cl-06) as 、。 are: the half em after one ending a
+    // wrapped line goes, 「 after one halves, a closing bracket before one halves, line adjustment squeezes ， (not ．
+    // inside a line) and puts no space next to them, no quarter em next to Latin. Each case is laid out with ，． and
+    // must draw what it draws with 、。. In vertical text, and in text marked as Chinese (where ， may be centred),
+    // they stay as they were (comma_period::none).
+    {
+        auto with = [&](float length, const std::string& html, comma_period mode_cp, const char* lang) {
+            Laid l;
+            l.c.half_forms = half_forms;
+            if (vertical) l.c.h = length;
+            l.doc = document::createFromString(std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                                                   (lang ? std::string(" lang=\"") + lang + "\"" : std::string()) +
+                                                   "><body style=\"margin:0;font-size:16px;line-height:20px\"><p style=\"margin:0;text-align:justify\">" +
+                                                   html + "</p></body></html>",
+                                               &l.c);
+            l.doc->set_comma_period(mode_cp);
+            l.doc->render(pixel_t(vertical ? 400 : length));
+            l.doc->draw(0, 0, 0, nullptr);
+            return drawn(l.c.glyphs, true);
+        };
+        auto swap = [](std::string s, bool to_fullwidth) {
+            const std::pair<std::string, std::string> marks[] = {{"、", "，"}, {"。", "．"}};
+            for (const auto& [ja, fw] : marks) {
+                const std::string& from = to_fullwidth ? ja : fw;
+                const std::string& to = to_fullwidth ? fw : ja;
+                for (size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size())) s.replace(at, from.size(), to);
+            }
+            return s;
+        };
+        const std::pair<float, std::string> cases[] = {
+            {96, "あいうえお。かきく"},  {96, "あいうえお、かきく"},   {400, "詰め寄った。「主人"},
+            {400, "あ、「い"},           {104, "あいう」。えお"},      {400, "あ。」い"},
+            {104, "あいう。えおかき"},   {88, "あいうえお。"},         {400, "あ、Aい"},
+            {240, "仮製本には、「がんだれ」とよばれる様式がある。"},
+        };
+        for (const auto& [length, html] : cases) {
+            const std::string fw = swap(html, true);
+            const std::string got = with(length, fw, comma_period::jlreq, nullptr);
+            if (!vertical) {
+                const std::string want = swap(with(length, html, comma_period::jlreq, nullptr), true);
+                check(got == want, mode + "3.1.1 ②: " + fw + " as " + html + ": " + got + "\n     want " + want);
+            } else {
+                const std::string want = with(length, fw, comma_period::none, nullptr);
+                check(got == want, mode + "3.1.1 ②: vertical " + fw + " as before: " + got + "\n     want " + want);
+            }
+            const std::string zh = with(length, fw, comma_period::jlreq, "zh-CN");
+            const std::string zh_before = with(length, fw, comma_period::none, "zh-CN");
+            check(zh == zh_before, mode + "3.1.1 ②: " + fw + " in Chinese text as before: " + zh + "\n     want " + zh_before);
+        }
+    }
     // JLReq 3.1.3: 、 between kanji numerals (二、三日) and ・ as their decimal point (三・五) are set solid.
     expect(400, "二、三日", "二@0 、*@16 三@24 日@40", "3.1.3: 、 between kanji numerals, solid");
     expect2(400, "三・五倍", "三@0 ・*@16 五@24 倍@40", "三@0 ・@12 五@24 倍@40", "3.1.3: ・ between kanji numerals, solid");
