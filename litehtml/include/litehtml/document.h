@@ -109,6 +109,15 @@ namespace litehtml
         none,
     };
 
+    /// Line breaks next to 添え字, a <sup> or <sub> (or any vertical-align: super or sub box) (JLReq 3.1.10 ⑨). keep: no
+    /// break between a base and its script (数², H₂O, a note mark after 。); a script may still start a line after a
+    /// space. css: a break is allowed where the text on either side allows one, as before (and as Chromium does).
+    enum class script_breaking : uint8_t
+    {
+        keep,
+        css,
+    };
+
     class document : public std::enable_shared_from_this<document>
     {
       public:
@@ -221,6 +230,7 @@ namespace litehtml
         ruby_breaking                           m_ruby_breaking      = ruby_breaking::per_base;
         latin_spacing                           m_latin_spacing      = latin_spacing::quarter;
         dividing_space                          m_dividing_space     = dividing_space::full_em;
+        script_breaking                         m_script_breaking    = script_breaking::keep;
         bool                                    m_layout_cache_off = false;
         position::vector                        m_fixed_boxes;
         std::shared_ptr<element>                m_over_element;
@@ -351,6 +361,8 @@ namespace litehtml
         latin_spacing                get_latin_spacing() const { return m_latin_spacing; }
         void                         set_dividing_space(dividing_space mode) { m_dividing_space = mode; }
         dividing_space               get_dividing_space() const { return m_dividing_space; }
+        void                         set_script_breaking(script_breaking mode) { m_script_breaking = mode; }
+        script_breaking              get_script_breaking() const { return m_script_breaking; }
         bool                         cjk_segment_breaks() const { return m_cjk_segment_breaks; }
         pixel_t                      content_width() const;
         pixel_t                      content_height() const;
