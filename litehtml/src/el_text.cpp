@@ -87,7 +87,10 @@ namespace
                 else
                     at.x -= t->start;
             }
-            at.width = container->text_width(part.c_str(), f);
+            const pixel_t slot_end = to < text.size()
+                                         ? pos.x + el.advance_to(text, to) + justify_shift(text, to, gap) - trim_shift(trims, to)
+                                         : (pos.width > 0_px ? pos.x + pos.width : at.x + container->text_width(part.c_str(), f));
+            at.width = slot_end > at.x ? slot_end - at.x : container->text_width(part.c_str(), f);
             container->draw_text(hdc, part.c_str(), f, color, at);
             from = to;
         }
@@ -99,7 +102,7 @@ namespace
     {
         return c <= ' ' || (c < 0x80 && !((c | 0x20) >= 'a' && (c | 0x20) <= 'z') && !(c >= '0' && c <= '9')) || c == 0xA0 ||
                (c >= 0x2010 && c <= 0x2027) || (c >= 0x2030 && c <= 0x205E) ||
-               (c >= 0x3000 && c <= 0x303F && c != 0x3005 && c != 0x3006 && c != 0x3007) || c == 0x30FB ||
+               (c >= 0x3000 && c <= 0x303F && c != 0x3005 && c != 0x3006 && c != 0x3007 && c != 0x303B) || c == 0x30FB ||
                (c >= 0xFF01 && c <= 0xFF0F) || (c >= 0xFF1A && c <= 0xFF20) || (c >= 0xFF3B && c <= 0xFF40) ||
                (c >= 0xFF5B && c <= 0xFF65);
     }
@@ -460,6 +463,114 @@ namespace
         if(lines & text_decoration_line_line_through)
             line(cy - thickness / 2_px);
     }
+
+    bool is_script_element(const litehtml::element::ptr& el)
+    {
+        using namespace litehtml;
+        if(!el || el->is_text())
+            return false;
+        return el->tag() == _sup_ || el->tag() == _sub_ ||
+               is_one_of(el->css().get_vertical_align(), va_super, va_sub);
+    }
+
+    bool sibling_blocks_upright_latin(const litehtml::element* self, bool forward)
+    {
+        using namespace litehtml;
+        const element* cur = self;
+        for(element::ptr p = cur->parent(); p; cur = p.get(), p = p->parent())
+        {
+            const auto& kids = p->children();
+            auto it = std::find_if(kids.begin(), kids.end(), [cur](const element::ptr& e) { return e.get() == cur; });
+            if(it == kids.end())
+                return false;
+            auto check_node = [&](const element::ptr& sib) -> int {
+                if(!sib)
+                    return 0;
+                if(is_script_element(sib))
+                    return 1;
+                if(sib->is_break())
+                    return -1;
+                std::string s;
+                sib->get_text(s);
+                if(s.empty())
+                    return 0;
+                size_t pos = forward ? 0 : s.size();
+                while(forward ? pos < s.size() : pos > 0)
+                {
+                    size_t   n = 0;
+                    char32_t c = 0;
+                    if(forward)
+                    {
+                        c    = code_point_at(s, pos, n);
+                        pos += n;
+                    } else
+                    {
+                        size_t at = pos - 1;
+                        while(at > 0 && (static_cast<unsigned char>(s[at]) & 0xC0) == 0x80)
+                            at--;
+                        c   = code_point_at(s, at, n);
+                        pos = at;
+                    }
+                    if(c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0xA0)
+                        continue;
+                    if(c == 0x3000)
+                        return -1;
+                    const bool latin = (c < 0x80) || c == 0x2018 || c == 0x2019 ||
+                                       (c >= 0xFF10 && c <= 0xFF19) || (c >= 0xFF21 && c <= 0xFF3A) ||
+                                       (c >= 0xFF41 && c <= 0xFF5A) || cjk::script_of(c) == cjk::script::latin;
+                    return latin ? 1 : -1;
+                }
+                return 0;
+            };
+            if(forward)
+            {
+                for(auto nx = std::next(it); nx != kids.end(); ++nx)
+                {
+                    const int r = check_node(*nx);
+                    if(r != 0)
+                        return r > 0;
+                }
+            } else
+            {
+                for(auto pr = it; pr != kids.begin();)
+                {
+                    --pr;
+                    const int r = check_node(*pr);
+                    if(r != 0)
+                        return r > 0;
+                }
+            }
+            if(p->css().get_display() != display_inline)
+                break;
+        }
+        return false;
+    }
+
+    bool block_has_japanese_prose(const litehtml::element::ptr& root)
+    {
+        using namespace litehtml;
+        int  budget = 4096;
+        auto walk   = [&](auto& self_fn, const element::ptr& el) -> bool {
+            if(!el || budget <= 0 || el->tag() == _rt_ || el->tag() == _rp_)
+                return false;
+            if(auto et = dynamic_cast<const el_text*>(el.get()))
+            {
+                const std::string& s = et->display_text();
+                for(size_t i = 0, n = 0; i < s.size() && budget > 0; i += n, budget--)
+                {
+                    const char32_t c = code_point_at(s, i, n);
+                    if(c >= 0x3040 && cjk::script_of(c) == cjk::script::japanese)
+                        return true;
+                }
+                return false;
+            }
+            for(const auto& child : el->children())
+                if(self_fn(self_fn, child))
+                    return true;
+            return false;
+        };
+        return walk(walk, root);
+    }
 } // namespace
 
 litehtml::pixel_t litehtml::snap_text_top_px(pixel_t top, const font_metrics& fm)
@@ -662,6 +773,24 @@ void litehtml::el_text::compute_styles(bool /*recursive*/)
                     tcy.push_back({t.from - m_run_begin, t.to - m_run_begin});
             else
                 tcy = cjk::tate_chu_yoko(shown, 0, shown.size());
+            if(!tcy.empty())
+            {
+                const bool at_run_start = !m_run || m_use_transformed || m_run_begin == 0;
+                const bool at_run_end   = !m_run || m_use_transformed || m_run_end == m_run->text.size();
+                tcy.erase(std::remove_if(tcy.begin(), tcy.end(), [&](const cjk::span& s) {
+                              if(s.to - s.from != 1)
+                                  return false;
+                              const unsigned char ch = static_cast<unsigned char>(shown[s.from]);
+                              if(!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')))
+                                  return false;
+                              if(s.from == 0 && at_run_start && sibling_blocks_upright_latin(this, false))
+                                  return true;
+                              if(s.to == shown.size() && at_run_end && sibling_blocks_upright_latin(this, true))
+                                  return true;
+                              return false;
+                          }),
+                          tcy.end());
+            }
         }
     }
     if(tcy != m_tate_chu_yoko)
@@ -759,8 +888,9 @@ const std::vector<size_t>& litehtml::el_text::hyphenation_points()
             if(!dash)
                 return *m_hyphenation;
         }
-    // The language: the nearest lang or xml:lang (an empty one says it is unknown).
+    // Explicit empty lang="" marks unknown and skips cont->get_language.
     std::string language;
+    bool        has_lang = false;
     for(element::ptr el = el_parent; el; el = el->parent())
     {
         const char* lang = el->get_attr("lang");
@@ -769,8 +899,23 @@ const std::vector<size_t>& litehtml::el_text::hyphenation_points()
         if(lang)
         {
             language = lang;
+            has_lang = true;
             break;
         }
+    }
+    if(!has_lang)
+    {
+        std::string culture;
+        cont->get_language(language, culture);
+    }
+    // Untagged paragraph containing Japanese prose skips fallback English hyphenation.
+    if(language.empty())
+    {
+        element::ptr block = el_parent;
+        while(block && block->parent() && block->css().get_display() == display_inline)
+            block = block->parent();
+        if(block && block_has_japanese_prose(block))
+            return *m_hyphenation;
     }
     cont->hyphenate(shown, language, *m_hyphenation);
     return *m_hyphenation;

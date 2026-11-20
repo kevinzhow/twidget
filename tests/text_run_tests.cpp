@@ -225,6 +225,40 @@ int main() {
     got = layout("width:100px;hyphens:auto", "ab hyphenation", "", " xml:lang=\"de\"");
     check(got == "ab@0,2 hyphenation@0,22", "another language by xml:lang: no hyphenation: " + got);
 
+    // Wave 4 Micro-fix 5d (3.1.10 ⑥ / 3.2.6 ①③): untagged Japanese paragraph does not hyphenate embedded English,
+    // while untagged English paragraphs and explicit lang="en" spans still hyphenate.
+    {
+        auto layout_lang = [&](const std::string& book_lang, const std::string& style, const std::string& html) {
+            struct LangStub : Stub {
+                std::string blang;
+                void get_language(std::string& lang, std::string& culture) const override {
+                    lang = blang;
+                    culture.clear();
+                }
+            } c;
+            c.blang = book_lang;
+            auto doc = document::createFromString(
+                "<html><body style=\"margin:0;font-size:16px;line-height:20px\"><p style=\"margin:0;" + style + "\">" +
+                    html + "</p></body></html>",
+                &c);
+            doc->render(300);
+            doc->draw(0, 0, 0, nullptr);
+            std::string out;
+            for (const auto& d : c.draws) out += (out.empty() ? "" : " ") + d.text;
+            return out;
+        };
+        const std::string jp_untagged = layout_lang("", "width:100px;text-align:justify", "日本語に hyphenation が入る");
+        check(jp_untagged.find("hyphen-") == std::string::npos && jp_untagged.find("hy-") == std::string::npos,
+              "3.1.10 ⑥: untagged justified Japanese paragraph does not hyphenate English: " + jp_untagged);
+        const std::string en_untagged = layout_lang("", "width:100px;text-align:justify", "ab hyphenation");
+        check(en_untagged.find("hyphen-") != std::string::npos,
+              "3.1.10 ⑥: untagged justified English paragraph still hyphenates: " + en_untagged);
+        const std::string jp_explicit_en =
+            layout_lang("", "width:100px;text-align:justify", "日本語に <span lang=\"en\">hyphenation</span> が入る");
+        check(jp_explicit_en.find("hyphen-") != std::string::npos || jp_explicit_en.find("hy-") != std::string::npos,
+              "3.1.10 ⑥: explicit lang=\"en\" span inside Japanese paragraph still hyphenates: " + jp_explicit_en);
+    }
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

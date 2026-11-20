@@ -296,6 +296,30 @@ int main() {
     // Horizontal text is unchanged.
     expect(false, 400, "第12回", "第@0 12@16 回@33.6", "digits");
     expect(false, 400, "か!?」", "か!?」@0", "!?");
+
+    // Wave 4 Fix 4 (JLReq 3.2.3 ①): single isolated ASCII Latin letters bounded by CJK/punctuation/line edge stand
+    // upright in vertical-rl, while Western words, hyphenated/dotted tokens, 3+ digits, scripts (H₂O/O₂), and
+    // explicit text-orientation: sideways stay rotated 90° CW.
+    expect(true, 400, "単一AとX点", "単^16@0 一^16@16 A^8@32 と^16@48 X^8@64 点^16@80",
+           "3.2.3 ①: single isolated ASCII Latin letters upright in vertical-rl");
+    expect(true, 400, "A点", "A^8@0 点^16@16", "3.2.3 ①: single ASCII letter at line start upright");
+    expect(true, 400, "「A」", "「^16@-8 A^8@8 」^16@24", "3.2.3 ①: single ASCII letter in Japanese brackets upright");
+    expect(true, 400, "単一<span>A</span>と", "単^16@0 一^16@16 A^8@32 と^16@48",
+           "3.2.3 ①: single ASCII letter in <span> between Japanese upright");
+    expect(true, 400, "あTokyoい", "あ^16@0 Tokyo@16 い^16@56", "3.2.3 ②: multi-letter Western word stays sideways");
+    expect(true, 400, "あABい", "あ^16@0 AB@16 い^16@32", "3.2.3 ②: two-letter Latin stays sideways");
+    expect(true, 400, "あA.Bい", "あ^16@0 A.B@16 い^16@40", "3.2.3 ②: dotted token A.B stays sideways");
+    expect(true, 400, "あa-bい", "あ^16@0 a-b@16 い^16@40", "3.2.3 ②: hyphenated token a-b stays sideways");
+    expect(true, 400, "あ<span>A</span><span>B</span>い", "あ^16@0 A@16 B@24 い^16@32",
+           "3.2.3 ②: adjacent Latin spans stay sideways");
+    expect(true, 400, "あH<sub>2</sub>Oい", "あ^16@0 H@16 2@24 O@32.8 い^16@40.8",
+           "3.7.1: H₂O letters and subscript digit all stay sideways");
+    expect(true, 400, "<span style=\"text-orientation:sideways\">単一AとX点</span>",
+           "単@0 一@16 A@32 と@40 X@56 点@64", "3.2.3 ①: text-orientation: sideways keeps single Latin letters sideways");
+    rule("単一AとX点", "A|X", "isolated single ASCII letters between kanji/kana");
+    rule("Tokyo AB A.B a-b A's I am a boy A12 123 1.5", "", "words, dotted/hyphenated tokens, Western phrase, 3+ digits stay sideways");
+    rule("A、B・C", "A|B|C", "single ASCII letters separated by Japanese punctuation");
+
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

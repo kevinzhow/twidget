@@ -1,8 +1,60 @@
 #include "render_block_context.h"
 
 #include "document.h"
+#include "render_inline_context.h"
+#include "render_ruby.h"
 #include "types.h"
 #include <algorithm>
+
+namespace
+{
+    bool is_block_in_flow(const std::shared_ptr<litehtml::render_item>& item)
+    {
+        const auto& css = item->src_el()->css();
+        return css.get_display() != litehtml::display_none && css.get_float() == litehtml::float_none &&
+               css.get_position() != litehtml::element_position_absolute &&
+               css.get_position() != litehtml::element_position_fixed;
+    }
+
+    litehtml::render_item_inline_context::ruby_line_edge block_ruby_edge(litehtml::render_item& item, bool first,
+                                                                         litehtml::pixel_t y_offset)
+    {
+        using namespace litehtml;
+        if(auto* inl = dynamic_cast<render_item_inline_context*>(&item))
+        {
+            auto edge = first ? inl->first_ruby_edge() : inl->last_ruby_edge();
+            if(edge.has_line)
+            {
+                const pixel_t y = y_offset + inl->pos().y;
+                edge.em_edge   += y;
+                edge.ruby_edge += y;
+            }
+            return edge;
+        }
+        if(auto* blk = dynamic_cast<render_item_block_context*>(&item))
+        {
+            if(dynamic_cast<const render_item_ruby_pair*>(blk) || blk->src_el()->css().clips_contents())
+                return {};
+            const pixel_t y = y_offset + blk->pos().y;
+            auto          scan = [&](auto begin, auto end) -> render_item_inline_context::ruby_line_edge {
+                for(auto it = begin; it != end; ++it)
+                {
+                    if(!is_block_in_flow(*it))
+                        continue;
+                    auto edge = block_ruby_edge(**it, first, y);
+                    if(edge.has_line)
+                        return edge;
+                    if((*it)->height() > 0_px)
+                        return {};
+                }
+                return {};
+            };
+            auto& kids = blk->children();
+            return first ? scan(kids.begin(), kids.end()) : scan(kids.rbegin(), kids.rend());
+        }
+        return {};
+    }
+} // namespace
 
 litehtml::rendered_width litehtml::render_item_block_context::_render_content(pixel_t /*x*/, pixel_t /*y*/,
                                                                               bool second_pass,
@@ -11,6 +63,8 @@ litehtml::rendered_width litehtml::render_item_block_context::_render_content(pi
 {
     m_va_applied = 0_px;
     std::shared_ptr<render_item> last_margin_el;
+    const bool                   check_ruby = dynamic_cast<const render_item_ruby_pair*>(this) == nullptr;
+    render_item_inline_context::ruby_line_edge prev_ruby_edge;
 
     rendered_width ret_width;
     pixel_t        child_top   = 0_px;
@@ -127,6 +181,30 @@ litehtml::rendered_width litehtml::render_item_block_context::_render_content(pi
                 {
                     // Right to left, a block narrower than its container keeps its right margin and sits on the right.
                     el->pos().x += pixel_t(self_size.render_width) - el->right();
+                }
+                if(check_ruby)
+                {
+                    const auto cur_first = block_ruby_edge(*el, true, 0_px);
+                    if(prev_ruby_edge.has_line && cur_first.has_line && (prev_ruby_edge.has_ruby || cur_first.has_ruby))
+                    {
+                        const pixel_t prev_limit = prev_ruby_edge.has_ruby
+                                                       ? std::max(prev_ruby_edge.em_edge, prev_ruby_edge.ruby_edge)
+                                                       : prev_ruby_edge.em_edge;
+                        const pixel_t cur_limit  = cur_first.has_ruby
+                                                       ? std::min(cur_first.em_edge, cur_first.ruby_edge)
+                                                       : cur_first.em_edge;
+                        if(cur_limit < prev_limit)
+                        {
+                            const pixel_t delta = prev_limit - cur_limit;
+                            el->pos().y += delta;
+                            child_top   += delta;
+                        }
+                    }
+                    const auto cur_last = block_ruby_edge(*el, false, 0_px);
+                    if(cur_last.has_line)
+                        prev_ruby_edge = cur_last;
+                    else if(el->height() > 0_px)
+                        prev_ruby_edge = {};
                 }
                 ret_width.merge(rw);
                 m_margins.top   = top_margin;
