@@ -230,6 +230,12 @@ bool litehtml::no_break_opportunity(const element::ptr& before, const element::p
         return true;
     if(before->is_space() || after->is_space())
         return false;
+    // 添え字 (JLReq 3.1.10 ⑨): none between a base and its script, a box of vertical-align super or sub that starts
+    // with `after` and does not hold `before` (数², H₂O, a note mark after 。; a second script after the first).
+    if(const auto doc = after->get_document(); doc && doc->get_script_breaking() == script_breaking::keep)
+        for(auto p = after->parent(); p && p != common; p = p->parent())
+            if(is_one_of(p->css().get_vertical_align(), va_super, va_sub))
+                return true;
     const char32_t last = edge_char(before, false), first = edge_char(after, true);
     if(common && common->css().get_word_break() == word_break_keep_all && letter(last) && letter(first))
         return true;
