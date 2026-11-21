@@ -6,6 +6,9 @@
 
 #include <cstdio>
 #include <string>
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
 #if defined(__GLIBC__)
 #include <malloc.h>
 #endif
@@ -242,6 +245,32 @@ int main() {
         check(out->errors.length == 0, "the parse of 1 MB of binary records " + std::to_string(out->errors.length) + " errors (0)");
         gumbo_destroy_output(&kGumboDefaultOptions, out);
     }
+#if !defined(_WIN32)
+    {
+        // Deeply nested hostile SVG/HTML destroyed on a 512 KB worker thread stack (macOS pthread default) must not
+        // overflow the call stack.
+        bool ok = false;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 512 * 1024);
+        pthread_t th;
+        const int rc = pthread_create(&th, &attr, [](void* arg) -> void* {
+            std::string deep = "<svg xmlns=\"http://www.w3.org/2000/svg\">";
+            deep.reserve(150000);
+            for (int i = 0; i < 20000; i++) deep += "<g>";
+            deep += "<rect/>";
+            for (int i = 0; i < 20000; i++) deep += "</g>";
+            deep += "</svg>";
+            GumboOutput* out = gumbo_parse_with_options(&kGumboDefaultOptions, deep.data(), deep.size());
+            gumbo_destroy_output(&kGumboDefaultOptions, out);
+            *static_cast<bool*>(arg) = true;
+            return nullptr;
+        }, &ok);
+        pthread_attr_destroy(&attr);
+        if (rc == 0) pthread_join(th, nullptr);
+        check(rc == 0 && ok, "gumbo_destroy_output destroys 20000 nested <g> on a 512 KB pthread stack");
+    }
+#endif
     std::printf("%s\n", failures ? "FAILED" : "OK");
     return failures ? 1 : 0;
 }

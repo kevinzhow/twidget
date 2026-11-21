@@ -1,5 +1,6 @@
 #include "text_backend.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -174,6 +175,76 @@ static void test_find_ttc_face_index() {
     }
 }
 
+static std::vector<uint8_t> patch_hhea_leading(const std::vector<uint8_t>& src, int16_t ascent, int16_t descent, int16_t lineGap) {
+    std::vector<uint8_t> d = src;
+    auto put16 = [&](size_t at, int16_t v) {
+        d[at] = uint8_t((uint16_t(v) >> 8) & 0xFFu);
+        d[at + 1] = uint8_t(uint16_t(v) & 0xFFu);
+    };
+    const uint16_t ntables = read_u16(d, 4);
+    for (uint16_t i = 0; i < ntables; i++) {
+        const size_t rec = 12u + 16u * i;
+        if (rec + 16u > d.size()) break;
+        const uint32_t off = read_u32(d, rec + 8u);
+        const uint32_t len = read_u32(d, rec + 12u);
+        if (std::memcmp(&d[rec], "hhea", 4) == 0 && off + 10u <= d.size()) {
+            put16(off + 4u, ascent);
+            put16(off + 6u, descent);
+            put16(off + 8u, lineGap);
+        } else if (std::memcmp(&d[rec], "OS/2", 4) == 0 && off + 78u <= d.size()) {
+            const uint16_t sel = uint16_t(read_u16(d, off + 62u) & ~uint16_t(128u));
+            put16(off + 62u, int16_t(sel));
+            put16(off + 68u, ascent);
+            put16(off + 70u, descent);
+            put16(off + 72u, lineGap);
+        } else {
+            continue;
+        }
+        uint32_t sum = 0;
+        for (uint32_t p = 0; p < ((len + 3u) & ~3u) && off + p < d.size(); p += 4u) {
+            uint32_t w = 0;
+            for (int k = 0; k < 4; k++) w = (w << 8) | (off + p + k < off + len ? d[off + p + k] : 0u);
+            sum += w;
+        }
+        write_u32(d, rec + 4u, sum);
+    }
+    return d;
+}
+
+static void test_symmetric_leading_metrics() {
+    using namespace twtext;
+    const std::vector<uint8_t> otf = read_file(TWT_FIXTURES "/NotoSerifCJKjp-subset.otf");
+    const std::vector<uint8_t> woff = read_file(TWT_FIXTURES "/Pacifico.woff");
+    CHECK(!otf.empty() && !woff.empty(), "leading fixtures readable");
+    if (otf.empty() || woff.empty()) return;
+
+    // Mimic macOS Hiragino (upem=1000, hhea ascent=880, descent=-120, lineGap=500):
+    // half-leading (250/1000) splits symmetrically into ascent (1130) and descent (370).
+    const std::vector<uint8_t> hiraginoLike = patch_hhea_leading(otf, 880, -120, 500);
+    TextBackend backend;
+    CHECK(backend.add_book_font("LatinPrimary", 400, false, woff), "add LatinPrimary");
+    CHECK(backend.add_book_font("LeadingCJK", 400, false, hiraginoLike), "add LeadingCJK");
+
+    twlite::FontMetrics m{};
+    const int cjkId = backend.create_font("\"LeadingCJK\"", 16.0f, 400, false, "", m);
+    CHECK(cjkId > 0, "LeadingCJK font created");
+    CHECK(std::fabs(m.ascent - 18.08f) < 0.02f, "ascent includes half-leading (got %.4f)", m.ascent);
+    CHECK(std::fabs(m.descent - 5.92f) < 0.02f, "descent includes half-leading (got %.4f)", m.descent);
+    CHECK(std::fabs(m.height - 24.0f) < 0.02f && std::fabs((m.ascent + m.descent) - m.height) < 0.01f,
+          "ascent+descent == height == 24.0 (got %.4f + %.4f vs %.4f)", m.ascent, m.descent, m.height);
+    CHECK(std::fabs(m.em_ascent - 14.078f) < 0.05f, "OS/2 em_ascent unaffected by leading (got %.4f)", m.em_ascent);
+
+    twlite::FontMetrics stackM{};
+    const int stackId = backend.create_font("\"LatinPrimary\", \"LeadingCJK\"", 16.0f, 400, false, "", stackM);
+    CHECK(stackId > 0, "stack font created");
+    const auto extents = backend.fallback_extents(stackId, "\xE3\x81\x82");
+    CHECK(extents.size() == 1, "fallback_extents returned 1 CJK face (got %zu)", extents.size());
+    if (!extents.empty()) {
+        CHECK(std::fabs(extents[0].first - 18.08f) < 0.02f && std::fabs(extents[0].second - 5.92f) < 0.02f,
+              "fallback_extents includes half-leading (got %.4f, %.4f)", extents[0].first, extents[0].second);
+    }
+}
+
 #ifdef __APPLE__
 static bool is_sfnt(const std::vector<uint8_t>& b) {
     return b.size() >= 4 && ((b[0] == 0 && b[1] == 1 && b[2] == 0 && b[3] == 0) || std::memcmp(b.data(), "OTTO", 4) == 0 ||
@@ -266,6 +337,20 @@ static void test_macos_coretext_discovery() {
         }
         CHECK(gotAppleEmoji, "trophy emoji fell back to Apple Color Emoji");
     }
+
+    // Fallback Japanese from Helvetica Neue must report Hiragino's full height (ascent + descent + leading).
+    twlite::FontMetrics hnM{}, hiraM{}, stackM{};
+    const int hnId = jaBackend.create_font("\"Helvetica Neue\"", 16, 400, false, "", hnM);
+    const int hiraId = jaBackend.create_font("\"Hiragino Sans\"", 16, 400, false, "", hiraM);
+    const int stackId = jaBackend.create_font("\"Helvetica Neue\", \"Hiragino Sans\"", 16, 400, false, "", stackM);
+    CHECK(hnId > 0 && hiraId > 0 && stackId > 0, "Helvetica Neue + Hiragino Sans fonts created");
+    const auto fb = jaBackend.fallback_extents(stackId, "\xE3\x82\x84\xE3\x81\x8C\xE3\x81\xA6");
+    CHECK(!fb.empty(), "fallback_extents non-empty for Japanese in Helvetica Neue stack");
+    if (!fb.empty()) {
+        const float fbHeight = fb[0].first + fb[0].second;
+        CHECK(std::fabs(fbHeight - hiraM.height) < 0.25f && fbHeight > hnM.height,
+              "Hiragino fallback height %.3f matches direct %.3f and exceeds Latin %.3f", fbHeight, hiraM.height, hnM.height);
+    }
 }
 #endif
 
@@ -274,6 +359,7 @@ int main() {
     test_apple_fallback_languages();
     test_apple_weight_and_scoring();
     test_find_ttc_face_index();
+    test_symmetric_leading_metrics();
 #ifdef __APPLE__
     test_macos_coretext_discovery();
 #endif

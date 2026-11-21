@@ -1375,10 +1375,12 @@ int TextBackend::create_font_uncached(const std::string& families, float size, i
     }
     if (!face) return 0;
 
-    float s = size / face->upem;
-    out.ascent = face->ascent * s;
-    out.descent = face->descent * s;
-    out.height = (face->ascent + face->descent + face->leading) * s;
+    const float s = size / face->upem;
+    const float leading = std::max(0.0f, face->leading);
+    const float halfGap = leading * 0.5f;
+    out.ascent = (face->ascent + halfGap) * s;
+    out.descent = (face->descent + halfGap) * s;
+    out.height = (face->ascent + face->descent + leading) * s;
     out.x_height = face->xHeight * s;
     hb_codepoint_t zero;
     out.zero_width = hb_font_get_nominal_glyph(face->font, '0', &zero) ? hb_font_get_glyph_h_advance(face->font, zero) * s : size / 2;
@@ -1777,7 +1779,8 @@ std::vector<std::pair<float, float>> TextBackend::fallback_extents(int font, con
         if (!seg.face || seg.face == it->second.face || std::find(seen.begin(), seen.end(), seg.face) != seen.end()) continue;
         seen.push_back(seg.face);
         const float s = it->second.size / seg.face->upem;
-        out.emplace_back(seg.face->ascent * s, seg.face->descent * s);
+        const float halfGap = std::max(0.0f, seg.face->leading) * 0.5f;
+        out.emplace_back((seg.face->ascent + halfGap) * s, (seg.face->descent + halfGap) * s);
     }
     return out;
 }

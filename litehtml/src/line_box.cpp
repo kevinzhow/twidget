@@ -1110,8 +1110,8 @@ std::list<std::unique_ptr<litehtml::line_box_item>> litehtml::line_box::finish(
 
         void add_item(const line_box_item* item)
         {
-            top        = std::min(top, item->top());
-            bottom     = std::max(bottom, item->bottom());
+            top        = count ? std::min(top, item->top()) : item->top();
+            bottom     = count ? std::max(bottom, item->bottom()) : item->bottom();
             max_height = std::max(max_height, item->height());
             count++;
         }
