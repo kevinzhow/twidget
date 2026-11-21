@@ -1773,6 +1773,7 @@ public:
             fm->super_shift = litehtml::pixel_t(f.size / 3);
             fm->device_pixel = litehtml::pixel_t(1.0f / std::max(1e-3f, float(r_.dpr_)));
             fm->em_ascent = litehtml::pixel_t(m.em_ascent);  // 0 when the backend cannot read it
+            fm->leading = litehtml::pixel_t(m.leading);
         }
         litehtml::uint_ptr id = ++next_font_;
         fonts_[id] = f;

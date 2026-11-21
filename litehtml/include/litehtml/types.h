@@ -329,6 +329,8 @@ namespace litehtml
         // The em box's top above the baseline (twidget: the OS/2 typographic ascent scaled to font_size, as Chromium
         // places ruby and vertical text on it); 0 when the container does not know, and em_top() estimates it.
         pixel_t em_ascent = 0;
+        // Positive font lineGap in CSS px split symmetrically into ascent and descent (twidget).
+        pixel_t leading = 0;
 
         pixel_t base_line() const
         {

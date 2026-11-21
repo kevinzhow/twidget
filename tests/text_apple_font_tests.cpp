@@ -221,9 +221,11 @@ static void test_symmetric_leading_metrics() {
     // Mimic macOS Hiragino (upem=1000, hhea ascent=880, descent=-120, lineGap=500):
     // half-leading (250/1000) splits symmetrically into ascent (1130) and descent (370).
     const std::vector<uint8_t> hiraginoLike = patch_hhea_leading(otf, 880, -120, 500);
+    const std::vector<uint8_t> zeroLead = patch_hhea_leading(otf, 880, -120, 0);
     TextBackend backend;
     CHECK(backend.add_book_font("LatinPrimary", 400, false, woff), "add LatinPrimary");
     CHECK(backend.add_book_font("LeadingCJK", 400, false, hiraginoLike), "add LeadingCJK");
+    CHECK(backend.add_book_font("ZeroLeadCJK", 400, false, zeroLead), "add ZeroLeadCJK");
 
     twlite::FontMetrics m{};
     const int cjkId = backend.create_font("\"LeadingCJK\"", 16.0f, 400, false, "", m);
@@ -232,7 +234,12 @@ static void test_symmetric_leading_metrics() {
     CHECK(std::fabs(m.descent - 5.92f) < 0.02f, "descent includes half-leading (got %.4f)", m.descent);
     CHECK(std::fabs(m.height - 24.0f) < 0.02f && std::fabs((m.ascent + m.descent) - m.height) < 0.01f,
           "ascent+descent == height == 24.0 (got %.4f + %.4f vs %.4f)", m.ascent, m.descent, m.height);
+    CHECK(std::fabs(m.leading - 8.0f) < 0.02f, "leading reports scaled lineGap (got %.4f)", m.leading);
     CHECK(std::fabs(m.em_ascent - 14.078f) < 0.05f, "OS/2 em_ascent unaffected by leading (got %.4f)", m.em_ascent);
+
+    twlite::FontMetrics zeroM{};
+    const int zeroId = backend.create_font("\"ZeroLeadCJK\"", 16.0f, 400, false, "", zeroM);
+    CHECK(zeroId > 0 && std::fabs(zeroM.leading) < 1e-4f, "ZeroLeadCJK reports leading == 0 (got %.4f)", zeroM.leading);
 
     twlite::FontMetrics stackM{};
     const int stackId = backend.create_font("\"LatinPrimary\", \"LeadingCJK\"", 16.0f, 400, false, "", stackM);

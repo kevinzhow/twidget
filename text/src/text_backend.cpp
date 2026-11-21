@@ -1381,6 +1381,7 @@ int TextBackend::create_font_uncached(const std::string& families, float size, i
     out.ascent = (face->ascent + halfGap) * s;
     out.descent = (face->descent + halfGap) * s;
     out.height = (face->ascent + face->descent + leading) * s;
+    out.leading = leading * s;
     out.x_height = face->xHeight * s;
     hb_codepoint_t zero;
     out.zero_width = hb_font_get_nominal_glyph(face->font, '0', &zero) ? hb_font_get_glyph_h_advance(face->font, zero) * s : size / 2;
