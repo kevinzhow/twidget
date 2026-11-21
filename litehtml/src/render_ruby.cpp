@@ -324,32 +324,77 @@ litehtml::rendered_width litehtml::render_item_ruby_pair::_render_content(pixel_
     // for under/left ruby (JLReq 3.3.4 / CSS ruby-position: under | left), the annotation's box starts where the
     // base's em box ends (below in horizontal-tb, left in vertical-rl). The pair's own box stays the base's so
     // baseline alignment is unchanged and make_room_for_ruby clears neighbouring lines on either side.
-    const auto&         rt      = m_children.front();
-    const auto&         base    = m_children.back();
-    const auto&         rt_fm   = rt->src_el()->css().get_font_metrics();
-    const auto&         base_fm = base->src_el()->css().get_font_metrics();
-    const ruby_position rpos    = rt->src_el()->css().get_ruby_position();
-    annotation_under            = rpos == ruby_position_under || rpos == ruby_position_left;
+    const auto&           rt           = m_children.front();
+    const auto&           base         = m_children.back();
+    const auto&           rt_fm        = rt->src_el()->css().get_font_metrics();
+    const css_properties& base_css     = base->src_el()->css();
+    const auto&           base_fm      = base_css.get_font_metrics();
+    const ruby_position   rpos         = rt->src_el()->css().get_ruby_position();
+    annotation_under                   = rpos == ruby_position_under || rpos == ruby_position_left;
+    const pixel_t         rt_half_lead = std::max(0_px, rt_fm.leading / 2_px);
+    const pixel_t         rt_asc       = std::max(0_px, rt_fm.ascent - rt_half_lead);
+    const pixel_t         rt_desc      = std::max(0_px, rt_fm.descent - rt_half_lead);
     if(annotation_under)
     {
         const pixel_t top = base->top();
         for(const auto& el : m_children)
             el->y_shift(-top);
         const pixel_t base_em_bottom = base->top() + base->get_first_baseline() + base_fm.em_bottom();
-        rt->y_shift(base_em_bottom - rt->top());
-        m_pos.height              = base->bottom();
+        const pixel_t rt_content_top = rt->height() > 0_px ? rt->top() + rt->get_first_baseline() - rt_asc : rt->top();
+        rt->y_shift(base_em_bottom - rt_content_top);
+    } else
+    {
+        const pixel_t base_em_top       = base->top() + base->get_first_baseline() - base_fm.em_top();
+        const pixel_t rt_content_bottom = rt->height() > 0_px ? rt->top() + rt->get_last_baseline() + rt_desc : rt->bottom();
+        base->y_shift(rt_content_bottom - base_em_top);
+        const pixel_t top = base->top();
+        for(const auto& el : m_children)
+            el->y_shift(-top);
+    }
+    m_pos.height  = base->bottom();
+    document* doc = src_el()->doc_ptr();
+    if(doc && doc->vertical() && base_css.is_vertical_rl() && rt->height() > 0_px && ann_end > ann_start)
+    {
+        const int lines = base_css.get_text_decoration_line();
+        if(lines & (text_decoration_line_underline | text_decoration_line_overline))
+        {
+            const int  where      = base_css.get_text_underline_position();
+            const bool under_left = (where & text_underline_position_left) && !(where & text_underline_position_right);
+            const bool deco_over  = ((lines & text_decoration_line_underline) && !under_left) ||
+                                    ((lines & text_decoration_line_overline) && under_left);
+            const bool deco_under = ((lines & text_decoration_line_underline) && under_left) ||
+                                    ((lines & text_decoration_line_overline) && !under_left);
+            const pixel_t base_em   = base_fm.font_size;
+            const auto&   given     = base_css.get_text_decoration_thickness();
+            pixel_t       thickness = std::max(1_px, base_em / 14_px);
+            if(!given.is_predefined())
+                thickness = std::max(1_px, given.calc_percent(base_em));
+            const pixel_t base_cy = base->top() + base->get_first_baseline() - (base_fm.ascent - base_fm.descent) / 2_px;
+            if(!annotation_under && deco_over)
+            {
+                const pixel_t deco_outer = base_cy - base_em / 2_px - thickness - thickness * pixel_t(0.20f);
+                const pixel_t rt_cy      = rt->top() + rt->get_last_baseline() - (rt_fm.ascent - rt_fm.descent) / 2_px;
+                const pixel_t rt_inner   = rt_cy + rt_fm.font_size / 2_px;
+                if(rt_inner > deco_outer)
+                    rt->y_shift(deco_outer - rt_inner);
+            } else if(annotation_under && deco_under)
+            {
+                const pixel_t deco_outer = base_cy + base_em / 2_px + thickness + thickness;
+                const pixel_t rt_cy      = rt->top() + rt->get_first_baseline() - (rt_fm.ascent - rt_fm.descent) / 2_px;
+                const pixel_t rt_inner   = rt_cy - rt_fm.font_size / 2_px;
+                if(rt_inner < deco_outer)
+                    rt->y_shift(deco_outer - rt_inner);
+            }
+        }
+    }
+    if(annotation_under)
+    {
         annotation_overflow       = 0_px;
         annotation_under_overflow = (rt->top() + rt->get_first_baseline() + rt_fm.em_bottom()) - m_pos.height;
     } else
     {
-        const pixel_t base_em_top = base->top() + base->get_first_baseline() - base_fm.em_top();
-        base->y_shift(rt->bottom() - base_em_top);
-        const pixel_t top = base->top();
-        for(const auto& el : m_children)
-            el->y_shift(-top);
         annotation_overflow       = -(rt->top() + rt->get_first_baseline() - rt_fm.em_top());
         annotation_under_overflow = 0_px;
-        m_pos.height              = base->bottom();
     }
     return ret;
 }

@@ -59,6 +59,9 @@ struct FillRect {
 
 struct Stub : document_container {
     float w = 400, h = 400;
+    float ascent_ratio = 0.8f;
+    float leading_ratio = 0.0f;
+    float dpr = 1.0f;
     std::vector<Drawn> drawn;
     std::vector<FillRect> fills;
     struct FontInfo {
@@ -68,10 +71,14 @@ struct Stub : document_container {
     std::vector<FontInfo> fonts;
     uint_ptr create_font(const font_description& d, const document*, font_metrics* fm) override {
         if (fm) {
+            const float lead = float(d.size) * leading_ratio;
             fm->font_size = d.size;
-            fm->ascent = d.size * 0.8f;
-            fm->descent = d.size * 0.2f;
-            fm->height = d.size;
+            fm->ascent = d.size * ascent_ratio + lead * 0.5f;
+            fm->descent = d.size * (1.0f - ascent_ratio) + lead * 0.5f;
+            fm->height = d.size + lead;
+            fm->leading = lead;
+            fm->em_ascent = d.size * ascent_ratio;
+            fm->device_pixel = pixel_t(1.0f / dpr);
             fm->x_height = d.size * 0.5f;
             fm->ch_width = d.size / 2;
             fm->draw_spaces = d.decoration_line != text_decoration_line_none;
@@ -670,6 +677,69 @@ void run(bool vertical) {
             }
             check(rt_y >= p1_y + 15.9f && p2_y >= p1_y + 23.9f,
                   mode + "3.3.4 nested <div><p> over (lh=16px): p1=" + num(p1_y) + " rt=" + num(rt_y) + " p2=" + num(p2_y));
+        }
+        for (bool under : {false, true}) {
+            Stub c;
+            c.ascent_ratio = 0.88f;
+            c.leading_ratio = 0.50f;
+            c.dpr = 2.0f;
+            if (vertical) c.h = 400;
+            auto doc = document::createFromString(
+                std::string("<html") + (vertical ? " style=\"writing-mode:vertical-rl\"" : "") +
+                    "><head><style>body{margin:0;font-size:16px;line-height:24px}p{margin:0}rt{font-size:75%}" +
+                    (under ? "ruby{ruby-position:under}" : "") +
+                    "</style></head><body><p><ruby>春<rt>あい</rt></ruby>春</p></body></html>",
+                &c, master_css);
+            doc->render(400);
+            doc->draw(0, 0, 0, nullptr);
+            float base_y = -999.0f, rt_y = -999.0f;
+            for (const auto& d : c.drawn) {
+                if (d.ruby && rt_y < -900.0f) rt_y = d.y;
+                if (!d.ruby && d.text.find("春") != std::string::npos && base_y < -900.0f) base_y = d.y;
+            }
+            const float base_em_top = base_y + 4.0f;
+            const float base_em_bot = base_y + 20.0f;
+            const float rt_em_top = rt_y + 3.0f;
+            const float rt_em_bot = rt_y + 15.0f;
+            const bool ok = under ? (std::abs(rt_em_top - base_em_bot) <= 0.6f) : (std::abs(rt_em_bot - base_em_top) <= 0.6f);
+            check(ok, mode + std::string("leading>0 ") + (under ? "under" : "over") +
+                          ": rt em aligns to base em without halfGap float (base_em=[" + num(base_em_top) + "," +
+                          num(base_em_bot) + "] rt_em=[" + num(rt_em_top) + "," + num(rt_em_bot) + "])");
+        }
+        if (vertical) {
+            for (float lead_ratio : {0.0f, 0.50f}) {
+                for (bool under : {false, true}) {
+                    Stub c;
+                    c.ascent_ratio = 0.88f;
+                    c.leading_ratio = lead_ratio;
+                    c.dpr = 2.0f;
+                    c.h = 400;
+                    const std::string extra = under ? "ruby{ruby-position:left}span{text-underline-position:left}" : "";
+                    auto doc = document::createFromString(
+                        "<html style=\"writing-mode:vertical-rl\"><head><style>body{margin:0;font-size:20px;line-height:36px}"
+                        "p{margin:0}" + extra +
+                            "</style></head><body><p><span style=\"text-decoration:underline\">前<ruby>漢<rt>かん</rt></ruby>後</span></p></body></html>",
+                        &c, master_css);
+                    doc->render(400);
+                    doc->draw(0, 0, 0, nullptr);
+                    float rt_y = -999.0f, deco_y = -999.0f, deco_h = 0.0f;
+                    for (const auto& d : c.drawn)
+                        if (d.ruby && rt_y < -900.0f) rt_y = d.y;
+                    for (const auto& f : c.fills)
+                        if (f.width > 0 && f.height > 0 && f.height <= 4.0f && deco_y < -900.0f) {
+                            deco_y = f.y;
+                            deco_h = f.height;
+                        }
+                    const float rt_cy = rt_y + 5.0f * (1.0f + lead_ratio);
+                    const float rt_inner = under ? (rt_cy - 5.0f) : (rt_cy + 5.0f);
+                    const float deco_outer = under ? (deco_y + deco_h) : deco_y;
+                    const bool clears = under ? (rt_inner >= deco_outer - 0.5f) : (rt_inner <= deco_outer + 0.5f);
+                    check(clears && rt_y > -900.0f && deco_y > -900.0f,
+                          mode + "3.3.10 V underline clears <rt> (lead=" + num(lead_ratio) +
+                              (under ? " left" : " right") + ": rt_inner=" + num(rt_inner) +
+                              " deco_outer=" + num(deco_outer) + ")");
+                }
+            }
         }
     }
 }

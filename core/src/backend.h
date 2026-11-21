@@ -24,6 +24,7 @@ struct FontMetrics {
     // scaled to add up to its size, as Chromium normalises them. 0 and 0 when the backend cannot read
     // them; the core then normalises ascent and descent instead.
     float em_ascent = 0, em_descent = 0;
+    float leading = 0;     // positive font lineGap in CSS px, split half/half into ascent and descent
 };
 
 /// Sets `m`'s em box from an ascent and a descent (any unit, the descent positive) for a font `size` px:

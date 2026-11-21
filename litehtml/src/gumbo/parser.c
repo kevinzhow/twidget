@@ -2348,37 +2348,64 @@ static bool handle_after_head(GumboParser* parser, GumboToken* token) {
   }
 }
 
-static void destroy_node(GumboParser* parser, GumboNode* node) {
-  switch (node->type) {
-    case GUMBO_NODE_DOCUMENT: {
-      GumboDocument* doc = &node->v.document;
-      for (unsigned int i = 0; i < doc->children.length; ++i) {
-        destroy_node(parser, doc->children.data[i]);
-      }
-      gumbo_parser_deallocate(parser, (void*) doc->children.data);
-      gumbo_parser_deallocate(parser, (void*) doc->name);
-      gumbo_parser_deallocate(parser, (void*) doc->public_identifier);
-      gumbo_parser_deallocate(parser, (void*) doc->system_identifier);
-    } break;
-    case GUMBO_NODE_TEMPLATE:
-    case GUMBO_NODE_ELEMENT:
-      for (unsigned int i = 0; i < node->v.element.attributes.length; ++i) {
-        gumbo_destroy_attribute(parser, node->v.element.attributes.data[i]);
-      }
-      gumbo_parser_deallocate(parser, node->v.element.attributes.data);
-      for (unsigned int i = 0; i < node->v.element.children.length; ++i) {
-        destroy_node(parser, node->v.element.children.data[i]);
-      }
-      gumbo_parser_deallocate(parser, node->v.element.children.data);
-      break;
-    case GUMBO_NODE_TEXT:
-    case GUMBO_NODE_CDATA:
-    case GUMBO_NODE_COMMENT:
-    case GUMBO_NODE_WHITESPACE:
-      gumbo_parser_deallocate(parser, (void*) node->v.text.text);
-      break;
+static void destroy_node(GumboParser* parser, GumboNode* root) {
+  if (!root) {
+    return;
   }
-  gumbo_parser_deallocate(parser, node);
+  size_t cap = 64;
+  size_t len = 0;
+  GumboNode** stack = gumbo_parser_allocate(parser, cap * sizeof(GumboNode*));
+  stack[len++] = root;
+  while (len > 0) {
+    GumboNode* node = stack[--len];
+    if (!node) {
+      continue;
+    }
+    const GumboVector* children = NULL;
+    switch (node->type) {
+      case GUMBO_NODE_DOCUMENT: {
+        GumboDocument* doc = &node->v.document;
+        children = &doc->children;
+        gumbo_parser_deallocate(parser, (void*) doc->name);
+        gumbo_parser_deallocate(parser, (void*) doc->public_identifier);
+        gumbo_parser_deallocate(parser, (void*) doc->system_identifier);
+      } break;
+      case GUMBO_NODE_TEMPLATE:
+      case GUMBO_NODE_ELEMENT:
+        for (unsigned int i = 0; i < node->v.element.attributes.length; ++i) {
+          gumbo_destroy_attribute(parser, node->v.element.attributes.data[i]);
+        }
+        gumbo_parser_deallocate(parser, node->v.element.attributes.data);
+        children = &node->v.element.children;
+        break;
+      case GUMBO_NODE_TEXT:
+      case GUMBO_NODE_CDATA:
+      case GUMBO_NODE_COMMENT:
+      case GUMBO_NODE_WHITESPACE:
+        gumbo_parser_deallocate(parser, (void*) node->v.text.text);
+        break;
+    }
+    if (children) {
+      if (len + children->length > cap) {
+        size_t new_cap = cap;
+        while (new_cap < len + children->length) {
+          new_cap *= 2;
+        }
+        GumboNode** next =
+            gumbo_parser_allocate(parser, new_cap * sizeof(GumboNode*));
+        memcpy(next, stack, len * sizeof(GumboNode*));
+        gumbo_parser_deallocate(parser, stack);
+        stack = next;
+        cap = new_cap;
+      }
+      for (unsigned int i = 0; i < children->length; ++i) {
+        stack[len++] = children->data[i];
+      }
+      gumbo_parser_deallocate(parser, children->data);
+    }
+    gumbo_parser_deallocate(parser, node);
+  }
+  gumbo_parser_deallocate(parser, stack);
 }
 
 // http://www.whatwg.org/specs/web-apps/current-work/complete/tokenization.html#parsing-main-inbody
