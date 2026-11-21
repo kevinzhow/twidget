@@ -1,6 +1,10 @@
 #include "text_backend.h"
 
-#ifdef __ANDROID__
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreText/CoreText.h>
+#include <climits>
+#elif defined(__ANDROID__)
 #include <dlfcn.h>
 #include <cstdlib>
 #include <fstream>
@@ -19,9 +23,10 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <cstdio>
-#include <cstring>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -127,6 +132,176 @@ bool fallback_for(const std::vector<FallbackFamily>& families, const std::string
 }
 
 namespace {
+std::string hb_face_ot_name(hb_face_t* face, hb_ot_name_id_t id) {
+    char buf[256];
+    unsigned len = sizeof(buf);
+    const unsigned full = hb_ot_name_get_utf8(face, id, HB_LANGUAGE_INVALID, &len, buf);
+    if (full == 0) return {};
+    if (full < sizeof(buf)) return std::string(buf, len);
+    std::string out(full + 1, '\0');
+    len = full + 1;
+    hb_ot_name_get_utf8(face, id, HB_LANGUAGE_INVALID, &len, out.data());
+    out.resize(len);
+    return out;
+}
+
+std::string normalize_bcp47_lower(std::string s) {
+    for (char& c : s) {
+        if (c == '_') c = '-';
+        else c = char(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+} // namespace
+
+std::vector<std::string> apple_generic_families(const std::string& generic, const std::string& language) {
+    std::string g = generic;
+    for (char& c : g) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (g == "cursive") return {"Snell Roundhand", "Apple Chancery"};
+    if (g == "fantasy") return {"Papyrus", "Impact"};
+    if (g == "emoji") return {"Apple Color Emoji"};
+
+    struct GenericRow {
+        std::vector<const char*> serif;
+        std::vector<const char*> sans;
+        std::vector<const char*> mono;
+    };
+    static const GenericRow kJa{
+        {"Hiragino Mincho ProN", "YuMincho", "Times New Roman", "Georgia"},
+        {"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Helvetica Neue"},
+        {"Menlo", "Osaka-Mono", "Courier New"},
+    };
+    static const GenericRow kZhHant{
+        {"Songti TC", "STSong", "Times New Roman", "Georgia"},
+        {"PingFang TC", "Helvetica Neue"},
+        {"Menlo", "Courier New"},
+    };
+    static const GenericRow kZhHans{
+        {"Songti SC", "STSong", "Times New Roman", "Georgia"},
+        {"PingFang SC", "Hiragino Sans GB", "Helvetica Neue"},
+        {"Menlo", "Courier New"},
+    };
+    static const GenericRow kKo{
+        {"AppleMyungjo", "Times New Roman", "Georgia"},
+        {"Apple SD Gothic Neo", "Helvetica Neue"},
+        {"Menlo", "Courier New"},
+    };
+    static const GenericRow kDefault{
+        {"Times New Roman", "Georgia", "Hiragino Mincho ProN"},
+        {"Helvetica Neue", "Helvetica", "Arial"},
+        {"Menlo", "Courier New"},
+    };
+
+    const std::string l = normalize_bcp47_lower(language);
+    auto is_lang = [&](const char* tag) {
+        const size_t n = std::strlen(tag);
+        return l.compare(0, n, tag) == 0 && (l.size() == n || l[n] == '-');
+    };
+    const GenericRow* row = &kDefault;
+    if (is_lang("ja")) {
+        row = &kJa;
+    } else if (is_lang("ko")) {
+        row = &kKo;
+    } else if (is_lang("zh")) {
+        const bool hant = l.find("hant") != std::string::npos || is_lang("zh-tw") || is_lang("zh-hk") || is_lang("zh-mo");
+        row = hant ? &kZhHant : &kZhHans;
+    }
+
+    const std::vector<const char*>* chosen = nullptr;
+    if (g == "serif") chosen = &row->serif;
+    else if (g == "sans-serif") chosen = &row->sans;
+    else if (g == "monospace") chosen = &row->mono;
+    if (!chosen) return {};
+    return {chosen->begin(), chosen->end()};
+}
+
+std::vector<std::string> apple_fallback_languages(const std::string& language, const std::string& locales) {
+    std::vector<std::string> out;
+    std::unordered_set<std::string> seen;
+    auto push_unique = [&](std::string tag) {
+        if (tag.empty()) return;
+        const std::string key = normalize_bcp47_lower(tag);
+        if (seen.insert(key).second) out.push_back(std::move(tag));
+    };
+    auto add_list = [&](const std::string& raw) {
+        size_t start = 0;
+        while (start < raw.size()) {
+            size_t sep = raw.find_first_of(",;", start);
+            std::string tok = xml_trim(raw.substr(start, sep == std::string::npos ? std::string::npos : sep - start));
+            start = sep == std::string::npos ? raw.size() : sep + 1;
+            if (tok.empty()) continue;
+            for (char& c : tok)
+                if (c == '_') c = '-';
+            const std::string key = normalize_bcp47_lower(tok);
+            push_unique(std::move(tok));
+            if (key == "zh-cn" || key == "zh-sg") push_unique("zh-Hans");
+            else if (key == "zh-tw" || key == "zh-hk" || key == "zh-mo") push_unique("zh-Hant");
+        }
+    };
+    add_list(locales);
+    add_list(language);
+    return out;
+}
+
+int apple_ct_weight_to_css(float ctWeight) {
+    if (std::isnan(ctWeight)) return 400;
+    static constexpr std::pair<float, int> kTable[] = {
+        {-0.8f, 100}, {-0.6f, 200}, {-0.4f, 300}, {0.0f, 400},
+        {0.23f, 500}, {0.3f, 600},  {0.4f, 700},  {0.56f, 800}, {0.62f, 900},
+    };
+    if (ctWeight <= kTable[0].first) return kTable[0].second;
+    constexpr size_t kCount = sizeof(kTable) / sizeof(kTable[0]);
+    if (ctWeight >= kTable[kCount - 1].first) return kTable[kCount - 1].second;
+    for (size_t i = 0; i + 1 < kCount; i++) {
+        const auto [x0, y0] = kTable[i];
+        const auto [x1, y1] = kTable[i + 1];
+        if (ctWeight <= x1) {
+            const float t = (ctWeight - x0) / (x1 - x0);
+            return int(std::lround(float(y0) + t * float(y1 - y0)));
+        }
+    }
+    return 400;
+}
+
+int apple_score_face(const AppleFaceTraits& face, int wantWeight, bool wantItalic) {
+    int score = std::abs(face.weight - wantWeight);
+    if (face.italic != wantItalic) score += 10000;
+    if (face.condensed || face.expanded) score += 1000 + int(std::fabs(face.width) * 100.0f);
+    else if (std::fabs(face.width) > 0.01f) score += int(std::fabs(face.width) * 100.0f);
+    return score;
+}
+
+int find_ttc_face_index(const uint8_t* data, size_t size, const std::string& postscriptName, const std::string& fullName) {
+    if (!data || size == 0 || size > std::numeric_limits<unsigned>::max() || (postscriptName.empty() && fullName.empty())) return 0;
+    hb_blob_t* blob = hb_blob_create(reinterpret_cast<const char*>(data), unsigned(size), HB_MEMORY_MODE_READONLY, nullptr, nullptr);
+    if (!blob) return 0;
+    const unsigned count = hb_face_count(blob);
+    int fullMatch = -1;
+    for (unsigned i = 0; i < count; i++) {
+        hb_face_t* face = hb_face_create(blob, i);
+        if (!face) continue;
+        if (!postscriptName.empty() && hb_face_ot_name(face, HB_OT_NAME_ID_POSTSCRIPT_NAME) == postscriptName) {
+            hb_face_destroy(face);
+            hb_blob_destroy(blob);
+            return int(i);
+        }
+        const unsigned instCount = hb_ot_var_get_named_instance_count(face);
+        for (unsigned inst = 0; inst < instCount; inst++) {
+            const hb_ot_name_id_t psId = hb_ot_var_named_instance_get_postscript_name_id(face, inst);
+            if (psId != HB_OT_NAME_ID_INVALID && !postscriptName.empty() && hb_face_ot_name(face, psId) == postscriptName) {
+                hb_face_destroy(face);
+                hb_blob_destroy(blob);
+                return int(((inst + 1u) << 16) | (i & 0xFFFFu));
+            }
+        }
+        if (fullMatch < 0 && !fullName.empty() && hb_face_ot_name(face, HB_OT_NAME_ID_FULL_NAME) == fullName) fullMatch = int(i);
+        hb_face_destroy(face);
+    }
+    hb_blob_destroy(blob);
+    return fullMatch >= 0 ? fullMatch : 0;
+}
+
+namespace {
 
 std::mutex g_mutex;  // the font matcher, the face setup and the caches below: every backend shares them
 double g_setupMs = 0;
@@ -165,7 +340,423 @@ struct Match {
     std::vector<hb_variation_t> axes;  // the variation axes the system font list sets for this style (Android)
 };
 
-#ifdef __ANDROID__
+#if defined(__APPLE__)
+Face* face_for(const Match& m, int weight, bool italic);
+
+template <typename T>
+struct CfRef {
+    T ref = nullptr;
+    CfRef() = default;
+    explicit CfRef(T r) : ref(r) {}
+    ~CfRef() {
+        if (ref) CFRelease(ref);
+    }
+    CfRef(const CfRef&) = delete;
+    CfRef& operator=(const CfRef&) = delete;
+    CfRef(CfRef&& o) noexcept : ref(o.ref) { o.ref = nullptr; }
+    CfRef& operator=(CfRef&& o) noexcept {
+        if (this != &o) {
+            if (ref) CFRelease(ref);
+            ref = o.ref;
+            o.ref = nullptr;
+        }
+        return *this;
+    }
+    explicit operator bool() const { return ref != nullptr; }
+    T get() const { return ref; }
+};
+
+CfRef<CFStringRef> cf_string(const std::string& s) {
+    return CfRef<CFStringRef>(CFStringCreateWithBytes(
+        kCFAllocatorDefault, reinterpret_cast<const UInt8*>(s.data()), CFIndex(s.size()), kCFStringEncodingUTF8, false));
+}
+
+std::string from_cf_string(CFTypeRef obj) {
+    if (!obj || CFGetTypeID(obj) != CFStringGetTypeID()) return {};
+    CFStringRef s = static_cast<CFStringRef>(obj);
+    if (const char* fast = CFStringGetCStringPtr(s, kCFStringEncodingUTF8)) return std::string(fast);
+    const CFIndex len = CFStringGetLength(s);
+    if (len <= 0) return {};
+    const CFIndex maxSize = CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8) + 1;
+    std::string out(size_t(maxSize), '\0');
+    if (!CFStringGetCString(s, out.data(), maxSize, kCFStringEncodingUTF8)) return {};
+    out.resize(std::strlen(out.c_str()));
+    return out;
+}
+
+std::string from_cf_url_path(CFTypeRef obj) {
+    if (!obj || CFGetTypeID(obj) != CFURLGetTypeID()) return {};
+    CFURLRef url = static_cast<CFURLRef>(obj);
+    char buf[PATH_MAX];
+    if (CFURLGetFileSystemRepresentation(url, true, reinterpret_cast<UInt8*>(buf), CFIndex(sizeof(buf)))) return std::string(buf);
+    CfRef<CFStringRef> path(CFURLCopyFileSystemPath(url, kCFURLPOSIXPathStyle));
+    return from_cf_string(path.get());
+}
+
+bool is_last_resort(const std::string& family) {
+    return family == "LastResort" || family == ".LastResort";
+}
+
+std::unordered_map<std::string, std::unordered_map<std::string, int>> g_ttcIndexCache;
+
+int ttc_face_index(const std::string& path, const std::string& psName, const std::string& fullName) {
+    if (path.empty() || (psName.empty() && fullName.empty())) return 0;
+    auto it = g_ttcIndexCache.find(path);
+    if (it == g_ttcIndexCache.end()) {
+        std::unordered_map<std::string, int> entries;
+        hb_blob_t* blob = hb_blob_create_from_file(path.c_str());
+        if (blob) {
+            const unsigned count = hb_face_count(blob);
+            for (unsigned i = 0; i < count; i++) {
+                hb_face_t* face = hb_face_create(blob, i);
+                if (!face) continue;
+                if (std::string ps = hb_face_ot_name(face, HB_OT_NAME_ID_POSTSCRIPT_NAME); !ps.empty())
+                    entries.emplace("p:" + ps, int(i));
+                const unsigned instCount = hb_ot_var_get_named_instance_count(face);
+                for (unsigned inst = 0; inst < instCount; inst++) {
+                    const hb_ot_name_id_t psId = hb_ot_var_named_instance_get_postscript_name_id(face, inst);
+                    if (psId == HB_OT_NAME_ID_INVALID) continue;
+                    if (std::string ips = hb_face_ot_name(face, psId); !ips.empty())
+                        entries.emplace("p:" + ips, int(((inst + 1u) << 16) | (i & 0xFFFFu)));
+                }
+                if (std::string fn = hb_face_ot_name(face, HB_OT_NAME_ID_FULL_NAME); !fn.empty())
+                    entries.emplace("f:" + fn, int(i));
+                hb_face_destroy(face);
+            }
+            hb_blob_destroy(blob);
+        }
+        it = g_ttcIndexCache.emplace(path, std::move(entries)).first;
+    }
+    const auto& entries = it->second;
+    if (!psName.empty()) {
+        if (auto found = entries.find("p:" + psName); found != entries.end()) return found->second;
+    }
+    if (!fullName.empty()) {
+        if (auto found = entries.find("f:" + fullName); found != entries.end()) return found->second;
+    }
+    return 0;
+}
+
+AppleFaceTraits descriptor_traits(CTFontDescriptorRef desc) {
+    AppleFaceTraits out;
+    CfRef<CFTypeRef> traitsObj(CTFontDescriptorCopyAttribute(desc, kCTFontTraitsAttribute));
+    if (!traitsObj || CFGetTypeID(traitsObj.get()) != CFDictionaryGetTypeID()) return out;
+    CFDictionaryRef traits = static_cast<CFDictionaryRef>(traitsObj.get());
+    CTFontSymbolicTraits bits = 0;
+    if (const void* symObj = CFDictionaryGetValue(traits, kCTFontSymbolicTrait)) {
+        if (CFGetTypeID(symObj) == CFNumberGetTypeID()) {
+            int64_t sym = 0;
+            if (CFNumberGetValue(static_cast<CFNumberRef>(symObj), kCFNumberSInt64Type, &sym)) {
+                bits = CTFontSymbolicTraits(uint64_t(sym) & 0xFFFFFFFFu);
+                out.italic = (bits & kCTFontTraitItalic) != 0;
+                out.condensed = (bits & kCTFontTraitCondensed) != 0;
+                out.expanded = (bits & kCTFontTraitExpanded) != 0;
+            }
+        }
+    }
+    bool hasWeight = false;
+    if (const void* wObj = CFDictionaryGetValue(traits, kCTFontWeightTrait)) {
+        if (CFGetTypeID(wObj) == CFNumberGetTypeID()) {
+            float w = 0.0f;
+            if (CFNumberGetValue(static_cast<CFNumberRef>(wObj), kCFNumberFloatType, &w)) {
+                out.weight = apple_ct_weight_to_css(w);
+                hasWeight = true;
+            }
+        }
+    }
+    if (!hasWeight && (bits & kCTFontTraitBold) != 0) out.weight = 700;
+    if (const void* widthObj = CFDictionaryGetValue(traits, kCTFontWidthTrait)) {
+        if (CFGetTypeID(widthObj) == CFNumberGetTypeID()) {
+            float width = 0.0f;
+            if (CFNumberGetValue(static_cast<CFNumberRef>(widthObj), kCFNumberFloatType, &width)) out.width = width;
+        }
+    }
+    return out;
+}
+
+bool descriptor_to_match(CTFontDescriptorRef desc, Match& out, std::string* psNameOut = nullptr) {
+    if (!desc) return false;
+    CTFontDescriptorRef active = desc;
+    CfRef<CTFontDescriptorRef> resolved;
+    CfRef<CFTypeRef> urlObj(CTFontDescriptorCopyAttribute(active, kCTFontURLAttribute));
+    if (!urlObj) {
+        resolved = CfRef<CTFontDescriptorRef>(CTFontDescriptorCreateMatchingFontDescriptor(desc, nullptr));
+        if (resolved) {
+            active = resolved.get();
+            urlObj = CfRef<CFTypeRef>(CTFontDescriptorCopyAttribute(active, kCTFontURLAttribute));
+        }
+    }
+    const std::string path = from_cf_url_path(urlObj.get());
+    if (path.empty()) return false;
+    CfRef<CFTypeRef> famObj(CTFontDescriptorCopyAttribute(active, kCTFontFamilyNameAttribute));
+    const std::string family = from_cf_string(famObj.get());
+    if (is_last_resort(family)) return false;
+    CfRef<CFTypeRef> psObj(CTFontDescriptorCopyAttribute(active, kCTFontNameAttribute));
+    CfRef<CFTypeRef> dispObj(CTFontDescriptorCopyAttribute(active, kCTFontDisplayNameAttribute));
+    const std::string psName = from_cf_string(psObj.get());
+    const std::string fullName = from_cf_string(dispObj.get());
+    out.file = path;
+    out.index = ttc_face_index(path, psName, fullName);
+    out.family = family;
+    out.axes.clear();
+    if (psNameOut) *psNameOut = psName;
+    return true;
+}
+
+bool descriptor_has_codepoint(CTFontDescriptorRef desc, uint32_t cp) {
+    if (!desc) return false;
+    CfRef<CFTypeRef> csObj(CTFontDescriptorCopyAttribute(desc, kCTFontCharacterSetAttribute));
+    if (csObj && CFGetTypeID(csObj.get()) == CFCharacterSetGetTypeID())
+        return CFCharacterSetIsLongCharacterMember(static_cast<CFCharacterSetRef>(csObj.get()), UTF32Char(cp));
+    CfRef<CTFontRef> font(CTFontCreateWithFontDescriptor(desc, 0.0, nullptr));
+    if (!font) return false;
+    CfRef<CFCharacterSetRef> cs(CTFontCopyCharacterSet(font.get()));
+    return cs && CFCharacterSetIsLongCharacterMember(cs.get(), UTF32Char(cp));
+}
+
+struct AppleFamilyFace {
+    std::string file;
+    int index = 0;
+    std::string family;
+    std::string psName;
+    AppleFaceTraits traits;
+};
+
+bool g_localizedLoaded = false;
+std::unordered_map<std::string, std::string> g_localizedFamilies;
+std::unordered_map<std::string, std::vector<AppleFamilyFace>> g_familyFaces;
+std::map<std::string, std::string> g_knownFamily;
+
+void ensure_localized_families() {
+    if (g_localizedLoaded) return;
+    g_localizedLoaded = true;
+    CfRef<CTFontCollectionRef> col(CTFontCollectionCreateFromAvailableFonts(nullptr));
+    if (!col) return;
+    CfRef<CFArrayRef> descs(CTFontCollectionCreateMatchingFontDescriptors(col.get()));
+    if (!descs) return;
+    for (CFIndex i = 0, n = CFArrayGetCount(descs.get()); i < n; i++) {
+        const void* item = CFArrayGetValueAtIndex(descs.get(), i);
+        if (!item || CFGetTypeID(item) != CTFontDescriptorGetTypeID()) continue;
+        CTFontDescriptorRef d = static_cast<CTFontDescriptorRef>(item);
+        CfRef<CFTypeRef> famObj(CTFontDescriptorCopyAttribute(d, kCTFontFamilyNameAttribute));
+        const std::string canonical = from_cf_string(famObj.get());
+        if (canonical.empty() || is_last_resort(canonical)) continue;
+        g_localizedFamilies.emplace(lower(canonical), canonical);
+        CfRef<CFTypeRef> locObj(CTFontDescriptorCopyLocalizedAttribute(d, kCTFontFamilyNameAttribute, nullptr));
+        const std::string localized = from_cf_string(locObj.get());
+        if (!localized.empty()) g_localizedFamilies.emplace(lower(localized), canonical);
+    }
+}
+
+std::vector<AppleFamilyFace> query_family_descriptors(const std::string& familyName) {
+    std::vector<AppleFamilyFace> out;
+    CfRef<CFStringRef> cfName = cf_string(familyName);
+    if (!cfName) return out;
+    const void* keys[] = {kCTFontFamilyNameAttribute};
+    const void* values[] = {cfName.get()};
+    CfRef<CFDictionaryRef> attrs(CFDictionaryCreate(
+        kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks));
+    if (!attrs) return out;
+    CfRef<CTFontDescriptorRef> query(CTFontDescriptorCreateWithAttributes(attrs.get()));
+    if (!query) return out;
+    const void* mandatoryKeys[] = {kCTFontFamilyNameAttribute};
+    CfRef<CFSetRef> mandatory(CFSetCreate(kCFAllocatorDefault, mandatoryKeys, 1, &kCFTypeSetCallBacks));
+    CfRef<CFArrayRef> matches(CTFontDescriptorCreateMatchingFontDescriptors(query.get(), mandatory.get()));
+    if (!matches) return out;
+    for (CFIndex i = 0, n = CFArrayGetCount(matches.get()); i < n; i++) {
+        const void* item = CFArrayGetValueAtIndex(matches.get(), i);
+        if (!item || CFGetTypeID(item) != CTFontDescriptorGetTypeID()) continue;
+        CTFontDescriptorRef d = static_cast<CTFontDescriptorRef>(item);
+        Match m;
+        std::string psName;
+        if (!descriptor_to_match(d, m, &psName)) continue;
+        AppleFamilyFace face;
+        face.file = std::move(m.file);
+        face.index = m.index;
+        face.family = std::move(m.family);
+        face.psName = std::move(psName);
+        face.traits = descriptor_traits(d);
+        out.push_back(std::move(face));
+    }
+    return out;
+}
+
+const std::vector<AppleFamilyFace>& family_faces(const std::string& name) {
+    const std::string key = lower(name);
+    if (auto it = g_familyFaces.find(key); it != g_familyFaces.end()) return it->second;
+    std::vector<AppleFamilyFace> faces = query_family_descriptors(name);
+    if (faces.empty()) {
+        ensure_localized_families();
+        if (auto loc = g_localizedFamilies.find(key); loc != g_localizedFamilies.end()) {
+            const std::string& canonical = loc->second;
+            const std::string canonKey = lower(canonical);
+            if (auto it = g_familyFaces.find(canonKey); it != g_familyFaces.end()) {
+                faces = it->second;
+            } else {
+                faces = query_family_descriptors(canonical);
+                if (canonKey != key) g_familyFaces.emplace(canonKey, faces);
+            }
+        }
+    }
+    return g_familyFaces.emplace(key, std::move(faces)).first->second;
+}
+
+std::string known_family(const std::string& name) {
+    auto it = g_knownFamily.find(name);
+    if (it != g_knownFamily.end()) return it->second;
+    const auto& faces = family_faces(name);
+    return g_knownFamily[name] = faces.empty() ? std::string() : faces.front().family;
+}
+
+bool best_apple_font(const std::string& familyName, int weight, bool italic, Match& out, std::string* psNameOut = nullptr) {
+    const auto& faces = family_faces(familyName);
+    if (faces.empty()) return false;
+    const AppleFamilyFace* best = nullptr;
+    int bestScore = 0;
+    for (const AppleFamilyFace& f : faces) {
+        const int score = apple_score_face(f.traits, weight, italic);
+        if (!best || score < bestScore) {
+            best = &f;
+            bestScore = score;
+        }
+    }
+    out.file = best->file;
+    out.index = best->index;
+    out.family = best->family;
+    out.axes.clear();
+    if (psNameOut) *psNameOut = best->psName;
+    return true;
+}
+
+std::vector<std::string> expand_apple_names(const std::vector<std::string>& names, const std::string& language) {
+    std::vector<std::string> expanded;
+    for (const std::string& n : names) {
+        std::vector<std::string> generic = apple_generic_families(n, language);
+        if (!generic.empty()) {
+            for (std::string& g : generic) expanded.push_back(std::move(g));
+        } else {
+            expanded.push_back(n);
+        }
+    }
+    return expanded;
+}
+
+CfRef<CTFontRef> base_ct_font(const std::vector<std::string>& expanded, int weight, bool italic, const TextOptions& o) {
+    auto from_list = [&](const std::vector<std::string>& list) -> CfRef<CTFontRef> {
+        for (const std::string& fam : list) {
+            Match m;
+            std::string psName;
+            if (!best_apple_font(fam, weight, italic, m, &psName) || psName.empty()) continue;
+            CfRef<CFStringRef> cfPs = cf_string(psName);
+            if (!cfPs) continue;
+            CfRef<CTFontRef> font(CTFontCreateWithName(cfPs.get(), 12.0, nullptr));
+            if (font) return font;
+        }
+        return {};
+    };
+    if (CfRef<CTFontRef> font = from_list(expanded)) return font;
+    if (CfRef<CTFontRef> font = from_list(apple_generic_families("sans-serif", o.language))) return font;
+    return CfRef<CTFontRef>(CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, 12.0, nullptr));
+}
+
+bool match(const std::vector<std::string>& names, int weight, bool italic, const TextOptions& o, Match& out, int32_t codepoint = -1) {
+    const std::vector<std::string> expanded = expand_apple_names(names, o.language);
+    if (codepoint < 0) {
+        for (const std::string& fam : expanded)
+            if (best_apple_font(fam, weight, italic, out)) return true;
+        for (const std::string& fam : apple_generic_families("sans-serif", o.language))
+            if (best_apple_font(fam, weight, italic, out)) return true;
+        CfRef<CTFontRef> ui(CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, 12.0, nullptr));
+        if (ui) {
+            CfRef<CTFontDescriptorRef> desc(CTFontCopyFontDescriptor(ui.get()));
+            if (desc && descriptor_to_match(desc.get(), out)) return true;
+        }
+        return false;
+    }
+
+    for (const std::string& fam : expanded) {
+        Match m;
+        if (!best_apple_font(fam, weight, italic, m)) continue;
+        hb_codepoint_t g = 0;
+        Face* face = face_for(m, weight, italic);
+        if (face && face->font && hb_font_get_nominal_glyph(face->font, hb_codepoint_t(codepoint), &g)) {
+            out = std::move(m);
+            return true;
+        }
+    }
+
+    CfRef<CTFontRef> base = base_ct_font(expanded, weight, italic, o);
+    if (!base) return false;
+
+    const std::vector<std::string> langs = apple_fallback_languages(o.language, o.locales);
+    CfRef<CFMutableArrayRef> cfLangs;
+    if (!langs.empty()) {
+        cfLangs = CfRef<CFMutableArrayRef>(CFArrayCreateMutable(kCFAllocatorDefault, CFIndex(langs.size()), &kCFTypeArrayCallBacks));
+        if (cfLangs) {
+            for (const std::string& lang : langs) {
+                CfRef<CFStringRef> s = cf_string(lang);
+                if (s) CFArrayAppendValue(cfLangs.get(), s.get());
+            }
+        }
+    }
+    CfRef<CFArrayRef> cascade(CTFontCopyDefaultCascadeListForLanguages(base.get(), cfLangs.get()));
+    if (cascade) {
+        for (CFIndex i = 0, n = CFArrayGetCount(cascade.get()); i < n; i++) {
+            const void* item = CFArrayGetValueAtIndex(cascade.get(), i);
+            if (!item || CFGetTypeID(item) != CTFontDescriptorGetTypeID()) continue;
+            CTFontDescriptorRef d = static_cast<CTFontDescriptorRef>(item);
+            if (!descriptor_has_codepoint(d, uint32_t(codepoint))) continue;
+            Match m;
+            if (!descriptor_to_match(d, m)) continue;
+            hb_codepoint_t g = 0;
+            if (!m.family.empty() && (weight != 400 || italic)) {
+                Match styled;
+                if (best_apple_font(m.family, weight, italic, styled)) {
+                    Face* sf = face_for(styled, weight, italic);
+                    if (sf && sf->font && hb_font_get_nominal_glyph(sf->font, hb_codepoint_t(codepoint), &g)) {
+                        out = std::move(styled);
+                        return true;
+                    }
+                }
+            }
+            Face* face = face_for(m, weight, italic);
+            if (face && face->font && hb_font_get_nominal_glyph(face->font, hb_codepoint_t(codepoint), &g)) {
+                out = std::move(m);
+                return true;
+            }
+        }
+    }
+
+    UniChar utf16[2] = {};
+    CFIndex utf16Len = 1;
+    const uint32_t cp = uint32_t(codepoint);
+    if (cp > 0x10FFFFu) return false;
+    if (cp >= 0x10000u) {
+        utf16[0] = UniChar(0xD800u + ((cp - 0x10000u) >> 10));
+        utf16[1] = UniChar(0xDC00u + ((cp - 0x10000u) & 0x3FFu));
+        utf16Len = 2;
+    } else {
+        utf16[0] = UniChar(cp);
+    }
+    CfRef<CFStringRef> str(CFStringCreateWithCharacters(kCFAllocatorDefault, utf16, utf16Len));
+    if (str) {
+        CfRef<CTFontRef> fallback(CTFontCreateForString(base.get(), str.get(), CFRangeMake(0, utf16Len)));
+        if (fallback) {
+            CfRef<CTFontDescriptorRef> desc(CTFontCopyFontDescriptor(fallback.get()));
+            Match m;
+            if (desc && descriptor_to_match(desc.get(), m)) {
+                hb_codepoint_t g = 0;
+                Face* face = face_for(m, weight, italic);
+                if (face && face->font && hb_font_get_nominal_glyph(face->font, hb_codepoint_t(codepoint), &g)) {
+                    out = std::move(m);
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+#elif defined(__ANDROID__)
 // Android: no fontconfig. Families come from /system/etc/fonts.xml, the file Flutter's font manager (Skia's Android
 // one) reads, so a CSS family resolves to the font Flutter paints with: its named families and aliases, the closest
 // weight and style. A codepoint the list's fonts lack goes to the system's fallback chain through the NDK's font
@@ -462,7 +1053,11 @@ std::vector<std::string> resolve_families(const std::string& families) {
         if (family.empty()) continue;
         std::string l = lower(family);
         if (l == "-apple-system" || l == "blinkmacsystemfont" || l == "system-ui" || l == "ui-sans-serif" || l == "sans-serif" || l == "roboto" ||
-            l == "inter" || l == "helvetica" || l == "helvetica neue") {
+            l == "inter"
+#if !defined(__APPLE__)
+            || l == "helvetica" || l == "helvetica neue"
+#endif
+        ) {
             out.push_back("sans-serif");
         } else if (l == "serif" || l == "ui-serif") {
             out.push_back("serif");
@@ -925,10 +1520,20 @@ std::vector<Face*> faces_of_text(const TextBackend::Font& f, const std::vector<u
                     Face* found = nullptr;
                     if (wantEmoji && match_emoji(base, f.weight, f.italic, o, m, f.fallbacks)) {
                         found = face_for(m, f.weight, f.italic);
-                        if (!hb_font_get_nominal_glyph(found->font, base, &g)) found = nullptr;
+                        if (!found || !found->font || !hb_font_get_nominal_glyph(found->font, base, &g)) found = nullptr;
                     }
 #ifdef __ANDROID__
                     if (!found && !primary && match(f.fallbacks, f.weight, f.italic, o, m, int32_t(base))) found = face_for(m, f.weight, f.italic);
+#elif defined(__APPLE__)
+                    if (!found && !primary && match(f.fallbacks, f.weight, f.italic, o, m, int32_t(base))) {
+                        Face* matched = face_for(m, f.weight, f.italic);
+                        if (matched && matched->font && hb_font_get_nominal_glyph(matched->font, base, &g)) {
+                            const bool inList = std::find(f.fallbacks.begin(), f.fallbacks.end(), m.family) != f.fallbacks.end();
+                            found = inList ? matched
+                                           : synthetic(matched, f.weight >= 600 && matched->info.weightClass < 600,
+                                                       f.italic && !matched->info.italic);
+                        }
+                    }
 #else
                     // As Chromium on Linux (FontCache::PlatformFallbackFontForCharacter): a family of the CSS list that
                     // has the character, at the asked weight and style; else the system's font for it at the normal

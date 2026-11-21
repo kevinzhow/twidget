@@ -84,6 +84,25 @@ std::vector<FallbackFamily> parse_fallback_families(const std::string& xml);
 bool fallback_for(const std::vector<FallbackFamily>& families, const std::string& file, int index, const std::string& family,
                   int weight, bool italic, FallbackFor& out);
 
+/// CoreText face traits used for deterministic style/weight/width ranking on Apple platforms.
+struct AppleFaceTraits {
+    int weight = 400;
+    bool italic = false;
+    bool condensed = false;
+    bool expanded = false;
+    float width = 0.0f;
+};
+/// Ordered Apple system font families for a CSS generic family and BCP-47 language tag.
+std::vector<std::string> apple_generic_families(const std::string& generic, const std::string& language);
+/// Deduplicated, ordered BCP-47 language list for CoreText cascade fallback from `locales` and `language`.
+std::vector<std::string> apple_fallback_languages(const std::string& language, const std::string& locales);
+/// Deterministic face mismatch score (lower is better): style mismatch, non-normal width, then weight distance.
+int apple_score_face(const AppleFaceTraits& face, int wantWeight, bool wantItalic);
+/// Piecewise linear mapping from CoreText weight trait [-0.8, 0.62] to CSS weight [100, 900].
+int apple_ct_weight_to_css(float ctWeight);
+/// 0-based collection index matching `postscriptName` (or `fullName` fallback) in font data; 0 when single-face or absent.
+int find_ttc_face_index(const uint8_t* data, size_t size, const std::string& postscriptName, const std::string& fullName = "");
+
 /// What a backend matches fonts for. Faces, matches and fallbacks are cached process-wide per these options, so
 /// backends with different options can share a process.
 struct TextOptions {
