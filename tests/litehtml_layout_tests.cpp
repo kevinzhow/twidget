@@ -172,6 +172,19 @@ int main() {
               "img height:200px;max-width:250px is 149.5 x 200: " + num(box(doc, "t").width) + " x " + num(box(doc, "t").height));
     }
     {
+        // An img with a set width and an auto height obeys max-height too, and keeps its ratio.
+        Stub c;
+        auto doc = layout(c, "<img id=\"t\" style=\"width:100%;height:auto;max-height:200px\">");
+        check(near(box(doc, "t").width, 149.5f) && near(box(doc, "t").height, 200),
+              "img width:100%;height:auto;max-height:200px is 149.5 x 200: " + num(box(doc, "t").width) + " x " + num(box(doc, "t").height));
+        doc = layout(c, "<img id=\"t\" style=\"width:600px;height:auto;max-height:400px\">");
+        check(near(box(doc, "t").width, 299) && near(box(doc, "t").height, 400),
+              "img width:600px;height:auto;max-height:400px is 299 x 400: " + num(box(doc, "t").width) + " x " + num(box(doc, "t").height));
+        doc = layout(c, "<img id=\"t\" style=\"width:200px;height:auto;max-height:400px\">");
+        check(near(box(doc, "t").width, 200) && near(box(doc, "t").height, 267.56f),
+              "img width:200px;height:auto;max-height:400px is 200 x 267.56: " + num(box(doc, "t").width) + " x " + num(box(doc, "t").height));
+    }
+    {
         // White space between elements under each white-space value: the same line boxes as one element per character
         // gave (130 px wide: 16 characters of 8 px).
         const std::string text = "<b>aa</b>   \n    <b>bb</b>\t<b>cc</b>\n\n  <b>dd</b>  <b>eeeeeeeeee</b>          <b>ff</b> \r\n "

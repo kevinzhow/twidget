@@ -120,6 +120,20 @@ litehtml::rendered_width litehtml::render_item_image::_render(pixel_t x, pixel_t
         {
             m_pos.height = sz.height;
         }
+
+        // check for max-height, keeping the ratio
+        if(self_size.max_height.type != containing_block_context::cbc_value_type_none)
+        {
+            pixel_t max_height = self_size.max_height;
+            if(m_pos.height > max_height)
+            {
+                m_pos.height = max_height;
+                if(sz.height != 0_px)
+                {
+                    m_pos.width = m_pos.height * sz.width / sz.height;
+                }
+            }
+        }
     } else
     {
         m_pos.width  = src_el()->css().get_width().calc_percent(parent_width);
