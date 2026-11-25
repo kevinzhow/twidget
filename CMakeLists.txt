@@ -9,6 +9,11 @@
 cmake_minimum_required(VERSION 3.22)
 project(twidget C CXX)
 
+if(MSVC)
+    # litehtml and the tests hold UTF-8 source text.
+    add_compile_options(/utf-8)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -50,7 +55,13 @@ if(TWIDGET_LITEHTML_ONLY)
     if(APPLE)
         target_link_libraries(litehtml PUBLIC "-framework CoreFoundation")
     endif()
-    target_compile_options(litehtml PRIVATE -w)
+    if(MSVC)
+        # gumbo expects POSIX strings.h, and the sources hold UTF-8 (as the reader's build of litehtml has them).
+        target_include_directories(litehtml PRIVATE "${TW_LITEHTML}/src/gumbo/visualc/include")
+        target_compile_options(litehtml PRIVATE /utf-8 /w)
+    else()
+        target_compile_options(litehtml PRIVATE -w)
+    endif()
     include("${CMAKE_CURRENT_SOURCE_DIR}/core/display_list.cmake")
     if(TWIDGET_TEXT)
         add_subdirectory(text)
